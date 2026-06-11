@@ -6,10 +6,9 @@ interface MenuBarProps {
   activeTab: 'generate' | 'decode';
   onTabChange: (tab: 'generate' | 'decode') => void;
   onOpenSettings: () => void;
-  onToggleDebug: () => void;
 }
 
-export default function MenuBar({ activeTab, onTabChange, onOpenSettings, onToggleDebug }: MenuBarProps) {
+export default function MenuBar({ activeTab, onTabChange, onOpenSettings }: MenuBarProps) {
   const tabBase = 'px-2 sm:px-3 py-1.5 sm:py-1 cursor-pointer whitespace-nowrap transition-colors flex items-center text-xs sm:text-sm';
   const tabActive = 'bg-black text-[#00aaaa]';
   const tabInactive = 'text-black hover:text-[#00aaaa]';
@@ -39,13 +38,6 @@ export default function MenuBar({ activeTab, onTabChange, onOpenSettings, onTogg
       </div>
 
       <div className="flex items-center gap-1">
-        <button
-          onClick={onToggleDebug}
-          className="cursor-pointer whitespace-nowrap hover:text-[#00aaaa] transition-colors px-1.5 sm:px-2 py-1.5 sm:py-1 text-xs sm:text-sm"
-          aria-label="切换调试面板"
-        >
-          调试
-        </button>
         <button
           onClick={onOpenSettings}
           className="cursor-pointer whitespace-nowrap hover:text-[#00aaaa] transition-colors px-1.5 sm:px-2 py-1.5 sm:py-1 text-xs sm:text-sm"

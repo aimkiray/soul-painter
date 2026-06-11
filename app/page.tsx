@@ -103,7 +103,7 @@ function HomeInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const { config, options, updateConfig } = useConfig();
-  const { addBotMsg, addErrorMsg, addUserMsg, updateLastBotMsg, setLoading, setStatus, setDebugRaw, isLoading, clearChat, toggleDebug } = useChat();
+  const { addBotMsg, addErrorMsg, addUserMsg, updateLastBotMsg, setLoading, setStatus, setDebugRaw, isLoading, clearChat } = useChat();
   const { images, editingIndex, selectedIndices, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
 
   const [lastPrompt] = useState(() => {
@@ -414,7 +414,6 @@ function HomeInner() {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onOpenSettings={() => setSettingsOpen(true)}
-        onToggleDebug={toggleDebug}
       />
 
       <main className="flex-1 flex flex-col overflow-hidden" role="main">
