@@ -22,8 +22,8 @@ export const MODERATION_OPTIONS = ['auto', 'low'] as const;
 export const DEFAULT_CONFIG = {
   baseUrl: '',
   apiKey: '',
-  model: 'gpt-image-2',
-  size: '1024x1024',
+  model: 'gpt-image-2-pro',
+  size: '3840x2160',
   n: 1,
   quality: 'high',
   format: 'png',

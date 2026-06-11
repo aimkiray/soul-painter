@@ -28,20 +28,15 @@ export default function SizeWarnModal({ open, size, onClose, onSwitch }: SizeWar
           警告
         </div>
         <div className="p-3">
-          <div className="flex items-start gap-2">
-            <span className="text-[#ffff55] text-lg">▲</span>
-            <div>
-              <h3 className="text-[#ffff55] font-bold">尺寸需要 gpt-image-2-pro</h3>
-              <p className="text-[#CCC] text-xs mt-1">
-                你当前选择 <code className="bg-black px-1 text-[#00aaaa]">gpt-image-2</code>，
-                但请求尺寸 <span className="text-[#ffff55] font-mono">{size}</span> 仅
-                <code className="bg-black px-1 text-[#00aaaa]">gpt-image-2-pro</code> 支持。
-              </p>
-              <p className="text-[#CCC] text-xs mt-1">
-                继续生成会被后端压回 1024 等小尺寸。
-              </p>
-            </div>
-          </div>
+          <h3 className="text-[#ffff55] font-bold">尺寸需要 gpt-image-2-pro</h3>
+          <p className="text-[#CCC] text-xs mt-1">
+            你当前选择 <code className="bg-black px-1 text-[#00aaaa]">gpt-image-2</code>，
+            但请求尺寸 <span className="text-[#ffff55] font-mono">{size}</span> 仅
+            <code className="bg-black px-1 text-[#00aaaa]">gpt-image-2-pro</code> 支持。
+          </p>
+          <p className="text-[#CCC] text-xs mt-1">
+            继续生成会被后端压回 1024 等小尺寸。
+          </p>
           <div className="flex justify-end gap-2 mt-3">
             <button onClick={onClose} className="btn-retro px-3 py-1 text-xs">
               保持 image-2
