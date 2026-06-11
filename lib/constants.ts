@@ -11,7 +11,6 @@ export const SIZE_PRESETS = [
 
 export const MODEL_PRESETS = [
   { label: 'gpt-image-2', value: 'gpt-image-2' },
-  { label: 'gpt-image-2-pro', value: 'gpt-image-2-pro' },
 ] as const;
 
 export const QUALITY_OPTIONS = ['auto', 'high', 'medium', 'low'] as const;
@@ -22,7 +21,7 @@ export const MODERATION_OPTIONS = ['auto', 'low'] as const;
 export const DEFAULT_CONFIG = {
   baseUrl: '',
   apiKey: '',
-  model: 'gpt-image-2-pro',
+  model: 'gpt-image-2',
   size: '3840x2160',
   n: 1,
   quality: 'high',

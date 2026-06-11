@@ -13,7 +13,6 @@ import ChatInput from '@/components/ChatInput';
 import ImageGrid from '@/components/ImageGrid';
 import ImageEditor from '@/components/ImageEditor';
 import SettingsModal from '@/components/SettingsModal';
-import SizeWarnModal from '@/components/SizeWarnModal';
 import DebugPanel from '@/components/DebugPanel';
 import Footer from '@/components/Footer';
 import { extractImage } from '@/lib/image-extract';
@@ -25,7 +24,6 @@ import {
   HISTORY_STORAGE_KEY,
   HISTORY_MAX,
   LAST_PROMPT_KEY,
-  MODEL_PRESETS,
 } from '@/lib/constants';
 
 // ── Pure helpers used by handleSend ──
@@ -58,8 +56,6 @@ function buildChatExtraInstr(quality: string, outFormat: string, compression: nu
 function HomeInner() {
   const [activeTab, setActiveTab] = useState<'generate' | 'decode'>('generate');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [sizeWarnOpen, setSizeWarnOpen] = useState(false);
-  const [warnSize, setWarnSize] = useState('');
 
   const { config, options, updateConfig } = useConfig();
   const { addBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, isLoading, clearChat, toggleDebug } = useChat();
@@ -112,21 +108,6 @@ function HomeInner() {
     };
   }, [addFiles]);
 
-  // Check size/model compatibility
-  const checkSizeModel = useCallback((size: string, model: string) => {
-    const m = /^(\d+)x(\d+)$/i.exec(size);
-    if (!m) return false;
-    const maxEdge = Math.max(+m[1], +m[2]);
-    const tier = maxEdge >= 3000 ? '4k' : maxEdge >= 1600 ? '2k' : '1k';
-    const needsPro = tier === '2k' || tier === '4k';
-    if (needsPro && !/pro/i.test(model)) {
-      setWarnSize(size);
-      setSizeWarnOpen(true);
-      return true;
-    }
-    return false;
-  }, []);
-
   // Send handler - core logic
   const handleSend = useCallback(async (prompt: string) => {
     const baseUrl = config.baseUrl || '';
@@ -156,10 +137,7 @@ function HomeInner() {
       : 'Output the full edited image, same dimensions as the input.';
     const sizeSuffix = sizeMatch ? ` At exactly ${sizeMatch[1]}x${sizeMatch[2]} pixels.` : '';
     const sizeForBody = sizeMatch ? size : null;
-    const bypassEdits = /pro/i.test(model) && !!sizeMatch && Math.max(+sizeMatch[1], +sizeMatch[2]) >= 1600;
-
-    // Warn on size/model mismatch
-    if (checkSizeModel(size, model)) return;
+    const bypassEdits = !!sizeMatch && Math.max(+sizeMatch[1], +sizeMatch[2]) >= 1600;
 
     addUserMsg(prompt);
 
@@ -195,8 +173,6 @@ function HomeInner() {
       multipart: boolean,
       retries = 0,
     ) => {
-      const isPro = /pro/i.test(model) || bypassEdits;
-
       let result = await proxyRequest(endpoint, config, body, options, multipart)
         .catch((e) => ({
           ok: false as const,
@@ -205,7 +181,7 @@ function HomeInner() {
           text: '',
         }));
 
-      if (isPro && !result.ok && [0, 429, 502, 503, 504].includes(result.status) && retries < 2) {
+      if (!result.ok && [0, 429, 502, 503, 504].includes(result.status) && retries < 2) {
         const delay = retries === 0 ? 4000 : 8000;
         setStatus(`上游限流，${delay / 1000}s 后重试 (${retries + 1}/2)...`);
         await new Promise((r) => setTimeout(r, delay));
@@ -356,7 +332,7 @@ function HomeInner() {
               multipart: false,
             };
 
-            const effBypass = /pro/i.test(model) && !!sizeMatch && Math.max(+sizeMatch[1], +sizeMatch[2]) >= 1600;
+            const effBypass = !!sizeMatch && Math.max(+sizeMatch[1], +sizeMatch[2]) >= 1600;
             const primary = effBypass ? chatEp : editsEp;
             const fallback = effBypass ? null : chatEp;
 
@@ -522,7 +498,7 @@ function HomeInner() {
     } finally {
       setLoading(false);
     }
-  }, [config, options, images, batchMode, buildEditsForm, addBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, checkSizeModel, clearImages]);
+  }, [config, options, images, batchMode, buildEditsForm, addBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
 
   return (
     <ErrorBoundary>
@@ -570,16 +546,6 @@ function HomeInner() {
           onClose={() => setSettingsOpen(false)}
         />
       </ErrorBoundary>
-
-      <SizeWarnModal
-        open={sizeWarnOpen}
-        size={warnSize}
-        onClose={() => setSizeWarnOpen(false)}
-        onSwitch={() => {
-          setSizeWarnOpen(false);
-          updateConfig('model', MODEL_PRESETS.find(m => /pro/i.test(m.value))?.value || 'gpt-image-2-pro');
-        }}
-      />
 
       <DebugPanel />
     </div>

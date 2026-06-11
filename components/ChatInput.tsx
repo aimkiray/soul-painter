@@ -52,8 +52,8 @@ export default function ChatInput({ onSend, isLoading, initialPrompt = '', onCle
           <div className="grid grid-cols-2 md:grid-cols-3 gap-1 w-full">
             <select value={customSize?'__custom__':config.size} onChange={e=>{if(e.target.value==='__custom__')setCustomSize(true);else{setCustomSize(false);updateConfig('size',e.target.value)}}} className="col-span-2 md:col-span-1 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
               <optgroup label="1K">{SIZE_PRESETS.filter(s=>s.group==='1K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
-              <optgroup label="2K (pro)">{SIZE_PRESETS.filter(s=>s.group==='2K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
-              <optgroup label="4K (pro)">{SIZE_PRESETS.filter(s=>s.group==='4K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
+              <optgroup label="2K">{SIZE_PRESETS.filter(s=>s.group==='2K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
+              <optgroup label="4K">{SIZE_PRESETS.filter(s=>s.group==='4K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
               <option value="__custom__">自定义...</option>
             </select>
             {customSize && <input type="text" value={config.size} onChange={e=>updateConfig('size',e.target.value)} placeholder="WxH" className="col-span-2 md:col-span-1 bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
