@@ -192,7 +192,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
           <fieldset className="tui-fieldset border-[#AAA] w-full min-w-0">
             <legend className="text-[#00aaaa] px-2">习惯配置</legend>
             <div className="space-y-2">
-              <label className="flex items-center justify-between gap-3 p-1.5 bg-black cursor-pointer select-none">
+              <label className="flex items-center justify-between gap-3 py-1.5 bg-black cursor-pointer select-none">
                 <div>
                   <span className="block text-xs text-[#CCC]">提交后清空输入框</span>
                   <span className="block text-xs text-[#888]">提交成功后会清空 Prompt 和参考图。</span>
@@ -204,7 +204,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   className="shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer"
                 />
               </label>
-              <label className="flex items-center justify-between gap-3 p-1.5 bg-black cursor-pointer select-none">
+              <label className="flex items-center justify-between gap-3 py-1.5 bg-black cursor-pointer select-none">
                 <div>
                   <span className="block text-xs text-[#CCC]">重启后加载上次 Prompt</span>
                   <span className="block text-xs text-[#888]">关闭后下次启动 Prompt 输入框为空。</span>
@@ -235,7 +235,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   单个请求最长等待时间。4K / pro 模型建议 ≥ 120s。
                 </p>
               </div>
-              <label className="flex items-center justify-between gap-3 p-1.5 bg-black cursor-pointer select-none">
+              <label className="flex items-center justify-between gap-3 py-1.5 bg-black cursor-pointer select-none">
                 <div>
                   <span className="block text-xs text-[#CCC]">渐进加载</span>
                   <span className="block text-xs text-[#888]">启用后生成过程中会显示中间预览图。</span>
