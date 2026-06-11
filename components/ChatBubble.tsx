@@ -95,22 +95,6 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
                                 #{i + 1}/{images.length}
                               </span>
                             )}
-                            <div className="absolute bottom-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              {(!isData) && (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleCopyUrl(hit.url!); }}
-                                  className="text-xs bg-black/70 hover:bg-black/90 text-white px-1.5 py-0.5 cursor-pointer"
-                                >
-                                  复制
-                                </button>
-                              )}
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleDownload(hit, i); }}
-                                className="text-xs bg-black/70 hover:bg-black/90 text-white px-1.5 py-0.5 cursor-pointer"
-                              >
-                                {isData ? '下载' : '打开'}
-                              </button>
-                            </div>
                           </div>
                         );
                       })}

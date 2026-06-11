@@ -47,7 +47,7 @@ function HomeInner() {
 
   const { config, options, updateConfig } = useConfig();
   const { addBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, isLoading, clearChat, toggleDebug } = useChat();
-  const { images, editingIndex, batchMode, selectedIndex, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
+  const { images, editingIndex, selectedIndices, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
 
   const [lastPrompt] = useState(() => {
     try { return localStorage.getItem(LAST_PROMPT_KEY) || ''; } catch { return ''; }
@@ -116,8 +116,10 @@ function HomeInner() {
       try { localStorage.setItem(LAST_PROMPT_KEY, prompt); } catch { /* ignore */ }
     }
 
-    // When a specific image is selected, only process that one
-    const activeImages = selectedIndex >= 0 && selectedIndex < images.length ? [images[selectedIndex]] : images;
+    // When images are selected, use those; otherwise text-to-image
+    const activeImages = selectedIndices.size > 0
+      ? images.filter((_, i) => selectedIndices.has(i))
+      : [];
     const mode = activeImages.length > 0 ? 'edits' : 'images';
     const sizeMatch = /^(\d+)x(\d+)$/i.exec(size);
     const sizeForBody = sizeMatch ? size : null;
@@ -182,11 +184,9 @@ function HomeInner() {
     };
 
     try {
-      // ---- Single image edits mode ----
-      if (mode === 'edits' && imagesSnap.length === 1 && !batchMode) {
-        const im = imagesSnap[0];
-
-        const fd = await buildEditsForm(im, prompt, sizeForBody, model);
+      // ---- Image edits mode (single or multi) ----
+      if (mode === 'edits') {
+        const fd = await buildEditsForm(imagesSnap, prompt, sizeForBody, model);
         applyExtraParams(fd as unknown as Record<string, unknown>, true);
 
         let probe = await tryWithRetry('/api/images/edits', fd, true);
@@ -200,7 +200,6 @@ function HomeInner() {
         if (hit) {
           const hits: ImageHit[] = [hit];
 
-          // Fan out N-1 more requests (concurrency limited)
           if (n > 1) {
             const limit = Math.min(5, n - 1);
             let cursor = 0;
@@ -228,69 +227,6 @@ function HomeInner() {
           addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片，请查看调试面板');
           setStatus('未识别到图片内容', 'err');
           setDebugRaw(JSON.stringify(resp, null, 2));
-        }
-      }
-      // ---- Multi-image batch mode ----
-      else if (mode === 'edits' && imagesSnap.length >= 2) {
-        const total = imagesSnap.length;
-        const hits: ImageHit[] = [];
-        const results: { hit: ImageHit | null; resp: unknown; err: string | null }[] = [];
-        let done = 0;
-        let failed = 0;
-
-        const CONCURRENCY = Math.min(5, total);
-
-        const runOne = async (idx: number) => {
-          const im = imagesSnap[idx];
-          try {
-            const fd = await buildEditsForm(im, prompt, sizeForBody, model);
-            applyExtraParams(fd as unknown as Record<string, unknown>, true);
-
-            const probe = await tryWithRetry('/api/images/edits', fd, true);
-
-            if (!probe.ok) {
-              results[idx] = { hit: null, resp: null, err: `#${idx + 1}: HTTP ${probe.status} ${parseErrorDetail(probe.text)}` };
-              failed++;
-            } else {
-              const resp = parseResponseBody(probe.text);
-              const hit = extractImage(resp);
-              if (hit) {
-                hits.push(hit);
-                results[idx] = { hit, resp, err: null };
-              } else {
-                results[idx] = { hit: null, resp, err: `#${idx + 1}: 未识别到图片` };
-                failed++;
-              }
-            }
-          } catch (e) {
-            results[idx] = { hit: null, resp: null, err: `#${idx + 1}: ${(e as Error).message}` };
-            failed++;
-          } finally {
-            done++;
-            setStatus(`批处理 ${done}/${total}` + (failed ? ` · 失败 ${failed}` : ''));
-          }
-        };
-
-        let cursor = 0;
-        const worker = async () => {
-          while (cursor < total) {
-            const i = cursor++;
-            await runOne(i);
-          }
-        };
-        await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-
-        const allResps = results.map((r) => r.resp).filter(Boolean);
-        setDebugRaw(allResps.length > 0 ? JSON.stringify(allResps[0], null, 2) : '无响应');
-
-        if (hits.length > 0) {
-          addBotMsg(hits, allResps.length > 0 ? JSON.stringify(allResps[0], null, 2) : '', `批处理完成 ${hits.length}/${total} · 失败 ${failed}`);
-          setStatus(`批处理 ${hits.length}/${total} 完成`, failed > 0 ? 'err' : 'ok');
-          saveHistoryEntry(prompt, mode, model, size, hits);
-        } else {
-          const errStr = results.map((r) => r.err).filter(Boolean).join('\n');
-          addErrorMsg(errStr || '所有请求均失败');
-          setStatus('批处理全部失败', 'err');
         }
       }
       // ---- Text-to-image mode ----
@@ -355,7 +291,7 @@ function HomeInner() {
     } finally {
       setLoading(false);
     }
-  }, [config, options, images, batchMode, buildEditsForm, addBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
+  }, [config, options, images, selectedIndices, buildEditsForm, addBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
 
   return (
     <ErrorBoundary>

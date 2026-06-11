@@ -3,26 +3,26 @@
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { ImageRef } from '@/types';
 import { compressIfNeeded } from '@/lib/compress';
-import { canvasHasStrokes, buildAlphaMaskBlob, buildMaskedComposite } from '@/lib/mask';
+import { canvasHasStrokes, buildAlphaMaskBlob } from '@/lib/mask';
 
 interface ImageContextValue {
   images: ImageRef[];
   editingIndex: number;
-  selectedIndex: number;
-  batchMode: boolean;
+  selectedIndices: Set<number>;
   compressing: boolean;
   pendingCount: number;
-  setBatchMode: (v: boolean) => void;
   addFiles: (fileList: FileList | File[]) => Promise<void>;
   removeImage: (i: number) => void;
   openEditor: (i: number) => void;
   closeEditor: () => void;
   clearAll: () => void;
-  selectImage: (i: number) => void;
+  toggleSelect: (i: number) => void;
+  selectAll: () => void;
+  deselectAll: () => void;
   hasImages: boolean;
   anyMasked: boolean;
   persistMask: (canvas: HTMLCanvasElement) => void;
-  buildEditsForm: (im: ImageRef, prompt: string, size: string | null, model: string) => Promise<FormData>;
+  buildEditsForm: (imgs: ImageRef[], prompt: string, size: string | null, model: string) => Promise<FormData>;
 }
 
 const ImageContext = createContext<ImageContextValue | undefined>(undefined);
@@ -30,8 +30,7 @@ const ImageContext = createContext<ImageContextValue | undefined>(undefined);
 export function ImageProvider({ children }: { children: React.ReactNode }) {
   const [images, setImages] = useState<ImageRef[]>([]);
   const [editingIndex, setEditingIndex] = useState(-1);
-  const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [batchMode, setBatchMode] = useState(false);
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [compressing, setCompressing] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
 
@@ -56,14 +55,37 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
 
     setImages((prev) => {
       const updated = [...prev, ...newImages];
+      const newIndices = new Set<number>();
+      for (let i = prev.length; i < updated.length; i++) newIndices.add(i);
+      setSelectedIndices((prevSel) => {
+        const merged = new Set(prevSel);
+        newIndices.forEach((idx) => merged.add(idx));
+        return merged;
+      });
       return updated;
     });
     setPendingCount(0);
     setCompressing(false);
   }, []);
 
-  const selectImage = useCallback((i: number) => {
-    setSelectedIndex((prev) => prev === i ? -1 : i);
+  const toggleSelect = useCallback((i: number) => {
+    setSelectedIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback(() => {
+    setImages((prev) => {
+      setSelectedIndices(new Set(prev.map((_, i) => i)));
+      return prev;
+    });
+  }, []);
+
+  const deselectAll = useCallback(() => {
+    setSelectedIndices(new Set());
   }, []);
 
   const removeImage = useCallback((i: number) => {
@@ -79,10 +101,13 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
       if (prev > i) return prev - 1;
       return prev;
     });
-    setSelectedIndex((prev) => {
-      if (prev === i) return -1;
-      if (prev > i) return prev - 1;
-      return prev;
+    setSelectedIndices((prev) => {
+      const next = new Set<number>();
+      for (const idx of prev) {
+        if (idx === i) continue;
+        next.add(idx > i ? idx - 1 : idx);
+      }
+      return next;
     });
   }, []);
 
@@ -98,7 +123,7 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
     images.forEach((img) => { if (img.objectUrl) URL.revokeObjectURL(img.objectUrl); });
     setImages([]);
     setEditingIndex(-1);
-    setSelectedIndex(-1);
+    setSelectedIndices(new Set());
   }, [images]);
 
   const persistMask = useCallback((canvas: HTMLCanvasElement) => {
@@ -117,24 +142,26 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
   }, [editingIndex]);
 
   const buildEditsForm = useCallback(async (
-    im: ImageRef, prompt: string, size: string | null, model: string
+    imgs: ImageRef[], prompt: string, size: string | null, model: string
   ): Promise<FormData> => {
     const fd = new FormData();
     fd.append('model', model);
     fd.append('prompt', prompt);
     if (size) fd.append('size', size);
-    fd.append('response_format', 'b64_json');
-    // image as PNG blob (matching reference)
-    const pngBlob = im.file.type === 'image/png'
-      ? im.file
-      : new Blob([await im.file.arrayBuffer()], { type: 'image/png' });
-    fd.append('image[]', pngBlob, (im.file.name || 'image').replace(/\.[^.]+$/, '.png'));
-    // mask at exact image dimensions
-    if (im.maskCanvas && im.naturalWidth && canvasHasStrokes(im.maskCanvas)) {
+
+    for (const im of imgs) {
+      const pngBlob = im.file.type === 'image/png'
+        ? im.file
+        : new Blob([await im.file.arrayBuffer()], { type: 'image/png' });
+      fd.append('image[]', pngBlob, (im.file.name || 'image').replace(/\.[^.]+$/, '.png'));
+    }
+
+    const first = imgs[0];
+    if (first?.maskCanvas && first.naturalWidth && canvasHasStrokes(first.maskCanvas)) {
       const maskBlob = await buildAlphaMaskBlob({
-        naturalWidth: im.naturalWidth,
-        naturalHeight: im.naturalHeight,
-        mask: im.maskCanvas,
+        naturalWidth: first.naturalWidth,
+        naturalHeight: first.naturalHeight,
+        mask: first.maskCanvas,
       });
       if (maskBlob) fd.append('mask', maskBlob, 'mask.png');
     }
@@ -145,12 +172,12 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
   const anyMasked = images.some((im) => im.maskCanvas && canvasHasStrokes(im.maskCanvas));
 
   const value = useMemo(() => ({
-    images, editingIndex, selectedIndex, batchMode, compressing, pendingCount, setBatchMode,
-    addFiles, removeImage, openEditor, closeEditor, clearAll, selectImage,
+    images, editingIndex, selectedIndices, compressing, pendingCount,
+    addFiles, removeImage, openEditor, closeEditor, clearAll, toggleSelect, selectAll, deselectAll,
     hasImages, anyMasked, persistMask,
     buildEditsForm,
-  }), [images, editingIndex, selectedIndex, batchMode, compressing, pendingCount,
-    addFiles, removeImage, openEditor, closeEditor, clearAll, selectImage,
+  }), [images, editingIndex, selectedIndices, compressing, pendingCount,
+    addFiles, removeImage, openEditor, closeEditor, clearAll, toggleSelect, selectAll, deselectAll,
     hasImages, anyMasked, persistMask,
     buildEditsForm]);
 

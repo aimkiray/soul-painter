@@ -39,7 +39,7 @@ export default function ChatInput({ onSend, isLoading, initialPrompt = '', onCle
   const kd = (e: React.KeyboardEvent) => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); send(); } else if (e.key === 'Enter' && !e.shiftKey && !e.repeat) { e.preventDefault(); send(); } };
 
   return (
-    <div className="shrink min-h-0 flex flex-col w-full max-w-3xl mx-auto px-2 sm:px-3 pb-2 border-t md:border-t-0 border-[#AAA]">
+    <div className="shrink min-h-0 flex flex-col w-full max-w-3xl mx-auto px-2 sm:px-3 pb-3 border-t md:border-t-0 border-[#AAA]">
       <div className="flex items-center justify-between gap-2 py-1.5 mb-1">
         <span className="flex items-center gap-2">
           <button onClick={() => setParamsOpen(!paramsOpen)} className="text-xs sm:text-sm text-white cursor-pointer font-mono">{paramsOpen ? '参数 ▾' : '参数 ▸'}</button>
