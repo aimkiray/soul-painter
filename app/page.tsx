@@ -78,6 +78,9 @@ async function processSSEStream(
 
       try {
         const evt = JSON.parse(dataStr);
+        if (evt.error) {
+          throw new Error(evt.message || `HTTP ${evt.status}`);
+        }
         if (eventType.includes('partial_image') || (evt.type && evt.type.includes('partial_image'))) {
           const url = evt.image_url || (evt.b64_json ? `data:image/png;base64,${evt.b64_json}` : null);
           if (url) onPartial({ dataUrl: url.startsWith('data:') ? url : undefined, url: url.startsWith('data:') ? undefined : url } as ImageHit);

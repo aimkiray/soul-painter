@@ -59,14 +59,7 @@ export async function proxyUpstream(
     }
 
     const url = `${baseUrl}${path}`;
-
-    // Log outgoing request
-    const bodyInfo = body instanceof FormData
-      ? `FormData(${[...body.entries()].map(([k, v]) => `${k}=${v instanceof Blob ? `Blob(${v.size}bytes,${v.type})` : v}`).join(', ')})`
-      : typeof body === 'string' ? body.slice(0, 200) : String(body).slice(0, 200);
     console.log(`[proxy] POST ${url}`);
-    console.log(`[proxy] Content-Type: ${contentType || '(auto)'}`);
-    console.log(`[proxy] Body: ${bodyInfo}`);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -102,7 +95,7 @@ export async function proxyUpstream(
   }
 }
 
-/** Proxy a streaming fetch to upstream — pipes SSE directly back to client */
+/** Proxy a streaming fetch to upstream — pipes SSE with keepalive to prevent CDN timeout */
 export async function proxyUpstreamStream(
   baseUrl: string,
   apiKey: string,
@@ -111,61 +104,73 @@ export async function proxyUpstreamStream(
   origin: string,
   requestSignal?: AbortSignal,
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_SEC * 1000);
+  const url = `${baseUrl}${path}`;
+  console.log(`[proxy-stream] POST ${url}`);
 
-  if (requestSignal) {
-    requestSignal.addEventListener('abort', () => controller.abort());
-  }
+  const stream = new ReadableStream({
+    async start(ctrl) {
+      const encoder = new TextEncoder();
+      const upstreamController = new AbortController();
+      const timeoutId = setTimeout(() => upstreamController.abort(), TIMEOUT_SEC * 1000);
 
-  try {
-    const url = `${baseUrl}${path}`;
-    console.log(`[proxy-stream] POST ${url}`);
+      if (requestSignal) {
+        requestSignal.addEventListener('abort', () => upstreamController.abort());
+      }
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body,
-      signal: controller.signal,
-    });
+      const keepalive = setInterval(() => {
+        try { ctrl.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
+      }, 25_000);
 
-    if (!res.ok || !res.body) {
-      const text = await res.text();
-      clearTimeout(timeoutId);
-      return new Response(text, {
-        status: res.status,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': origin,
-        },
-      });
-    }
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body,
+          signal: upstreamController.signal,
+        });
 
-    const stream = res.body;
-    return new Response(stream as unknown as ReadableStream, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-        'Access-Control-Allow-Origin': origin,
-      },
-    });
-  } catch (err: unknown) {
-    clearTimeout(timeoutId);
-    if (err instanceof Error && err.name === 'AbortError') {
-      return new Response(JSON.stringify({ error: { message: `上游请求超时 (${TIMEOUT_SEC}s)` } }), {
-        status: 504,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-    return new Response(JSON.stringify({ error: { message: `代理连接失败: ${(err as Error).message}` } }), {
-      status: 502,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
+        clearInterval(keepalive);
+        clearTimeout(timeoutId);
+
+        if (!res.ok || !res.body) {
+          const text = await res.text();
+          ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ error: true, status: res.status, message: text })}\n\n`));
+          ctrl.close();
+          return;
+        }
+
+        const reader = res.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          ctrl.enqueue(value);
+        }
+        ctrl.close();
+      } catch (err: unknown) {
+        clearInterval(keepalive);
+        clearTimeout(timeoutId);
+        const msg = err instanceof Error && err.name === 'AbortError'
+          ? `上游请求超时 (${TIMEOUT_SEC}s)`
+          : `代理连接失败: ${(err as Error).message}`;
+        try {
+          ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ error: true, status: 502, message: msg })}\n\n`));
+          ctrl.close();
+        } catch { /* already closed */ }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'Access-Control-Allow-Origin': origin,
+    },
+  });
 }
