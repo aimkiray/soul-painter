@@ -108,7 +108,7 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
                                 onClick={(e) => { e.stopPropagation(); handleDownload(hit, i); }}
                                 className="text-xs bg-black/70 hover:bg-black/90 text-white px-1.5 py-0.5 cursor-pointer"
                               >
-                                {isData ? '下载' : `打开 #${i + 1}`}
+                                {isData ? '下载' : '打开'}
                               </button>
                             </div>
                           </div>

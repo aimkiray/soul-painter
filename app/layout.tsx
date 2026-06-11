@@ -18,8 +18,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className="h-full overflow-hidden">
-      <body className="h-full flex flex-col">
+    <html lang="zh-CN">
+      <body className="fixed inset-0 flex flex-col overflow-hidden">
         {children}
       </body>
     </html>

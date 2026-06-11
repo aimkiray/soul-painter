@@ -6,7 +6,13 @@
   }
 
   html {
-    font-size: 20px;
+    font-size: 16px;
+  }
+
+  @media (min-width: 640px) {
+    html {
+      font-size: 20px;
+    }
   }
 
   *,
@@ -20,19 +26,12 @@
     line-height: 1.5;
     background-color: #000000;
     color: #cccccc;
-    min-height: 100vh;
     -webkit-font-smoothing: none;
     -moz-osx-font-smoothing: unset;
   }
 
   input, select, textarea {
-    width: 200px;
-  }
-
-  @media (max-width: 640px) {
-    input, select, textarea {
-      width: 100%;
-    }
+    max-width: 100%;
   }
 
   /* Press feedback for non-retro buttons */

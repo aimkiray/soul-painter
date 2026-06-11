@@ -526,7 +526,7 @@ function HomeInner() {
 
   return (
     <ErrorBoundary>
-    <div className="flex flex-col min-h-screen">
+    <div className="flex flex-col h-full overflow-hidden">
       <StatusBar />
       <MenuBar
         activeTab={activeTab}

@@ -64,15 +64,15 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative bg-black w-full max-w-lg max-h-[85vh] overflow-y-auto border-2 border-[#AAA] font-mono text-sm">
-        <div className="bg-[#0A0] text-white px-2 py-1 flex items-center justify-between sticky top-0">
+      <div className="relative bg-black w-full max-w-lg max-h-[85vh] flex flex-col border-2 border-[#AAA] font-mono text-sm">
+        <div className="bg-[#0A0] text-white px-2 py-1 flex items-center justify-between shrink-0">
           <span>设置</span>
           <button onClick={onClose} className="text-white hover:text-[#ff5555] cursor-pointer">
             [X]
           </button>
         </div>
 
-        <div className="p-3 space-y-3">
+        <div className="p-3 space-y-3 overflow-y-auto">
           {/* API Config */}
           <fieldset className="tui-fieldset border-[#AAA]">
             <legend className="text-[#00aaaa] px-2">API 配置</legend>

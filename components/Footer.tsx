@@ -22,8 +22,8 @@ export default function Footer() {
         <span className={`truncate ${statusColor}`}>{statusText}</span>
       ) : (
         <>
-          <span className="hidden sm:inline">F1 设置 | Ctrl+Enter / Enter 发送 | Shift+Enter 换行 | Esc 关闭弹窗</span>
-          <span className="sm:hidden">Enter 发送 · 拖拽/粘贴图片</span>
+          <span className="hidden md:inline">F1 设置 | Enter 发送 | Shift+Enter 换行</span>
+          <span className="md:hidden">F1 设置 · Enter 发送</span>
         </>
       )}
       <span className="shrink-0 ml-auto">{time}</span>
