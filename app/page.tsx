@@ -251,26 +251,44 @@ function HomeInner() {
           body.partial_images = 2;
           const { ok, status, stream, text } = await proxyRequestStream('/api/images/edits', config, body, options);
           if (!ok || !stream) {
-            throw new Error(`HTTP ${status} ${parseErrorDetail(text)}`);
-          }
-          const hits: ImageHit[] = [];
-          addBotMsg([], '', '');
-          const rawText = await processSSEStream(
-            stream,
-            (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
-            (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
-          );
-          if (hits.length === 0) {
-            const fallback = extractImage(parseResponseBody(rawText));
-            if (fallback) hits.push(fallback);
-          }
-          if (hits.length > 0) {
-            updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
-            setStatus(`生成完成 ${hits.length} 张`, 'ok');
-            saveHistoryEntry(prompt, mode, model, size, hits);
+            if (status === 400) {
+              delete body.stream;
+              delete body.partial_images;
+              const probe = await tryWithRetry('/api/images/edits', body, false);
+              if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
+              const resp = parseResponseBody(probe.text);
+              const hit = extractImage(resp);
+              if (hit) {
+                addBotMsg([hit], JSON.stringify(resp, null, 2), '');
+                setStatus('生成完成 1 张', 'ok');
+                saveHistoryEntry(prompt, mode, model, size, [hit]);
+              } else {
+                addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
+                setStatus('未识别到图片内容', 'err');
+              }
+            } else {
+              throw new Error(`HTTP ${status} ${parseErrorDetail(text)}`);
+            }
           } else {
-            updateLastBotMsg([], '流式响应未返回图片');
-            setStatus('未识别到图片内容', 'err');
+            const hits: ImageHit[] = [];
+            addBotMsg([], '', '');
+            const rawText = await processSSEStream(
+              stream,
+              (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
+              (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
+            );
+            if (hits.length === 0) {
+              const fallback = extractImage(parseResponseBody(rawText));
+              if (fallback) hits.push(fallback);
+            }
+            if (hits.length > 0) {
+              updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
+              setStatus(`生成完成 ${hits.length} 张`, 'ok');
+              saveHistoryEntry(prompt, mode, model, size, hits);
+            } else {
+              updateLastBotMsg([], '流式响应未返回图片');
+              setStatus('未识别到图片内容', 'err');
+            }
           }
         } else {
           let probe = await tryWithRetry('/api/images/edits', body, false);
@@ -324,26 +342,44 @@ function HomeInner() {
           genBody.partial_images = 2;
           const { ok, status, stream, text } = await proxyRequestStream('/api/images/generations', config, genBody, options);
           if (!ok || !stream) {
-            throw new Error(`HTTP ${status} ${parseErrorDetail(text)}`);
-          }
-          const hits: ImageHit[] = [];
-          addBotMsg([], '', '');
-          const rawText = await processSSEStream(
-            stream,
-            (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
-            (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
-          );
-          if (hits.length === 0) {
-            const fallback = extractImage(parseResponseBody(rawText));
-            if (fallback) hits.push(fallback);
-          }
-          if (hits.length > 0) {
-            updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
-            setStatus(`生成完成 ${hits.length} 张`, 'ok');
-            saveHistoryEntry(prompt, mode, model, size, hits);
+            if (status === 400) {
+              delete genBody.stream;
+              delete genBody.partial_images;
+              const req = await tryWithRetry('/api/images/generations', genBody, false);
+              if (!req.ok) throw new Error(`HTTP ${req.status} ${parseErrorDetail(req.text)}`);
+              const resp = parseResponseBody(req.text);
+              const hit = extractImage(resp);
+              if (hit) {
+                addBotMsg([hit], JSON.stringify(resp, null, 2), '');
+                setStatus('生成完成 1 张', 'ok');
+                saveHistoryEntry(prompt, mode, model, size, [hit]);
+              } else {
+                addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
+                setStatus('未识别到图片内容', 'err');
+              }
+            } else {
+              throw new Error(`HTTP ${status} ${parseErrorDetail(text)}`);
+            }
           } else {
-            updateLastBotMsg([], '流式响应未返回图片');
-            setStatus('未识别到图片内容', 'err');
+            const hits: ImageHit[] = [];
+            addBotMsg([], '', '');
+            const rawText = await processSSEStream(
+              stream,
+              (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
+              (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
+            );
+            if (hits.length === 0) {
+              const fallback = extractImage(parseResponseBody(rawText));
+              if (fallback) hits.push(fallback);
+            }
+            if (hits.length > 0) {
+              updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
+              setStatus(`生成完成 ${hits.length} 张`, 'ok');
+              saveHistoryEntry(prompt, mode, model, size, hits);
+            } else {
+              updateLastBotMsg([], '流式响应未返回图片');
+              setStatus('未识别到图片内容', 'err');
+            }
           }
         } else {
           const hits: ImageHit[] = [];

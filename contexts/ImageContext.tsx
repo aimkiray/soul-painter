@@ -5,8 +5,29 @@ import { ImageRef } from '@/types';
 import { compressIfNeeded, fileToDataUrl } from '@/lib/compress';
 import { canvasHasStrokes } from '@/lib/mask';
 
+const SUPPORTED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
 function imageToDataUrl(im: ImageRef): Promise<string> {
-  return fileToDataUrl(im.file);
+  if (SUPPORTED_TYPES.has(im.file.type)) {
+    return fileToDataUrl(im.file);
+  }
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = im.naturalWidth || img.naturalWidth;
+      canvas.height = im.naturalHeight || img.naturalHeight;
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const result = canvas.toDataURL('image/png');
+      if (!result || result === 'data:,') {
+        fileToDataUrl(im.file).then(resolve, reject);
+      } else {
+        resolve(result);
+      }
+    };
+    img.onerror = () => fileToDataUrl(im.file).then(resolve, reject);
+    img.src = im.objectUrl;
+  });
 }
 
 function canvasToDataUrl(canvas: HTMLCanvasElement): string {
