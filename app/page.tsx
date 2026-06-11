@@ -43,15 +43,18 @@ async function processSSEStream(
   stream: ReadableStream<Uint8Array>,
   onPartial: (img: ImageHit) => void,
   onComplete: (img: ImageHit) => void,
-) {
+): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let rawText = '';
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    const chunk = decoder.decode(value, { stream: true });
+    rawText += chunk;
+    buffer += chunk;
 
     const blocks = buffer.split('\n\n');
     buffer = blocks.pop() || '';
@@ -70,7 +73,7 @@ async function processSSEStream(
       }
 
       const dataStr = dataLines.join('\n');
-      if (dataStr === '[DONE]') return;
+      if (dataStr === '[DONE]') return rawText;
       if (!dataStr) continue;
 
       try {
@@ -90,6 +93,7 @@ async function processSSEStream(
       } catch { /* skip malformed events */ }
     }
   }
+  return rawText;
 }
 
 // ── Component ──
@@ -251,11 +255,15 @@ function HomeInner() {
           }
           const hits: ImageHit[] = [];
           addBotMsg([], '', '');
-          await processSSEStream(
+          const rawText = await processSSEStream(
             stream,
             (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
             (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
           );
+          if (hits.length === 0) {
+            const fallback = extractImage(parseResponseBody(rawText));
+            if (fallback) hits.push(fallback);
+          }
           if (hits.length > 0) {
             updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
             setStatus(`生成完成 ${hits.length} 张`, 'ok');
@@ -320,11 +328,15 @@ function HomeInner() {
           }
           const hits: ImageHit[] = [];
           addBotMsg([], '', '');
-          await processSSEStream(
+          const rawText = await processSSEStream(
             stream,
             (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
             (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
           );
+          if (hits.length === 0) {
+            const fallback = extractImage(parseResponseBody(rawText));
+            if (fallback) hits.push(fallback);
+          }
           if (hits.length > 0) {
             updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
             setStatus(`生成完成 ${hits.length} 张`, 'ok');
