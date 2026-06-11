@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateRequest, proxyUpstream } from '@/lib/server-proxy';
+import { validateRequest, proxyUpstream, proxyUpstreamStream } from '@/lib/server-proxy';
 
 export async function POST(request: NextRequest) {
   const validated = validateRequest(request);
@@ -10,10 +10,19 @@ export async function POST(request: NextRequest) {
 
     if (contentType.includes('application/json')) {
       const body = await request.json();
+      const origin = request.headers.get('origin') || '';
+
+      if (body.stream) {
+        return await proxyUpstreamStream(
+          validated.baseUrl, validated.apiKey,
+          '/v1/images/edits', JSON.stringify(body), origin,
+        );
+      }
+
       return await proxyUpstream(
         validated.baseUrl, validated.apiKey,
         '/v1/images/edits', JSON.stringify(body),
-        request.headers.get('origin') || '', 'application/json',
+        origin, 'application/json',
       );
     }
 

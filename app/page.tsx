@@ -16,7 +16,7 @@ import SettingsModal from '@/components/SettingsModal';
 import DebugPanel from '@/components/DebugPanel';
 import Footer from '@/components/Footer';
 import { extractImage } from '@/lib/image-extract';
-import { proxyRequest } from '@/lib/api';
+import { proxyRequest, proxyRequestStream } from '@/lib/api';
 import { ImageHit } from '@/types';
 import {
   HISTORY_STORAGE_KEY,
@@ -39,6 +39,42 @@ function parseResponseBody(probeText: string): unknown {
   try { return JSON.parse(probeText); } catch { return probeText; }
 }
 
+async function processSSEStream(
+  stream: ReadableStream<Uint8Array>,
+  onPartial: (img: ImageHit) => void,
+  onComplete: (img: ImageHit) => void,
+) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const payload = line.slice(6).trim();
+      if (payload === '[DONE]') return;
+      try {
+        const evt = JSON.parse(payload);
+        const type: string = evt.type || '';
+        if (type.includes('partial_image') && evt.b64_json) {
+          onPartial({ dataUrl: `data:image/png;base64,${evt.b64_json}` });
+        } else if (type.includes('completed') && evt.b64_json) {
+          onComplete({ dataUrl: `data:image/png;base64,${evt.b64_json}` });
+        } else if (type.includes('completed') && evt.url) {
+          onComplete({ url: evt.url });
+        }
+      } catch { /* skip malformed lines */ }
+    }
+  }
+}
+
 // ── Component ──
 
 function HomeInner() {
@@ -46,7 +82,7 @@ function HomeInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const { config, options, updateConfig } = useConfig();
-  const { addBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, isLoading, clearChat, toggleDebug } = useChat();
+  const { addBotMsg, addErrorMsg, addUserMsg, updateLastBotMsg, setLoading, setStatus, setDebugRaw, isLoading, clearChat, toggleDebug } = useChat();
   const { images, editingIndex, selectedIndices, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
 
   const [lastPrompt] = useState(() => {
@@ -189,44 +225,68 @@ function HomeInner() {
         const body = await buildEditsForm(imagesSnap, prompt, sizeForBody, model);
         applyExtraParams(body, false);
 
-        let probe = await tryWithRetry('/api/images/edits', body, false);
+        if (options.streaming) {
+          body.stream = true;
+          body.partial_images = 2;
+          const { ok, status, stream, text } = await proxyRequestStream('/api/images/edits', config, body, options);
+          if (!ok || !stream) {
+            throw new Error(`HTTP ${status} ${parseErrorDetail(text)}`);
+          }
+          const hits: ImageHit[] = [];
+          addBotMsg([], '', '');
+          await processSSEStream(
+            stream,
+            (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
+            (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
+          );
+          if (hits.length > 0) {
+            updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
+            setStatus(`生成完成 ${hits.length} 张`, 'ok');
+            saveHistoryEntry(prompt, mode, model, size, hits);
+          } else {
+            updateLastBotMsg([], '流式响应未返回图片');
+            setStatus('未识别到图片内容', 'err');
+          }
+        } else {
+          let probe = await tryWithRetry('/api/images/edits', body, false);
 
-        if (!probe.ok) {
-          throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
-        }
-
-        const resp = parseResponseBody(probe.text);
-        const hit = extractImage(resp);
-        if (hit) {
-          const hits: ImageHit[] = [hit];
-
-          if (n > 1) {
-            const limit = Math.min(5, n - 1);
-            let cursor = 0;
-            const worker = async () => {
-              while (cursor < n - 1) {
-                const i = cursor++;
-                if (i > 0) await new Promise((r) => setTimeout(r, 200));
-                try {
-                  const er = await tryWithRetry('/api/images/edits', body, false);
-                  if (er.ok) {
-                    const eh = extractImage(JSON.parse(er.text));
-                    if (eh) hits.push(eh);
-                  }
-                } catch { /* ignore */ }
-              }
-            };
-            await Promise.all(Array.from({ length: limit }, worker));
+          if (!probe.ok) {
+            throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
           }
 
-          setDebugRaw(JSON.stringify(resp, null, 2));
-          addBotMsg(hits, JSON.stringify(resp, null, 2), '');
-          setStatus(`生成完成 ${hits.length} 张`, 'ok');
-          saveHistoryEntry(prompt, mode, model, size, hits);
-        } else {
-          addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片，请查看调试面板');
-          setStatus('未识别到图片内容', 'err');
-          setDebugRaw(JSON.stringify(resp, null, 2));
+          const resp = parseResponseBody(probe.text);
+          const hit = extractImage(resp);
+          if (hit) {
+            const hits: ImageHit[] = [hit];
+
+            if (n > 1) {
+              const limit = Math.min(5, n - 1);
+              let cursor = 0;
+              const worker = async () => {
+                while (cursor < n - 1) {
+                  const i = cursor++;
+                  if (i > 0) await new Promise((r) => setTimeout(r, 200));
+                  try {
+                    const er = await tryWithRetry('/api/images/edits', body, false);
+                    if (er.ok) {
+                      const eh = extractImage(JSON.parse(er.text));
+                      if (eh) hits.push(eh);
+                    }
+                  } catch { /* ignore */ }
+                }
+              };
+              await Promise.all(Array.from({ length: limit }, worker));
+            }
+
+            setDebugRaw(JSON.stringify(resp, null, 2));
+            addBotMsg(hits, JSON.stringify(resp, null, 2), '');
+            setStatus(`生成完成 ${hits.length} 张`, 'ok');
+            saveHistoryEntry(prompt, mode, model, size, hits);
+          } else {
+            addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片，请查看调试面板');
+            setStatus('未识别到图片内容', 'err');
+            setDebugRaw(JSON.stringify(resp, null, 2));
+          }
         }
       }
       // ---- Text-to-image mode ----
@@ -234,50 +294,74 @@ function HomeInner() {
         const genBody: Record<string, unknown> = { model, prompt, n: 1, size };
         applyExtraParams(genBody, false);
 
-        const hits: ImageHit[] = [];
-        const errors: string[] = [];
-
-        const limit = Math.min(5, Math.max(1, n));
-        let cursor = 0;
-        const worker = async () => {
-          while (cursor < Math.max(1, n)) {
-            const i = cursor++;
-            if (i > 0) await new Promise((r) => setTimeout(r, 200));
-            try {
-              const req = await tryWithRetry('/api/images/generations', genBody, false);
-              if (req.ok) {
-                const r = JSON.parse(req.text);
-                const hit = extractImage(r);
-                if (hit) hits.push(hit);
-              } else {
-                errors.push(`HTTP ${req.status}: ${parseErrorDetail(req.text)}`);
-              }
-            } catch (e) { errors.push((e as Error).message); }
+        if (options.streaming) {
+          genBody.stream = true;
+          genBody.partial_images = 2;
+          const { ok, status, stream, text } = await proxyRequestStream('/api/images/generations', config, genBody, options);
+          if (!ok || !stream) {
+            throw new Error(`HTTP ${status} ${parseErrorDetail(text)}`);
           }
-        };
-        await Promise.all(Array.from({ length: limit }, worker));
-
-        if (hits.length > 0) {
-          const debugResp = JSON.stringify(hits[0], null, 2);
-          setDebugRaw(debugResp);
-          addBotMsg(hits, debugResp, '');
-          setStatus(`生成完成 ${hits.length} 张`, 'ok');
-          saveHistoryEntry(prompt, mode, model, size, hits);
+          const hits: ImageHit[] = [];
+          addBotMsg([], '', '');
+          await processSSEStream(
+            stream,
+            (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
+            (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
+          );
+          if (hits.length > 0) {
+            updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
+            setStatus(`生成完成 ${hits.length} 张`, 'ok');
+            saveHistoryEntry(prompt, mode, model, size, hits);
+          } else {
+            updateLastBotMsg([], '流式响应未返回图片');
+            setStatus('未识别到图片内容', 'err');
+          }
         } else {
-          const debugResp = errors.join('\n') || '无响应';
-          setDebugRaw(debugResp);
-          const first = errors[0] || '';
-          let hint = '';
-          if (first.includes('401')) hint = '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
-          else if (first.includes('400')) hint = '\n请求参数有误，请检查 Base URL 格式';
-          else if (first.includes('404') || first.includes('405')) hint = '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
-          else if (/5\d\d/.test(first)) hint = '\n上游服务器错误，请稍后重试或检查服务状态';
-          else hint = '\n请检查 API Key 和 Base URL 配置';
-          addErrorMsg((first || '请求未返回图片') + hint);
-          setStatus('请求失败', 'err');
+          const hits: ImageHit[] = [];
+          const errors: string[] = [];
+
+          const limit = Math.min(5, Math.max(1, n));
+          let cursor = 0;
+          const worker = async () => {
+            while (cursor < Math.max(1, n)) {
+              const i = cursor++;
+              if (i > 0) await new Promise((r) => setTimeout(r, 200));
+              try {
+                const req = await tryWithRetry('/api/images/generations', genBody, false);
+                if (req.ok) {
+                  const r = JSON.parse(req.text);
+                  const hit = extractImage(r);
+                  if (hit) hits.push(hit);
+                } else {
+                  errors.push(`HTTP ${req.status}: ${parseErrorDetail(req.text)}`);
+                }
+              } catch (e) { errors.push((e as Error).message); }
+            }
+          };
+          await Promise.all(Array.from({ length: limit }, worker));
+
+          if (hits.length > 0) {
+            const debugResp = JSON.stringify(hits[0], null, 2);
+            setDebugRaw(debugResp);
+            addBotMsg(hits, debugResp, '');
+            setStatus(`生成完成 ${hits.length} 张`, 'ok');
+            saveHistoryEntry(prompt, mode, model, size, hits);
+          } else {
+            const debugResp = errors.join('\n') || '无响应';
+            setDebugRaw(debugResp);
+            const first = errors[0] || '';
+            let hint = '';
+            if (first.includes('401')) hint = '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
+            else if (first.includes('400')) hint = '\n请求参数有误，请检查 Base URL 格式';
+            else if (first.includes('404') || first.includes('405')) hint = '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
+            else if (/5\d\d/.test(first)) hint = '\n上游服务器错误，请稍后重试或检查服务状态';
+            else hint = '\n请检查 API Key 和 Base URL 配置';
+            addErrorMsg((first || '请求未返回图片') + hint);
+            setStatus('请求失败', 'err');
+          }
         }
-        }
-      } catch (e) {
+      }
+    } catch (e) {
       const msg = (e as Error).message || '请求失败';
       setDebugRaw(msg);
       let hint = '';
@@ -291,7 +375,7 @@ function HomeInner() {
     } finally {
       setLoading(false);
     }
-  }, [config, options, images, selectedIndices, buildEditsForm, addBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
+  }, [config, options, images, selectedIndices, buildEditsForm, addBotMsg, updateLastBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
 
   return (
     <ErrorBoundary>

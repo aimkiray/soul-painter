@@ -35,6 +35,7 @@ export const DEFAULT_OPTIONS = {
   clearOnSubmit: false,
   persistPrompt: true,
   timeout: 600,
+  streaming: false,
 } as const;
 
 export const CFG_STORAGE_KEY = 'imggen-cfg-v1';

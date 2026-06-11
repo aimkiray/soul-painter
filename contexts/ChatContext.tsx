@@ -20,6 +20,7 @@ interface ChatContextValue {
   debugVisible: boolean;
   addUserMsg: (prompt: string) => void;
   addBotMsg: (images: ImageHit[], code: string, extra: string) => void;
+  updateLastBotMsg: (images: ImageHit[], code?: string) => void;
   addErrorMsg: (error: string) => void;
   setLoading: (v: boolean) => void;
   setStatus: (text: string, type?: '' | 'ok' | 'err') => void;
@@ -45,6 +46,17 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const addBotMsg = useCallback((images: ImageHit[], code: string, extra: string) => {
     setMessages((prev) => [...prev, { role: 'bot', prompt: '', images, code, extra }]);
+  }, []);
+
+  const updateLastBotMsg = useCallback((images: ImageHit[], code?: string) => {
+    setMessages((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      if (last.role !== 'bot') return prev;
+      const updated = { ...last, images: [...images] };
+      if (code !== undefined) updated.code = code;
+      return [...prev.slice(0, -1), updated];
+    });
   }, []);
 
   const addErrorMsg = useCallback((error: string) => {
@@ -74,10 +86,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({
     messages, isLoading, statusText, statusType, debugRaw, debugVisible,
-    addUserMsg, addBotMsg, addErrorMsg, setLoading, setStatus,
+    addUserMsg, addBotMsg, updateLastBotMsg, addErrorMsg, setLoading, setStatus,
     setDebugRaw, toggleDebug, showDebug, clearChat,
   }), [messages, isLoading, statusText, statusType, debugRaw, debugVisible,
-    addUserMsg, addBotMsg, addErrorMsg, setLoading, setStatus,
+    addUserMsg, addBotMsg, updateLastBotMsg, addErrorMsg, setLoading, setStatus,
     setDebugRaw, toggleDebug, showDebug, clearChat]);
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;

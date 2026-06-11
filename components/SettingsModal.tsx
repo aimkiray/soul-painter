@@ -222,17 +222,31 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
           {/* Timeout */}
           <fieldset className="tui-fieldset border-[#AAA]">
             <legend className="text-[#00aaaa] px-2">请求设置</legend>
-            <div>
-              <label className="block text-xs text-[#CCC] mb-1">请求超时（秒）</label>
-              <input
-                type="number"
-                value={options.timeout}
-                onChange={(e) => updateOption('timeout', Math.max(10, Math.min(3600, parseInt(e.target.value, 10) || 600)))}
-                className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
-              />
-              <p className="text-xs text-[#888] mt-1">
-                单个请求最长等待时间。4K / pro 模型建议 ≥ 120s。
-              </p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-[#CCC] mb-1">请求超时（秒）</label>
+                <input
+                  type="number"
+                  value={options.timeout}
+                  onChange={(e) => updateOption('timeout', Math.max(10, Math.min(3600, parseInt(e.target.value, 10) || 600)))}
+                  className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                />
+                <p className="text-xs text-[#888] mt-1">
+                  单个请求最长等待时间。4K / pro 模型建议 ≥ 120s。
+                </p>
+              </div>
+              <label className="flex items-center justify-between gap-3 p-1.5 bg-black cursor-pointer select-none">
+                <div>
+                  <span className="block text-xs text-[#CCC]">渐进加载</span>
+                  <span className="block text-xs text-[#888]">启用后生成过程中会显示中间预览图。</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={options.streaming}
+                  onChange={(e) => updateOption('streaming', e.target.checked)}
+                  className="shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer"
+                />
+              </label>
             </div>
           </fieldset>
 

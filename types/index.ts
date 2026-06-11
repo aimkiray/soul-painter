@@ -30,4 +30,5 @@ export interface AppOptions {
   clearOnSubmit: boolean;
   persistPrompt: boolean;
   timeout: number;
+  streaming: boolean;
 }

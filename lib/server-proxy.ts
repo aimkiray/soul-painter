@@ -101,3 +101,65 @@ export async function proxyUpstream(
     clearTimeout(timeoutId);
   }
 }
+
+/** Proxy a streaming fetch to upstream — pipes SSE directly back to client */
+export async function proxyUpstreamStream(
+  baseUrl: string,
+  apiKey: string,
+  path: string,
+  body: string,
+  origin: string,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_SEC * 1000);
+
+  try {
+    const url = `${baseUrl}${path}`;
+    console.log(`[proxy-stream] POST ${url}`);
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body,
+      signal: controller.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      const text = await res.text();
+      clearTimeout(timeoutId);
+      return new Response(text, {
+        status: res.status,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': origin,
+        },
+      });
+    }
+
+    const stream = res.body;
+    return new Response(stream as unknown as ReadableStream, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': origin,
+      },
+    });
+  } catch (err: unknown) {
+    clearTimeout(timeoutId);
+    if (err instanceof Error && err.name === 'AbortError') {
+      return new Response(JSON.stringify({ error: { message: `上游请求超时 (${TIMEOUT_SEC}s)` } }), {
+        status: 504,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ error: { message: `代理连接失败: ${(err as Error).message}` } }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
