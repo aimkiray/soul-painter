@@ -7,10 +7,14 @@ A terminal-themed AI image generation tool supporting text-to-image, image-to-im
 - **Text-to-Image** — Describe what you want, generate images via API
 - **Image-to-Image** — Upload reference images and describe edits
 - **Inpainting** — Paint a mask on the reference image to limit edits to specific regions
-- **Batch Mode** — Process multiple reference images concurrently
+- **Multi-Image Chat** — Send multiple reference images in a single request
+- **Single Image Selection** — Select one image from multiple for focused editing
+- **Batch Mode** — Process multiple reference images independently in parallel
+- **Auto Compression** — Oversized images (>1.5MB or >2048px) are automatically downscaled
 - **Base64 Decoder** — Paste base64 strings or data URLs to preview and download images
 - **Chat History** — View past generations with lightbox preview and download options
 - **Persistent Settings** — All configuration auto-saves to localStorage, restored on reload
+- **Debug Panel** — Toggle to inspect raw API responses for troubleshooting
 
 ## Getting Started
 
@@ -103,6 +107,10 @@ npm run build    # Production build
 npm run start    # Production server (port 3010)
 npm run lint     # ESLint
 ```
+
+## Credits
+
+Inspired by 米醋画图.
 
 ## License
 
