@@ -5,27 +5,34 @@ import { ImageRef } from '@/types';
 import { compressIfNeeded, fileToDataUrl } from '@/lib/compress';
 import { canvasHasStrokes } from '@/lib/mask';
 
-const SUPPORTED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const API_MAX_EDGE = 2048;
 
 function imageToDataUrl(im: ImageRef): Promise<string> {
-  if (SUPPORTED_TYPES.has(im.file.type)) {
-    return fileToDataUrl(im.file);
-  }
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      const scale = Math.min(1, API_MAX_EDGE / Math.max(w, h));
+      const tw = Math.round(w * scale);
+      const th = Math.round(h * scale);
       const canvas = document.createElement('canvas');
-      canvas.width = im.naturalWidth || img.naturalWidth;
-      canvas.height = im.naturalHeight || img.naturalHeight;
-      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.width = tw;
+      canvas.height = th;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        fileToDataUrl(im.file).then(resolve);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, tw, th);
       const result = canvas.toDataURL('image/png');
-      if (!result || result === 'data:,') {
-        fileToDataUrl(im.file).then(resolve, reject);
+      if (!result || result.length < 100) {
+        fileToDataUrl(im.file).then(resolve);
       } else {
         resolve(result);
       }
     };
-    img.onerror = () => fileToDataUrl(im.file).then(resolve, reject);
+    img.onerror = () => fileToDataUrl(im.file).then(resolve);
     img.src = im.objectUrl;
   });
 }
