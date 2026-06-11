@@ -17,8 +17,6 @@ import DebugPanel from '@/components/DebugPanel';
 import Footer from '@/components/Footer';
 import { extractImage } from '@/lib/image-extract';
 import { proxyRequest } from '@/lib/api';
-import { fileToDataUrl } from '@/lib/compress';
-import { canvasHasStrokes, buildAlphaMaskBlob, buildMaskedComposite } from '@/lib/mask';
 import { ImageHit } from '@/types';
 import {
   HISTORY_STORAGE_KEY,
@@ -39,16 +37,6 @@ function parseErrorDetail(probeText: string): string {
 
 function parseResponseBody(probeText: string): unknown {
   try { return JSON.parse(probeText); } catch { return probeText; }
-}
-
-function buildChatExtraInstr(quality: string, outFormat: string, compression: number, background: string, moderation: string): string {
-  const parts: string[] = [];
-  if (quality && quality !== 'auto') parts.push(`quality: ${quality}`);
-  if (outFormat && outFormat !== 'png') parts.push(`output format: ${outFormat}`);
-  if ((outFormat === 'jpeg' || outFormat === 'webp') && !isNaN(compression)) parts.push(`output compression: ${compression}`);
-  if (background && background !== 'auto') parts.push(`background: ${background}`);
-  if (moderation && moderation !== 'auto') parts.push(`moderation: ${moderation}`);
-  return parts.length ? '\nImage generation parameters: ' + parts.join(', ') + '.' : '';
 }
 
 // ── Component ──
@@ -132,12 +120,7 @@ function HomeInner() {
     const activeImages = selectedIndex >= 0 && selectedIndex < images.length ? [images[selectedIndex]] : images;
     const mode = activeImages.length > 0 ? 'edits' : 'images';
     const sizeMatch = /^(\d+)x(\d+)$/i.exec(size);
-    const sizeDirective = sizeMatch
-      ? `Output the full edited image at exactly ${sizeMatch[1]}x${sizeMatch[2]} pixels.`
-      : 'Output the full edited image, same dimensions as the input.';
-    const sizeSuffix = sizeMatch ? ` At exactly ${sizeMatch[1]}x${sizeMatch[2]} pixels.` : '';
     const sizeForBody = sizeMatch ? size : null;
-    const bypassEdits = !!sizeMatch && Math.max(+sizeMatch[1], +sizeMatch[2]) >= 1600;
 
     addUserMsg(prompt);
 
@@ -202,49 +185,11 @@ function HomeInner() {
       // ---- Single image edits mode ----
       if (mode === 'edits' && imagesSnap.length === 1 && !batchMode) {
         const im = imagesSnap[0];
-        const masked = im.maskCanvas ? canvasHasStrokes(im.maskCanvas) : false;
 
-        // Build edits form
         const fd = await buildEditsForm(im, prompt, sizeForBody, model);
         applyExtraParams(fd as unknown as Record<string, unknown>, true);
 
-        // Build fallback chat content
-        const dataUrl = await fileToDataUrl(im.file);
-        const chatInstr = buildChatExtraInstr(quality, outFormat, compression, background, moderation);
-        const header = masked
-          ? `You are given two attached images: the FIRST is the original; the SECOND is the same image with a semi-transparent red overlay marking the ONLY region you may modify. Treat the red overlay as an instruction, NOT as image content. Modify ONLY pixels inside the red region; every pixel outside must remain pixel-identical to the original. ${sizeDirective}${chatInstr}\n\nInstruction:\n${prompt}`
-          : `Edit the attached image as described. ${sizeDirective}${chatInstr}\n\nInstruction:\n${prompt}`;
-        const chatContent: { type: string; text?: string; image_url?: { url: string } }[] = [
-          { type: 'text', text: header },
-          { type: 'image_url', image_url: { url: dataUrl } },
-        ];
-        if (masked && im.maskCanvas) {
-          const maskedUrl = await buildMaskedComposite({
-            objectUrl: im.objectUrl,
-            naturalWidth: im.naturalWidth,
-            naturalHeight: im.naturalHeight,
-            mask: im.maskCanvas,
-          });
-          chatContent.push({ type: 'image_url', image_url: { url: maskedUrl } });
-        }
-
-        const editsEp = { endpoint: '/api/images/edits', body: fd, multipart: true };
-        const chatEp = {
-          endpoint: '/api/chat/completions',
-          body: { model, messages: [{ role: 'user', content: chatContent }] },
-          multipart: false,
-        };
-
-        const primary = bypassEdits ? chatEp : editsEp;
-        const fallback = bypassEdits ? null : chatEp;
-
-        let probe = await tryWithRetry(primary.endpoint, primary.body, primary.multipart);
-        let usedFallback = false;
-
-        if (!probe.ok && fallback && [0, 404, 405, 501, 503].includes(probe.status)) {
-          usedFallback = true;
-          probe = await tryWithRetry(fallback.endpoint, fallback.body, fallback.multipart);
-        }
+        let probe = await tryWithRetry('/api/images/edits', fd, true);
 
         if (!probe.ok) {
           throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
@@ -254,11 +199,9 @@ function HomeInner() {
         const hit = extractImage(resp);
         if (hit) {
           const hits: ImageHit[] = [hit];
-          const extra = usedFallback ? '已切换到 chat/completions 路径' : '';
 
           // Fan out N-1 more requests (concurrency limited)
-          if (n > 1 && !batchMode) {
-            const chosenEp = usedFallback ? fallback! : primary;
+          if (n > 1) {
             const limit = Math.min(5, n - 1);
             let cursor = 0;
             const worker = async () => {
@@ -266,10 +209,9 @@ function HomeInner() {
                 const i = cursor++;
                 if (i > 0) await new Promise((r) => setTimeout(r, 200));
                 try {
-                  const er = await tryWithRetry(chosenEp.endpoint, chosenEp.body, chosenEp.multipart);
+                  const er = await tryWithRetry('/api/images/edits', fd, true);
                   if (er.ok) {
-                    const erps = JSON.parse(er.text);
-                    const eh = extractImage(erps);
+                    const eh = extractImage(JSON.parse(er.text));
                     if (eh) hits.push(eh);
                   }
                 } catch { /* ignore */ }
@@ -279,7 +221,7 @@ function HomeInner() {
           }
 
           setDebugRaw(JSON.stringify(resp, null, 2));
-          addBotMsg(hits, JSON.stringify(resp, null, 2), extra);
+          addBotMsg(hits, JSON.stringify(resp, null, 2), '');
           setStatus(`生成完成 ${hits.length} 张`, 'ok');
           saveHistoryEntry(prompt, mode, model, size, hits);
         } else {
@@ -288,9 +230,8 @@ function HomeInner() {
           setDebugRaw(JSON.stringify(resp, null, 2));
         }
       }
-      // ---- Multi-image or batch mode ----
-      else if (mode === 'edits' && imagesSnap.length >= 2 && batchMode) {
-        // Batch mode: each image = independent request
+      // ---- Multi-image batch mode ----
+      else if (mode === 'edits' && imagesSnap.length >= 2) {
         const total = imagesSnap.length;
         const hits: ImageHit[] = [];
         const results: { hit: ImageHit | null; resp: unknown; err: string | null }[] = [];
@@ -302,45 +243,10 @@ function HomeInner() {
         const runOne = async (idx: number) => {
           const im = imagesSnap[idx];
           try {
-            const masked = im.maskCanvas ? canvasHasStrokes(im.maskCanvas) : false;
             const fd = await buildEditsForm(im, prompt, sizeForBody, model);
             applyExtraParams(fd as unknown as Record<string, unknown>, true);
 
-            const dataUrl = await fileToDataUrl(im.file);
-            const chatInstr = buildChatExtraInstr(quality, outFormat, compression, background, moderation);
-            const header = masked
-              ? `You are given two attached images: the FIRST is the original; the SECOND is the same image with a semi-transparent red overlay marking the ONLY region you may modify. Treat the red overlay as an instruction, NOT as image content. Modify ONLY pixels inside the red region; every pixel outside must remain pixel-identical to the original. ${sizeDirective}${chatInstr}\n\nInstruction:\n${prompt}`
-              : `Edit the attached image as described. ${sizeDirective}${chatInstr}\n\nInstruction:\n${prompt}`;
-            const chatContent: { type: string; text?: string; image_url?: { url: string } }[] = [
-              { type: 'text', text: header },
-              { type: 'image_url', image_url: { url: dataUrl } },
-            ];
-            if (masked && im.maskCanvas) {
-              const maskedUrl = await buildMaskedComposite({
-                objectUrl: im.objectUrl,
-                naturalWidth: im.naturalWidth,
-                naturalHeight: im.naturalHeight,
-                mask: im.maskCanvas,
-              });
-              chatContent.push({ type: 'image_url', image_url: { url: maskedUrl } });
-            }
-
-            const editsEp = { endpoint: '/api/images/edits', body: fd, multipart: true };
-            const chatEp = {
-              endpoint: '/api/chat/completions',
-              body: { model, messages: [{ role: 'user', content: chatContent }] },
-              multipart: false,
-            };
-
-            const effBypass = !!sizeMatch && Math.max(+sizeMatch[1], +sizeMatch[2]) >= 1600;
-            const primary = effBypass ? chatEp : editsEp;
-            const fallback = effBypass ? null : chatEp;
-
-            let probe = await tryWithRetry(primary.endpoint, primary.body, primary.multipart);
-
-            if (!probe.ok && fallback && [0, 404, 405, 501, 503].includes(probe.status)) {
-              probe = await tryWithRetry(fallback.endpoint, fallback.body, fallback.multipart);
-            }
+            const probe = await tryWithRetry('/api/images/edits', fd, true);
 
             if (!probe.ok) {
               results[idx] = { hit: null, resp: null, err: `#${idx + 1}: HTTP ${probe.status} ${parseErrorDetail(probe.text)}` };
@@ -365,7 +271,6 @@ function HomeInner() {
           }
         };
 
-        // Execute with concurrency limit
         let cursor = 0;
         const worker = async () => {
           while (cursor < total) {
@@ -386,54 +291,6 @@ function HomeInner() {
           const errStr = results.map((r) => r.err).filter(Boolean).join('\n');
           addErrorMsg(errStr || '所有请求均失败');
           setStatus('批处理全部失败', 'err');
-        }
-      }
-      // ---- Multi-image chat mode (no batch) ----
-      else if (mode === 'edits' && imagesSnap.length >= 2) {
-        const anyMasked = imagesSnap.some((im) => im.maskCanvas && canvasHasStrokes(im.maskCanvas));
-        const chatInstr = buildChatExtraInstr(quality, outFormat, compression, background, moderation);
-        const header = anyMasked
-          ? `Attached are ${imagesSnap.length} reference image(s). For any image IMMEDIATELY FOLLOWED BY a duplicate with a semi-transparent red overlay, the red overlay marks the ONLY region to edit. Modify ONLY pixels inside the red region. ${sizeSuffix}${chatInstr}\n\nInstruction:\n${prompt}`
-          : `Attached are ${imagesSnap.length} reference images. Output ONE image per the instruction. ${sizeSuffix}${chatInstr}\n\nInstruction:\n${prompt}`;
-
-        const chatContent: { type: string; text?: string; image_url?: { url: string } }[] = [
-          { type: 'text', text: header },
-        ];
-        for (const im of imagesSnap) {
-          const dataUrl = await fileToDataUrl(im.file);
-          chatContent.push({ type: 'image_url', image_url: { url: dataUrl } });
-          if (im.maskCanvas && canvasHasStrokes(im.maskCanvas)) {
-            const maskedUrl = await buildMaskedComposite({
-              objectUrl: im.objectUrl,
-              naturalWidth: im.naturalWidth,
-              naturalHeight: im.naturalHeight,
-              mask: im.maskCanvas,
-            });
-            chatContent.push({ type: 'image_url', image_url: { url: maskedUrl } });
-          }
-        }
-
-        const probe = await tryWithRetry(
-          '/api/chat/completions',
-          { model, messages: [{ role: 'user', content: chatContent }] },
-          false,
-        );
-
-        if (!probe.ok) {
-          throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
-        }
-
-        const resp = parseResponseBody(probe.text);
-        const hit = extractImage(resp);
-        setDebugRaw(JSON.stringify(resp, null, 2));
-
-        if (hit) {
-          addBotMsg([hit], JSON.stringify(resp, null, 2), '');
-          setStatus('生成完成', 'ok');
-          saveHistoryEntry(prompt, mode, model, size, [hit]);
-        } else {
-          addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
-          setStatus('未识别到图片内容', 'err');
         }
       }
       // ---- Text-to-image mode ----
