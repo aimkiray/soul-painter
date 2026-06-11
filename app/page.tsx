@@ -162,7 +162,7 @@ function HomeInner() {
       };
       if (quality && quality !== 'auto') add('quality', quality);
       if (background && background !== 'auto') add('background', background);
-      if (outFormat && outFormat !== 'png') add('output_format', outFormat);
+      add('output_format', outFormat || 'png');
       if ((outFormat === 'jpeg' || outFormat === 'webp') && !isNaN(compression)) add('output_compression', compression);
       if (moderation && moderation !== 'auto') add('moderation', moderation);
     };
