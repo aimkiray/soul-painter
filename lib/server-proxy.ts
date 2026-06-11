@@ -109,9 +109,14 @@ export async function proxyUpstreamStream(
   path: string,
   body: string,
   origin: string,
+  requestSignal?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_SEC * 1000);
+
+  if (requestSignal) {
+    requestSignal.addEventListener('abort', () => controller.abort());
+  }
 
   try {
     const url = `${baseUrl}${path}`;
@@ -146,6 +151,7 @@ export async function proxyUpstreamStream(
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
         'Access-Control-Allow-Origin': origin,
       },
     });

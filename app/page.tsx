@@ -53,24 +53,41 @@ async function processSSEStream(
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop() || '';
 
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      const payload = line.slice(6).trim();
-      if (payload === '[DONE]') return;
-      try {
-        const evt = JSON.parse(payload);
-        const type: string = evt.type || '';
-        if (type.includes('partial_image') && evt.b64_json) {
-          onPartial({ dataUrl: `data:image/png;base64,${evt.b64_json}` });
-        } else if (type.includes('completed') && evt.b64_json) {
-          onComplete({ dataUrl: `data:image/png;base64,${evt.b64_json}` });
-        } else if (type.includes('completed') && evt.url) {
-          onComplete({ url: evt.url });
+    for (const block of blocks) {
+      if (!block.trim()) continue;
+      let eventType = 'message';
+      let dataLines: string[] = [];
+
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) {
+          eventType = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trim());
         }
-      } catch { /* skip malformed lines */ }
+      }
+
+      const dataStr = dataLines.join('\n');
+      if (dataStr === '[DONE]') return;
+      if (!dataStr) continue;
+
+      try {
+        const evt = JSON.parse(dataStr);
+        if (eventType.includes('partial_image') || (evt.type && evt.type.includes('partial_image'))) {
+          const url = evt.image_url || (evt.b64_json ? `data:image/png;base64,${evt.b64_json}` : null);
+          if (url) onPartial({ dataUrl: url.startsWith('data:') ? url : undefined, url: url.startsWith('data:') ? undefined : url } as ImageHit);
+        } else if (eventType.includes('completed') || (evt.type && evt.type.includes('completed'))) {
+          if (evt.b64_json) {
+            onComplete({ dataUrl: `data:image/png;base64,${evt.b64_json}` });
+          } else if (evt.url) {
+            onComplete({ url: evt.url });
+          } else if (evt.image_url) {
+            onComplete({ dataUrl: evt.image_url.startsWith('data:') ? evt.image_url : undefined, url: evt.image_url.startsWith('data:') ? undefined : evt.image_url } as ImageHit);
+          }
+        }
+      } catch { /* skip malformed events */ }
     }
   }
 }

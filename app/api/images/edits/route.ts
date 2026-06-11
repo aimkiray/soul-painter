@@ -16,6 +16,7 @@ export async function POST(request: NextRequest) {
         return await proxyUpstreamStream(
           validated.baseUrl, validated.apiKey,
           '/v1/images/edits', JSON.stringify(body), origin,
+          request.signal,
         );
       }
 
