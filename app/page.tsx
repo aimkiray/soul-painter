@@ -93,7 +93,9 @@ async function processSSEStream(
             onComplete({ dataUrl: evt.image_url.startsWith('data:') ? evt.image_url : undefined, url: evt.image_url.startsWith('data:') ? undefined : evt.image_url } as ImageHit);
           }
         }
-      } catch { /* skip malformed events */ }
+      } catch (e) {
+        if (e instanceof Error && e.message) throw e;
+      }
     }
   }
   return rawText;
@@ -252,35 +254,37 @@ function HomeInner() {
         if (options.streaming) {
           body.stream = true;
           body.partial_images = 2;
-          const { ok, status, stream, text } = await proxyRequestStream('/api/images/edits', config, body, options);
+          const { ok, stream, text } = await proxyRequestStream('/api/images/edits', config, body, options);
           if (!ok || !stream) {
-            if (status === 400) {
-              delete body.stream;
-              delete body.partial_images;
-              const probe = await tryWithRetry('/api/images/edits', body, false);
-              if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
-              const resp = parseResponseBody(probe.text);
-              const hit = extractImage(resp);
-              if (hit) {
-                addBotMsg([hit], JSON.stringify(resp, null, 2), '');
-                setStatus('生成完成 1 张', 'ok');
-                saveHistoryEntry(prompt, mode, model, size, [hit]);
-              } else {
-                addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
-                setStatus('未识别到图片内容', 'err');
-              }
+            delete body.stream;
+            delete body.partial_images;
+            const probe = await tryWithRetry('/api/images/edits', body, false);
+            if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
+            const resp = parseResponseBody(probe.text);
+            const hit = extractImage(resp);
+            if (hit) {
+              addBotMsg([hit], JSON.stringify(resp, null, 2), '');
+              setStatus('生成完成 1 张', 'ok');
+              saveHistoryEntry(prompt, mode, model, size, [hit]);
             } else {
-              throw new Error(`HTTP ${status} ${parseErrorDetail(text)}`);
+              addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
+              setStatus('未识别到图片内容', 'err');
             }
           } else {
             const hits: ImageHit[] = [];
             addBotMsg([], '', '');
-            const rawText = await processSSEStream(
-              stream,
-              (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
-              (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
-            );
-            if (hits.length === 0) {
+            let streamError: Error | null = null;
+            let rawText = '';
+            try {
+              rawText = await processSSEStream(
+                stream,
+                (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
+                (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
+              );
+            } catch (e) {
+              streamError = e as Error;
+            }
+            if (hits.length === 0 && !streamError) {
               const fallback = extractImage(parseResponseBody(rawText));
               if (fallback) hits.push(fallback);
             }
@@ -288,6 +292,21 @@ function HomeInner() {
               updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
               setStatus(`生成完成 ${hits.length} 张`, 'ok');
               saveHistoryEntry(prompt, mode, model, size, hits);
+            } else if (streamError) {
+              delete body.stream;
+              delete body.partial_images;
+              const probe = await tryWithRetry('/api/images/edits', body, false);
+              if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
+              const resp = parseResponseBody(probe.text);
+              const hit = extractImage(resp);
+              if (hit) {
+                updateLastBotMsg([hit], JSON.stringify(resp, null, 2));
+                setStatus('生成完成 1 张', 'ok');
+                saveHistoryEntry(prompt, mode, model, size, [hit]);
+              } else {
+                updateLastBotMsg([], JSON.stringify(resp, null, 2));
+                setStatus('未识别到图片内容', 'err');
+              }
             } else {
               updateLastBotMsg([], '流式响应未返回图片');
               setStatus('未识别到图片内容', 'err');
@@ -343,35 +362,37 @@ function HomeInner() {
         if (options.streaming) {
           genBody.stream = true;
           genBody.partial_images = 2;
-          const { ok, status, stream, text } = await proxyRequestStream('/api/images/generations', config, genBody, options);
+          const { ok, stream, text } = await proxyRequestStream('/api/images/generations', config, genBody, options);
           if (!ok || !stream) {
-            if (status === 400) {
-              delete genBody.stream;
-              delete genBody.partial_images;
-              const req = await tryWithRetry('/api/images/generations', genBody, false);
-              if (!req.ok) throw new Error(`HTTP ${req.status} ${parseErrorDetail(req.text)}`);
-              const resp = parseResponseBody(req.text);
-              const hit = extractImage(resp);
-              if (hit) {
-                addBotMsg([hit], JSON.stringify(resp, null, 2), '');
-                setStatus('生成完成 1 张', 'ok');
-                saveHistoryEntry(prompt, mode, model, size, [hit]);
-              } else {
-                addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
-                setStatus('未识别到图片内容', 'err');
-              }
+            delete genBody.stream;
+            delete genBody.partial_images;
+            const req = await tryWithRetry('/api/images/generations', genBody, false);
+            if (!req.ok) throw new Error(`HTTP ${req.status} ${parseErrorDetail(req.text)}`);
+            const resp = parseResponseBody(req.text);
+            const hit = extractImage(resp);
+            if (hit) {
+              addBotMsg([hit], JSON.stringify(resp, null, 2), '');
+              setStatus('生成完成 1 张', 'ok');
+              saveHistoryEntry(prompt, mode, model, size, [hit]);
             } else {
-              throw new Error(`HTTP ${status} ${parseErrorDetail(text)}`);
+              addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
+              setStatus('未识别到图片内容', 'err');
             }
           } else {
             const hits: ImageHit[] = [];
             addBotMsg([], '', '');
-            const rawText = await processSSEStream(
-              stream,
-              (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
-              (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
-            );
-            if (hits.length === 0) {
+            let streamError: Error | null = null;
+            let rawText = '';
+            try {
+              rawText = await processSSEStream(
+                stream,
+                (partial) => { hits[hits.length] = partial; updateLastBotMsg([...hits]); },
+                (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; updateLastBotMsg([...hits]); },
+              );
+            } catch (e) {
+              streamError = e as Error;
+            }
+            if (hits.length === 0 && !streamError) {
               const fallback = extractImage(parseResponseBody(rawText));
               if (fallback) hits.push(fallback);
             }
@@ -379,6 +400,21 @@ function HomeInner() {
               updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
               setStatus(`生成完成 ${hits.length} 张`, 'ok');
               saveHistoryEntry(prompt, mode, model, size, hits);
+            } else if (streamError) {
+              delete genBody.stream;
+              delete genBody.partial_images;
+              const req = await tryWithRetry('/api/images/generations', genBody, false);
+              if (!req.ok) throw new Error(`HTTP ${req.status} ${parseErrorDetail(req.text)}`);
+              const resp = parseResponseBody(req.text);
+              const hit = extractImage(resp);
+              if (hit) {
+                updateLastBotMsg([hit], JSON.stringify(resp, null, 2));
+                setStatus('生成完成 1 张', 'ok');
+                saveHistoryEntry(prompt, mode, model, size, [hit]);
+              } else {
+                updateLastBotMsg([], JSON.stringify(resp, null, 2));
+                setStatus('未识别到图片内容', 'err');
+              }
             } else {
               updateLastBotMsg([], '流式响应未返回图片');
               setStatus('未识别到图片内容', 'err');
