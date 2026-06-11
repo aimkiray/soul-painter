@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-mono: 'Courier New', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', Courier, monospace, sans-serif;
+  }
+
+  html {
+    font-size: 20px;
+  }
+
+  *,
+  *:before,
+  *:after {
+    font-family: inherit;
+  }
+
+  body {
+    font-family: 'Courier New', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', Courier, monospace, sans-serif;
+    line-height: 1.5;
+    background-color: #000000;
+    color: #cccccc;
+    min-height: 100vh;
+    -webkit-font-smoothing: none;
+    -moz-osx-font-smoothing: unset;
+  }
+
+  input, select, textarea {
+    width: 200px;
+  }
+
+  @media (max-width: 640px) {
+    input, select, textarea {
+      width: 100%;
+    }
+  }
+
+  /* Press feedback for non-retro buttons */
+  button:active { opacity: 0.75; }
+
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #111111; }
+::-webkit-scrollbar-thumb { background: #aaaaaa; }
+::-webkit-scrollbar-thumb:hover { background: #cccccc; }
+
+@layer components {
+  .btn-retro {
+    display: inline-block;
+    background-color: #00aaaa;
+    color: #000000;
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 4px 10px;
+    box-shadow: 4px 4px 0 #aaaaaa;
+    transition: none;
+  }
+  .btn-retro:active {
+    background-color: #008888;
+    box-shadow: none;
+  }
+
+  .checkerboard {
+    background-image:
+      linear-gradient(45deg, #222222 25%, transparent 25%),
+      linear-gradient(-45deg, #222222 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #222222 75%),
+      linear-gradient(-45deg, transparent 75%, #222222 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+    background-color: #000000;
+  }
+
+  .tui-fieldset {
+    border: 6px double #aaaaaa;
+    padding: 12px;
+    background-color: inherit;
+    margin-bottom: 6px;
+  }
+}
