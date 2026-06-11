@@ -438,7 +438,7 @@ function HomeInner() {
       }
       // ---- Text-to-image mode ----
       else {
-        const genBody: Record<string, unknown> = { model, prompt, n: 1, size, response_format: 'url' };
+        const genBody: Record<string, unknown> = { model, prompt, n: 1, size };
         applyExtraParams(genBody, false);
 
         const hits: ImageHit[] = [];
