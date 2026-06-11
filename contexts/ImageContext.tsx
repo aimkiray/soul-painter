@@ -3,7 +3,26 @@
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { ImageRef } from '@/types';
 import { compressIfNeeded } from '@/lib/compress';
-import { canvasHasStrokes, buildAlphaMaskBlob } from '@/lib/mask';
+import { canvasHasStrokes } from '@/lib/mask';
+
+function imageToDataUrl(im: ImageRef): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = im.naturalWidth || img.naturalWidth;
+      canvas.height = im.naturalHeight || img.naturalHeight;
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = reject;
+    img.src = im.objectUrl;
+  });
+}
+
+function canvasToDataUrl(canvas: HTMLCanvasElement): string {
+  return canvas.toDataURL('image/png');
+}
 
 interface ImageContextValue {
   images: ImageRef[];
@@ -22,7 +41,7 @@ interface ImageContextValue {
   hasImages: boolean;
   anyMasked: boolean;
   persistMask: (canvas: HTMLCanvasElement) => void;
-  buildEditsForm: (imgs: ImageRef[], prompt: string, size: string | null, model: string) => Promise<FormData>;
+  buildEditsForm: (imgs: ImageRef[], prompt: string, size: string | null, model: string) => Promise<Record<string, unknown>>;
 }
 
 const ImageContext = createContext<ImageContextValue | undefined>(undefined);
@@ -143,29 +162,20 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
 
   const buildEditsForm = useCallback(async (
     imgs: ImageRef[], prompt: string, size: string | null, model: string
-  ): Promise<FormData> => {
-    const fd = new FormData();
-    fd.append('model', model);
-    fd.append('prompt', prompt);
-    if (size) fd.append('size', size);
-
-    for (const im of imgs) {
-      const pngBlob = im.file.type === 'image/png'
-        ? im.file
-        : new Blob([await im.file.arrayBuffer()], { type: 'image/png' });
-      fd.append('image[]', pngBlob, (im.file.name || 'image').replace(/\.[^.]+$/, '.png'));
-    }
+  ): Promise<Record<string, unknown>> => {
+    const imageUrls = await Promise.all(imgs.map(imageToDataUrl));
+    const body: Record<string, unknown> = {
+      model,
+      prompt,
+      images: imageUrls.map((url) => ({ image_url: url })),
+    };
+    if (size) body.size = size;
 
     const first = imgs[0];
     if (first?.maskCanvas && first.naturalWidth && canvasHasStrokes(first.maskCanvas)) {
-      const maskBlob = await buildAlphaMaskBlob({
-        naturalWidth: first.naturalWidth,
-        naturalHeight: first.naturalHeight,
-        mask: first.maskCanvas,
-      });
-      if (maskBlob) fd.append('mask', maskBlob, 'mask.png');
+      body.mask = canvasToDataUrl(first.maskCanvas);
     }
-    return fd;
+    return body;
   }, []);
 
   const hasImages = images.length > 0 || pendingCount > 0;

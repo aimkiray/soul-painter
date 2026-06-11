@@ -6,6 +6,17 @@ export async function POST(request: NextRequest) {
   if (validated instanceof NextResponse) return validated;
 
   try {
+    const contentType = request.headers.get('content-type') || '';
+
+    if (contentType.includes('application/json')) {
+      const body = await request.json();
+      return await proxyUpstream(
+        validated.baseUrl, validated.apiKey,
+        '/v1/images/edits', JSON.stringify(body),
+        request.headers.get('origin') || '', 'application/json',
+      );
+    }
+
     let formData: FormData;
     try {
       formData = await request.formData();

@@ -186,10 +186,10 @@ function HomeInner() {
     try {
       // ---- Image edits mode (single or multi) ----
       if (mode === 'edits') {
-        const fd = await buildEditsForm(imagesSnap, prompt, sizeForBody, model);
-        applyExtraParams(fd as unknown as Record<string, unknown>, true);
+        const body = await buildEditsForm(imagesSnap, prompt, sizeForBody, model);
+        applyExtraParams(body, false);
 
-        let probe = await tryWithRetry('/api/images/edits', fd, true);
+        let probe = await tryWithRetry('/api/images/edits', body, false);
 
         if (!probe.ok) {
           throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
@@ -208,7 +208,7 @@ function HomeInner() {
                 const i = cursor++;
                 if (i > 0) await new Promise((r) => setTimeout(r, 200));
                 try {
-                  const er = await tryWithRetry('/api/images/edits', fd, true);
+                  const er = await tryWithRetry('/api/images/edits', body, false);
                   if (er.ok) {
                     const eh = extractImage(JSON.parse(er.text));
                     if (eh) hits.push(eh);
