@@ -2,22 +2,11 @@
 
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { ImageRef } from '@/types';
-import { compressIfNeeded } from '@/lib/compress';
+import { compressIfNeeded, fileToDataUrl } from '@/lib/compress';
 import { canvasHasStrokes } from '@/lib/mask';
 
 function imageToDataUrl(im: ImageRef): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = im.naturalWidth || img.naturalWidth;
-      canvas.height = im.naturalHeight || img.naturalHeight;
-      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/png'));
-    };
-    img.onerror = reject;
-    img.src = im.objectUrl;
-  });
+  return fileToDataUrl(im.file);
 }
 
 function canvasToDataUrl(canvas: HTMLCanvasElement): string {
