@@ -43,7 +43,7 @@ npm run dev
 | Variable | Description |
 |---|---|
 | `DEFAULT_API_KEY` | API key used when the frontend doesn't provide one |
-| `DEFAULT_BASE_URL` | Upstream API base URL (e.g. `https://www.micuapi.ai`) |
+| `DEFAULT_BASE_URL` | Upstream API base URL (e.g. `https://api.avemujica.moe`) |
 
 ### API Key Sources
 
