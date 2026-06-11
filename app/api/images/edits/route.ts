@@ -12,18 +12,10 @@ export async function POST(request: NextRequest) {
       const body = await request.json();
       const origin = request.headers.get('origin') || '';
 
-      if (body.stream) {
-        return await proxyUpstreamStream(
-          validated.baseUrl, validated.apiKey,
-          '/v1/images/edits', JSON.stringify(body), origin,
-          request.signal,
-        );
-      }
-
-      return await proxyUpstream(
+      return await proxyUpstreamStream(
         validated.baseUrl, validated.apiKey,
-        '/v1/images/edits', JSON.stringify(body),
-        origin, 'application/json',
+        '/v1/images/edits', JSON.stringify(body), origin,
+        request.signal,
       );
     }
 

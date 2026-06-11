@@ -10,6 +10,10 @@ function getHeaders(config: AppConfig, multipart = false) {
   return headers;
 }
 
+function stripSSEComments(text: string): string {
+  return text.split('\n').filter(line => !line.startsWith(':')).join('\n').trim();
+}
+
 export async function proxyRequestStream(
   endpoint: string,
   config: AppConfig,
@@ -75,7 +79,20 @@ export async function proxyRequest(
       });
     }
 
-    const text = await res.text();
+    const rawText = await res.text();
+    const cleaned = stripSSEComments(rawText);
+
+    const sseErrorMatch = cleaned.match(/^data:\s*(\{.+\})\s*$/m);
+    if (sseErrorMatch) {
+      try {
+        const evt = JSON.parse(sseErrorMatch[1]);
+        if (evt.error) {
+          return { ok: false, status: evt.status || 500, statusText: '', text: evt.message || cleaned };
+        }
+      } catch { /* not an SSE error */ }
+    }
+
+    const text = cleaned;
     return { ok: res.ok, status: res.status, statusText: res.statusText, text };
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
