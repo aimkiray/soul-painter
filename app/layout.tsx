@@ -8,8 +8,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "灵魂画师 · API 图片生成",
-  description: "终端风格 AI 图片生成工具 · 支持文生图、图生图、涂抹编辑",
+  title: "Soul Painter",
+  description: "AI image generation tool supporting text-to-image, image editing, and inpainting",
 };
 
 export default function RootLayout({

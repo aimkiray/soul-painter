@@ -497,14 +497,27 @@ function HomeInner() {
         } else {
           const debugResp = errors.join('\n') || '无响应';
           setDebugRaw(debugResp);
-          addErrorMsg((errors[0] || '请求未返回图片') + '\n请检查 API Key 和 Base URL 配置');
+          const first = errors[0] || '';
+          let hint = '';
+          if (first.includes('401')) hint = '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
+          else if (first.includes('400')) hint = '\n请求参数有误，请检查 Base URL 格式';
+          else if (first.includes('404') || first.includes('405')) hint = '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
+          else if (/5\d\d/.test(first)) hint = '\n上游服务器错误，请稍后重试或检查服务状态';
+          else hint = '\n请检查 API Key 和 Base URL 配置';
+          addErrorMsg((first || '请求未返回图片') + hint);
           setStatus('请求失败', 'err');
         }
         }
       } catch (e) {
       const msg = (e as Error).message || '请求失败';
       setDebugRaw(msg);
-      addErrorMsg(msg + '\n请检查 API Key 和 Base URL 配置');
+      let hint = '';
+      if (msg.includes('401')) hint = '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
+      else if (msg.includes('400')) hint = '\n请求参数有误，请检查 Base URL 格式';
+      else if (msg.includes('404') || msg.includes('405')) hint = '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
+      else if (/5\d\d/.test(msg)) hint = '\n上游服务器错误，请稍后重试或检查服务状态';
+      else hint = '\n请检查 API Key 和 Base URL 配置';
+      addErrorMsg(msg + hint);
       setStatus('请求失败', 'err');
     } finally {
       setLoading(false);
