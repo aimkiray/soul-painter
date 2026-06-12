@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateRequest, proxyUpstream, proxyUpstreamStream } from '@/lib/server-proxy';
 
+export const runtime = 'edge';
+export const dynamic = 'force-dynamic';
+
 export async function POST(request: NextRequest) {
   const validated = validateRequest(request);
   if (validated instanceof NextResponse) return validated;

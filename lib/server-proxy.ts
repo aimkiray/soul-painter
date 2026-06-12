@@ -120,6 +120,7 @@ export async function proxyUpstreamStream(
       const keepalive = setInterval(() => {
         try { ctrl.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
       }, 25_000);
+      try { ctrl.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
 
       try {
         const res = await fetch(url, {
