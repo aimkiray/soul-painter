@@ -24,6 +24,9 @@ export interface AppConfig {
   background: string;
   moderation: string;
   compression: number;
+  systemPrompt: string;
+  chatBaseUrl: string;
+  chatApiKey: string;
 }
 
 export interface AppOptions {

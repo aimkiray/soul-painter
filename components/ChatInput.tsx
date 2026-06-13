@@ -11,11 +11,12 @@ interface ChatInputProps {
 initialPrompt?: string;
   onClearChat: () => void;
   onOpenSettings: () => void;
+  onCancel?: () => void;
 }
 
 const sel = 'w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono';
 
-export default function ChatInput({ onSend, isLoading, initialPrompt = '', onClearChat, onOpenSettings }: ChatInputProps) {
+export default function ChatInput({ onSend, isLoading, initialPrompt = '', onClearChat, onOpenSettings, onCancel }: ChatInputProps) {
   const { config, updateConfig, options } = useConfig();
   const { images, hasImages, addFiles } = useImages();
   const [prompt, setPrompt] = useState(initialPrompt);
@@ -82,7 +83,11 @@ export default function ChatInput({ onSend, isLoading, initialPrompt = '', onCle
         <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={kd} rows={2} className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] font-mono text-sm sm:text-base p-2 sm:p-3 resize-none outline-none min-h-[60px] sm:min-h-0" placeholder={hasImages?'描述如何使用/修改参考图...':'描述你要生成的画面内容...'} />
         <div className="flex flex-col gap-2 w-10 sm:w-10 shrink-0">
           <button onClick={()=>fileInputRef.current?.click()} className="btn-retro bg-[#00aaaa] flex-1 flex items-center justify-center" aria-label="添加参考图"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" className="w-5 h-5"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" strokeLinecap="square" strokeWidth="2" d="m20.506 12.313l-7.778 7.778a6 6 0 0 1-8.485-8.485l7.778-7.778a4 4 0 1 1 5.657 5.657L9.9 17.263a2 2 0 1 1-2.829-2.829l7.071-7.07"/></svg></button>
-          <button onClick={send} disabled={isLoading||!prompt.trim()} className="btn-retro bg-[#00aaaa] disabled:opacity-50 disabled:cursor-not-allowed flex-1 flex items-center justify-center font-bold" aria-label="发送">{isLoading?<span className="animate-pulse">...</span>:'>'}</button>
+          {isLoading && onCancel ? (
+            <button onClick={onCancel} className="btn-retro bg-[#aa0000] flex-1 flex items-center justify-center font-bold text-white" aria-label="停止">■</button>
+          ) : (
+            <button onClick={send} disabled={isLoading||!prompt.trim()} className="btn-retro bg-[#00aaaa] disabled:opacity-50 disabled:cursor-not-allowed flex-1 flex items-center justify-center font-bold" aria-label="发送">{isLoading?<span className="animate-pulse">...</span>:'>'}</button>
+          )}
         </div>
         <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e=>{if(e.target.files?.length){addFiles(e.target.files).catch(()=>{});e.target.value=''}}} />
       </div>

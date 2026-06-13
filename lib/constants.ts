@@ -10,8 +10,16 @@ export const SIZE_PRESETS = [
 ] as const;
 
 export const MODEL_PRESETS = [
-  { label: 'gpt-image-2', value: 'gpt-image-2' },
+  { label: 'gpt-image-2', value: 'gpt-image-2', type: 'image' as const },
+  { label: 'gpt-4o', value: 'gpt-4o', type: 'chat' as const },
+  { label: 'gpt-4o-mini', value: 'gpt-4o-mini', type: 'chat' as const },
 ] as const;
+
+export function isImageModel(model: string): boolean {
+  const preset = MODEL_PRESETS.find(m => m.value === model);
+  if (preset) return preset.type === 'image';
+  return model.includes('image') || model.includes('dall');
+}
 
 export const QUALITY_OPTIONS = ['auto', 'high', 'medium', 'low'] as const;
 export const FORMAT_OPTIONS = ['png', 'jpeg', 'webp'] as const;
@@ -29,6 +37,9 @@ export const DEFAULT_CONFIG = {
   background: 'auto',
   moderation: 'auto',
   compression: 80,
+  systemPrompt: '',
+  chatBaseUrl: '',
+  chatApiKey: '',
 } as const;
 
 export const DEFAULT_OPTIONS = {

@@ -19,6 +19,8 @@ interface ConfigContextValue {
   clearAll: () => void;
   keySource: 'url' | 'user' | 'server' | 'none';
   hasDefaultKey: boolean;
+  chatKeySource: 'user' | 'server' | 'inherit' | 'none';
+  hasDefaultChatKey: boolean;
 }
 
 const ConfigContext = createContext<ConfigContextValue | undefined>(undefined);
@@ -71,6 +73,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = useState<AppConfig>(initial.config);
   const [options, setOptions] = useState<AppOptions>(initial.options);
   const [hasDefaultKey, setHasDefaultKey] = useState(false);
+  const [hasDefaultChatKey, setHasDefaultChatKey] = useState(false);
 
   // Defer first render until client mount — avoids flash of defaults
   useEffect(() => {
@@ -83,7 +86,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     fetch('/api/config')
       .then((r) => r.json())
-      .then((d) => setHasDefaultKey(!!d.hasDefaultKey))
+      .then((d) => {
+        setHasDefaultKey(!!d.hasDefaultKey);
+        setHasDefaultChatKey(!!d.hasDefaultChatKey);
+      })
       .catch(() => { /* ignore */ });
   }, []);
 
@@ -115,19 +121,26 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return 'none';
   }, [initial.hasUrlKey, config.apiKey, hasDefaultKey]);
 
+  const chatKeySource = useMemo<'user' | 'server' | 'inherit' | 'none'>(() => {
+    if (config.chatApiKey) return 'user';
+    if (hasDefaultChatKey) return 'server';
+    if (config.apiKey || hasDefaultKey) return 'inherit';
+    return 'none';
+  }, [config.chatApiKey, config.apiKey, hasDefaultChatKey, hasDefaultKey]);
+
   const value = useMemo(() => ({
     config, options, updateConfig, updateOption,
-    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey,
-  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey]);
+    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey,
+  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey]);
 
   // Auto-persist config & options on change (debounced)
   useEffect(() => {
     const timer = setTimeout(() => {
-      saveConfig();
-      saveOptions();
+      localStorage.setItem(CFG_STORAGE_KEY, JSON.stringify(config));
+      localStorage.setItem(OPTS_STORAGE_KEY, JSON.stringify(options));
     }, 500);
     return () => clearTimeout(timer);
-  }, [config, options, saveConfig, saveOptions]);
+  }, [config, options]);
 
   // Force-save on page unload (avoid losing last-second changes)
   useEffect(() => {

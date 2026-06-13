@@ -8,17 +8,26 @@ export interface ValidatedRequest {
   baseUrl: string;
 }
 
-/** Validate API key, base URL, and body size. Returns validated values or an error Response. */
-export function validateRequest(request: NextRequest): ValidatedRequest | NextResponse {
-  const apiKey = request.headers.get('x-api-key') || process.env.DEFAULT_API_KEY;
+/** Validate API key, base URL, and body size. Returns validated values or an error Response.
+ *  When kind is 'chat', falls back to DEFAULT_CHAT_* env vars first, then DEFAULT_* shared envs. */
+export function validateRequest(request: NextRequest, kind: 'image' | 'chat' = 'image'): ValidatedRequest | NextResponse {
+  const keyEnv = kind === 'chat'
+    ? (process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY)
+    : process.env.DEFAULT_API_KEY;
+  const urlEnv = kind === 'chat'
+    ? (process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL)
+    : process.env.DEFAULT_BASE_URL;
+
+  const apiKey = request.headers.get('x-api-key') || keyEnv;
   if (!apiKey) {
+    const envName = kind === 'chat' ? 'DEFAULT_CHAT_API_KEY 或 DEFAULT_API_KEY' : 'DEFAULT_API_KEY';
     return NextResponse.json(
-      { error: { message: '未配置 API Key。请在设置中填写，或在服务端 .env 中设置 DEFAULT_API_KEY。' } },
+      { error: { message: `未配置 API Key。请在设置中填写，或在服务端 .env 中设置 ${envName}。` } },
       { status: 401 }
     );
   }
 
-  const baseUrl = (request.headers.get('x-base-url') || process.env.DEFAULT_BASE_URL || '').replace(/\/+$/, '');
+  const baseUrl = (request.headers.get('x-base-url') || urlEnv || '').replace(/\/+$/, '');
   if (!baseUrl || !/^https?:\/\/[\w.-]+(:\d+)?$/.test(baseUrl)) {
     return NextResponse.json(
       { error: { message: 'Base URL 无效或未配置。仅允许 http/https 协议。' } },
@@ -35,64 +44,6 @@ export function validateRequest(request: NextRequest): ValidatedRequest | NextRe
   }
 
   return { apiKey, baseUrl };
-}
-
-/** Proxy a fetch to the upstream API with timeout and CORS headers */
-export async function proxyUpstream(
-  baseUrl: string,
-  apiKey: string,
-  path: string,
-  body: BodyInit,
-  origin: string,
-  contentType?: string,
-): Promise<NextResponse> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_SEC * 1000);
-
-  try {
-    const headers: Record<string, string> = {
-      'Authorization': `Bearer ${apiKey}`,
-      'Accept': 'application/json',
-    };
-    if (contentType) {
-      headers['Content-Type'] = contentType;
-    }
-
-    const url = `${baseUrl}${path}`;
-    console.log(`[proxy] POST ${url}`);
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body,
-      signal: controller.signal,
-    });
-
-    const responseBody = await res.text();
-    const responseType = res.headers.get('content-type') || 'application/json';
-    console.log(`[proxy] Response: ${res.status} ${res.statusText} (${responseBody.length} bytes)`);
-
-    return new NextResponse(responseBody, {
-      status: res.status,
-      headers: {
-        'Content-Type': responseType,
-        'Access-Control-Allow-Origin': origin,
-      },
-    });
-  } catch (err: unknown) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      return NextResponse.json(
-        { error: { message: `上游请求超时 (${TIMEOUT_SEC}s)` } },
-        { status: 504 }
-      );
-    }
-    return NextResponse.json(
-      { error: { message: `代理连接失败: ${(err as Error).message}` } },
-      { status: 502 }
-    );
-  } finally {
-    clearTimeout(timeoutId);
-  }
 }
 
 /** Proxy a streaming fetch to upstream — pipes SSE with keepalive to prevent CDN timeout */

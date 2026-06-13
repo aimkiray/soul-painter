@@ -1,6 +1,6 @@
-'use client';
+﻿'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ConfigProvider, useConfig } from '@/contexts/ConfigContext';
 import { ChatProvider, useChat } from '@/contexts/ChatContext';
 import { ImageProvider, useImages } from '@/contexts/ImageContext';
@@ -16,12 +16,14 @@ import SettingsModal from '@/components/SettingsModal';
 import DebugPanel from '@/components/DebugPanel';
 import Footer from '@/components/Footer';
 import { extractImage } from '@/lib/image-extract';
-import { proxyRequest, proxyRequestStream } from '@/lib/api';
+import { proxyRequest, proxyRequestStream, USER_ABORT_SENTINEL } from '@/lib/api';
 import { ImageHit } from '@/types';
+import type { ChatMessage } from '@/contexts/ChatContext';
 import {
   HISTORY_STORAGE_KEY,
   HISTORY_MAX,
   LAST_PROMPT_KEY,
+  isImageModel,
 } from '@/lib/constants';
 
 // ── Pure helpers used by handleSend ──
@@ -37,6 +39,79 @@ function parseErrorDetail(probeText: string): string {
 
 function parseResponseBody(probeText: string): unknown {
   try { return JSON.parse(probeText); } catch { return probeText; }
+}
+
+async function processChatStream(
+  stream: ReadableStream<Uint8Array>,
+  onDelta: (text: string) => void,
+): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop() || '';
+
+    for (const block of blocks) {
+      for (const line of block.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') return fullText;
+        if (!data) continue;
+        try {
+          const evt = JSON.parse(data);
+          if (evt.error) throw new Error(evt.message || `HTTP ${evt.status}`);
+          const delta = evt.choices?.[0]?.delta?.content;
+          if (delta) {
+            fullText += delta;
+            onDelta(fullText);
+          }
+        } catch (e) {
+          if (e instanceof SyntaxError) continue;
+          if (e instanceof Error && e.message) throw e;
+        }
+      }
+    }
+  }
+  return fullText;
+}
+
+const CHAT_HISTORY_BUDGET = 32 * 1024;
+
+function buildChatMessages(
+  history: ChatMessage[],
+  prompt: string,
+  systemPrompt: string,
+): Array<{ role: string; content: string }> {
+  const sys: Array<{ role: string; content: string }> = [];
+  if (systemPrompt && systemPrompt.trim()) {
+    sys.push({ role: 'system', content: systemPrompt.trim() });
+  }
+
+  const turns: Array<{ role: string; content: string }> = [];
+  for (const msg of history) {
+    if (msg.extra === 'error') continue;
+    if (msg.role === 'user') {
+      if (msg.prompt) turns.push({ role: 'user', content: msg.prompt });
+    } else if (msg.text) {
+      turns.push({ role: 'assistant', content: msg.text });
+    }
+  }
+  turns.push({ role: 'user', content: prompt });
+
+  let combined = [...sys, ...turns];
+  while (turns.length > 1 && JSON.stringify(combined).length > CHAT_HISTORY_BUDGET) {
+    turns.shift();
+    while (turns.length > 1 && turns[0].role === 'assistant') turns.shift();
+    combined = [...sys, ...turns];
+  }
+  return combined;
 }
 
 async function processSSEStream(
@@ -108,12 +183,20 @@ function HomeInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const { config, options, updateConfig } = useConfig();
-  const { addBotMsg, addErrorMsg, addUserMsg, updateLastBotMsg, setLoading, setStatus, setDebugRaw, isLoading, clearChat } = useChat();
+  const { messages, addBotMsg, addErrorMsg, addUserMsg, addTextBotMsg, updateLastBotMsg, updateLastBotText, setLoading, setStatus, setDebugRaw, isLoading, clearChat } = useChat();
   const { images, editingIndex, selectedIndices, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
 
   const [lastPrompt] = useState(() => {
     try { return localStorage.getItem(LAST_PROMPT_KEY) || ''; } catch { return ''; }
   });
+
+  const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef(messages);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  const handleCancel = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   // Drag & drop / paste support
   useEffect(() => {
@@ -199,28 +282,28 @@ function HomeInner() {
     setStatus('请求发送中...');
     setDebugRaw('（尚未请求）');
 
-    const applyExtraParams = (target: Record<string, unknown>, isFormData: boolean) => {
-      const add = (k: string, v: unknown) => {
-        if (isFormData && target instanceof FormData) {
-          (target as FormData).append(k, String(v));
-        } else {
-          target[k] = v;
-        }
-      };
-      if (quality && quality !== 'auto') add('quality', quality);
-      if (background && background !== 'auto') add('background', background);
-      add('output_format', outFormat || 'png');
-      if ((outFormat === 'jpeg' || outFormat === 'webp') && !isNaN(compression)) add('output_compression', compression);
-      if (moderation && moderation !== 'auto') add('moderation', moderation);
+    const applyExtraParams = (target: Record<string, unknown>) => {
+      if (quality && quality !== 'auto') target['quality'] = quality;
+      if (background && background !== 'auto') target['background'] = background;
+      target['output_format'] = outFormat || 'png';
+      if ((outFormat === 'jpeg' || outFormat === 'webp') && !isNaN(compression)) target['output_compression'] = compression;
+      if (moderation && moderation !== 'auto') target['moderation'] = moderation;
+    };
+
+    const buildErrorHint = (msg: string): string => {
+      if (msg.includes('401')) return '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
+      if (msg.includes('400')) return '\n请求参数有误，请检查 Base URL 格式';
+      if (msg.includes('404') || msg.includes('405')) return '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
+      if (/5\d\d/.test(msg)) return '\n上游服务器错误，请稍后重试或检查服务状态';
+      return '\n请检查 API Key 和 Base URL 配置';
     };
 
     const tryWithRetry = async (
       endpoint: string,
       body: unknown,
-      multipart: boolean,
       retries = 0,
     ) => {
-      let result = await proxyRequest(endpoint, config, body, options, multipart)
+      let result = await proxyRequest(endpoint, config, body, options)
         .catch((e) => ({
           ok: false as const,
           status: 0,
@@ -232,7 +315,7 @@ function HomeInner() {
         const delay = retries === 0 ? 4000 : 8000;
         setStatus(`上游限流，${delay / 1000}s 后重试 (${retries + 1}/2)...`);
         await new Promise((r) => setTimeout(r, delay));
-        result = await proxyRequest(endpoint, config, body, options, multipart)
+        result = await proxyRequest(endpoint, config, body, options)
           .catch((e) => ({
             ok: false as const,
             status: 0,
@@ -249,7 +332,7 @@ function HomeInner() {
       // ---- Image edits mode (single or multi) ----
       if (mode === 'edits') {
         const body = await buildEditsForm(imagesSnap, prompt, sizeForBody, model);
-        applyExtraParams(body, false);
+        applyExtraParams(body);
 
         if (options.streaming) {
           body.stream = true;
@@ -258,7 +341,7 @@ function HomeInner() {
           if (!ok || !stream) {
             delete body.stream;
             delete body.partial_images;
-            const probe = await tryWithRetry('/api/images/edits', body, false);
+            const probe = await tryWithRetry('/api/images/edits', body);
             if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
             const resp = parseResponseBody(probe.text);
             const hit = extractImage(resp);
@@ -295,7 +378,7 @@ function HomeInner() {
             } else if (streamError) {
               delete body.stream;
               delete body.partial_images;
-              const probe = await tryWithRetry('/api/images/edits', body, false);
+              const probe = await tryWithRetry('/api/images/edits', body);
               if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
               const resp = parseResponseBody(probe.text);
               const hit = extractImage(resp);
@@ -313,51 +396,115 @@ function HomeInner() {
             }
           }
         } else {
-          let probe = await tryWithRetry('/api/images/edits', body, false);
+          let probe = await tryWithRetry('/api/images/edits', body);
 
           if (!probe.ok) {
-            throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
-          }
-
-          const resp = parseResponseBody(probe.text);
-          const hit = extractImage(resp);
-          if (hit) {
-            const hits: ImageHit[] = [hit];
-
-            if (n > 1) {
-              const limit = Math.min(5, n - 1);
-              let cursor = 0;
-              const worker = async () => {
-                while (cursor < n - 1) {
-                  const i = cursor++;
-                  if (i > 0) await new Promise((r) => setTimeout(r, 200));
-                  try {
-                    const er = await tryWithRetry('/api/images/edits', body, false);
-                    if (er.ok) {
-                      const eh = extractImage(JSON.parse(er.text));
-                      if (eh) hits.push(eh);
-                    }
-                  } catch { /* ignore */ }
-                }
+            if ([404, 405, 501, 503].includes(probe.status)) {
+              const chatBody = {
+                model,
+                messages: [
+                  ...(config.systemPrompt?.trim() ? [{ role: 'system' as const, content: config.systemPrompt.trim() }] : []),
+                  ...imagesSnap.map(img => ({
+                    role: 'user' as const,
+                    content: [
+                      { type: 'image_url' as const, image_url: img.objectUrl || '' },
+                      { type: 'text' as const, text: prompt },
+                    ],
+                  })),
+                ],
+                stream: false,
               };
-              await Promise.all(Array.from({ length: limit }, worker));
+              const cr = await proxyRequest('/api/chat/completions', config, chatBody, options, 'chat');
+              if (!cr.ok) throw new Error(`HTTP ${cr.status} ${parseErrorDetail(cr.text)}`);
+              const resp = JSON.parse(cr.text);
+              const content = resp.choices?.[0]?.message?.content || '';
+              setDebugRaw(JSON.stringify(resp, null, 2));
+              addTextBotMsg(content, JSON.stringify(resp, null, 2));
+              setStatus('回复完成', 'ok');
+            } else {
+              throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
             }
-
-            setDebugRaw(JSON.stringify(resp, null, 2));
-            addBotMsg(hits, JSON.stringify(resp, null, 2), '');
-            setStatus(`生成完成 ${hits.length} 张`, 'ok');
-            saveHistoryEntry(prompt, mode, model, size, hits);
           } else {
-            addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片，请查看调试面板');
-            setStatus('未识别到图片内容', 'err');
-            setDebugRaw(JSON.stringify(resp, null, 2));
+            const resp = parseResponseBody(probe.text);
+            const hit = extractImage(resp);
+            if (hit) {
+              const hits: ImageHit[] = [hit];
+
+              if (n > 1) {
+                const limit = Math.min(5, n - 1);
+                let cursor = 0;
+                const worker = async () => {
+                  while (cursor < n - 1) {
+                    const i = cursor++;
+                    if (i > 0) await new Promise((r) => setTimeout(r, 200));
+                    try {
+                      const er = await tryWithRetry('/api/images/edits', body);
+                      if (er.ok) {
+                        const eh = extractImage(JSON.parse(er.text));
+                        if (eh) hits.push(eh);
+                      }
+                    } catch { /* ignore */ }
+                  }
+                };
+                await Promise.all(Array.from({ length: limit }, worker));
+              }
+
+              setDebugRaw(JSON.stringify(resp, null, 2));
+              addBotMsg(hits, JSON.stringify(resp, null, 2), '');
+              setStatus(`生成完成 ${hits.length} 张`, 'ok');
+              saveHistoryEntry(prompt, mode, model, size, hits);
+            } else {
+              addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片，请查看调试面板');
+              setStatus('未识别到图片内容', 'err');
+              setDebugRaw(JSON.stringify(resp, null, 2));
+            }
           }
+        }
+      }
+      // ---- Chat completions mode (non-image model, no images) ----
+      else if (!isImageModel(model)) {
+        const chatBody = {
+          model,
+          messages: buildChatMessages(messagesRef.current, prompt, config.systemPrompt || ''),
+          stream: options.streaming,
+        };
+
+        if (options.streaming) {
+          abortRef.current = new AbortController();
+          const { ok, stream, text } = await proxyRequestStream('/api/chat/completions', config, chatBody, options, abortRef.current.signal, 'chat');
+          if (!ok || !stream) {
+            const errText = text || '';
+            throw new Error(parseErrorDetail(errText) || `HTTP error`);
+          }
+          addTextBotMsg('', '');
+          try {
+            const fullText = await processChatStream(stream, (t) => updateLastBotText(t));
+            setDebugRaw(fullText);
+            setStatus('回复完成', 'ok');
+          } catch (streamErr) {
+            const errMsg = (streamErr as Error)?.message || '';
+            if (errMsg === USER_ABORT_SENTINEL || abortRef.current?.signal.aborted) {
+              setStatus('已取消', 'warn');
+              return;
+            }
+            throw streamErr;
+          } finally {
+            abortRef.current = null;
+          }
+        } else {
+          const result = await proxyRequest('/api/chat/completions', config, chatBody, options, 'chat');
+          if (!result.ok) throw new Error(`HTTP ${result.status} ${parseErrorDetail(result.text)}`);
+          const resp = JSON.parse(result.text);
+          const content = resp.choices?.[0]?.message?.content || '';
+          setDebugRaw(JSON.stringify(resp, null, 2));
+          addTextBotMsg(content, JSON.stringify(resp, null, 2));
+          setStatus('回复完成', 'ok');
         }
       }
       // ---- Text-to-image mode ----
       else {
         const genBody: Record<string, unknown> = { model, prompt, n: 1, size };
-        applyExtraParams(genBody, false);
+        applyExtraParams(genBody);
 
         if (options.streaming) {
           genBody.stream = true;
@@ -366,7 +513,7 @@ function HomeInner() {
           if (!ok || !stream) {
             delete genBody.stream;
             delete genBody.partial_images;
-            const req = await tryWithRetry('/api/images/generations', genBody, false);
+            const req = await tryWithRetry('/api/images/generations', genBody);
             if (!req.ok) throw new Error(`HTTP ${req.status} ${parseErrorDetail(req.text)}`);
             const resp = parseResponseBody(req.text);
             const hit = extractImage(resp);
@@ -403,7 +550,7 @@ function HomeInner() {
             } else if (streamError) {
               delete genBody.stream;
               delete genBody.partial_images;
-              const req = await tryWithRetry('/api/images/generations', genBody, false);
+              const req = await tryWithRetry('/api/images/generations', genBody);
               if (!req.ok) throw new Error(`HTTP ${req.status} ${parseErrorDetail(req.text)}`);
               const resp = parseResponseBody(req.text);
               const hit = extractImage(resp);
@@ -431,7 +578,7 @@ function HomeInner() {
               const i = cursor++;
               if (i > 0) await new Promise((r) => setTimeout(r, 200));
               try {
-                const req = await tryWithRetry('/api/images/generations', genBody, false);
+                const req = await tryWithRetry('/api/images/generations', genBody);
                 if (req.ok) {
                   const r = JSON.parse(req.text);
                   const hit = extractImage(r);
@@ -454,32 +601,25 @@ function HomeInner() {
             const debugResp = errors.join('\n') || '无响应';
             setDebugRaw(debugResp);
             const first = errors[0] || '';
-            let hint = '';
-            if (first.includes('401')) hint = '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
-            else if (first.includes('400')) hint = '\n请求参数有误，请检查 Base URL 格式';
-            else if (first.includes('404') || first.includes('405')) hint = '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
-            else if (/5\d\d/.test(first)) hint = '\n上游服务器错误，请稍后重试或检查服务状态';
-            else hint = '\n请检查 API Key 和 Base URL 配置';
-            addErrorMsg((first || '请求未返回图片') + hint);
+            addErrorMsg((first || '请求未返回图片') + buildErrorHint(first));
             setStatus('请求失败', 'err');
           }
         }
       }
     } catch (e) {
       const msg = (e as Error).message || '请求失败';
-      setDebugRaw(msg);
-      let hint = '';
-      if (msg.includes('401')) hint = '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
-      else if (msg.includes('400')) hint = '\n请求参数有误，请检查 Base URL 格式';
-      else if (msg.includes('404') || msg.includes('405')) hint = '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
-      else if (/5\d\d/.test(msg)) hint = '\n上游服务器错误，请稍后重试或检查服务状态';
-      else hint = '\n请检查 API Key 和 Base URL 配置';
-      addErrorMsg(msg + hint);
-      setStatus('请求失败', 'err');
+      if (msg === USER_ABORT_SENTINEL) {
+        setStatus('已取消', 'warn');
+      } else {
+        setDebugRaw(msg);
+        addErrorMsg(msg + buildErrorHint(msg));
+        setStatus('请求失败', 'err');
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
-  }, [config, options, images, selectedIndices, buildEditsForm, addBotMsg, updateLastBotMsg, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
+  }, [config, options, images, selectedIndices, buildEditsForm, addBotMsg, addTextBotMsg, updateLastBotMsg, updateLastBotText, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
 
   return (
     <ErrorBoundary>
@@ -507,6 +647,7 @@ function HomeInner() {
                   initialPrompt={lastPrompt}
                   onClearChat={clearChat}
                   onOpenSettings={() => setSettingsOpen(true)}
+                  onCancel={handleCancel}
                 />
               </div>
               <div className="hidden md:flex"><ImageGrid /></div>

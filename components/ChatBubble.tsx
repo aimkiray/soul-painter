@@ -2,12 +2,14 @@
 
 import React, { useState } from 'react';
 import { ImageHit } from '@/types';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface ChatBubbleProps {
   message: {
     role: 'user' | 'bot';
     prompt: string;
     images: ImageHit[];
+    text: string;
     code: string;
     extra: string;
   };
@@ -69,6 +71,11 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
               {role === 'user' && <p className="text-sm break-words">{prompt}</p>}
               {role === 'bot' && (
                 <div>
+                  {message.text && (
+                    <div className="text-sm break-words mb-2">
+                      <MarkdownRenderer content={message.text} />
+                    </div>
+                  )}
                   {images.length > 0 && (
                     <div className={images.length > 1 ? 'grid grid-cols-2 gap-2 mb-2' : 'mb-2'}>
                       {images.map((hit, i) => {

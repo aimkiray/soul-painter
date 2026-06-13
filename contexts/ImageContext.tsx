@@ -21,18 +21,18 @@ function imageToDataUrl(im: ImageRef): Promise<string> {
       canvas.height = th;
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        fileToDataUrl(im.file).then(resolve);
+        fileToDataUrl(im.file).then(resolve).catch(() => resolve(''));
         return;
       }
       ctx.drawImage(img, 0, 0, tw, th);
       const result = canvas.toDataURL('image/png');
       if (!result || result.length < 100) {
-        fileToDataUrl(im.file).then(resolve);
+        fileToDataUrl(im.file).then(resolve).catch(() => resolve(''));
       } else {
         resolve(result);
       }
     };
-    img.onerror = () => fileToDataUrl(im.file).then(resolve);
+    img.onerror = () => fileToDataUrl(im.file).then(resolve).catch(() => resolve(''));
     img.src = im.objectUrl;
   });
 }
@@ -114,11 +114,8 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const selectAll = useCallback(() => {
-    setImages((prev) => {
-      setSelectedIndices(new Set(prev.map((_, i) => i)));
-      return prev;
-    });
-  }, []);
+    setSelectedIndices(new Set(images.map((_, i) => i)));
+  }, [images]);
 
   const deselectAll = useCallback(() => {
     setSelectedIndices(new Set());

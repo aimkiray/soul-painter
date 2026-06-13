@@ -5,7 +5,7 @@ export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  const validated = validateRequest(request);
+  const validated = validateRequest(request, 'chat');
   if (validated instanceof NextResponse) return validated;
 
   try {
@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
 
     return await proxyUpstreamStream(
       validated.baseUrl, validated.apiKey,
-      '/v1/images/edits', JSON.stringify(body), origin,
+      '/v1/chat/completions', JSON.stringify(body), origin,
       request.signal,
     );
   } catch (err: unknown) {

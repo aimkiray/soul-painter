@@ -10,8 +10,9 @@ interface SettingsModalProps {
 }
 
 export default function SettingsModal({ open, onClose }: SettingsModalProps) {
-  const { config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey } = useConfig();
+  const { config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey } = useConfig();
   const [showKey, setShowKey] = useState(false);
+  const [showChatKey, setShowChatKey] = useState(false);
   const [customModel, setCustomModel] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
 
@@ -60,6 +61,20 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     server: 'text-[#00ff00]',
     none: 'text-[#ff5555]',
   }[keySource];
+
+  const chatKeySourceLabel = {
+    user: '自定义',
+    server: '服务端默认',
+    inherit: '继承图像配置',
+    none: '未配置',
+  }[chatKeySource];
+
+  const chatKeySourceColor = {
+    user: 'text-[#00aaaa]',
+    server: 'text-[#00ff00]',
+    inherit: 'text-[#ffff55]',
+    none: 'text-[#ff5555]',
+  }[chatKeySource];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2">
@@ -114,6 +129,47 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                     {showKey ? '隐藏' : '显示'}
                   </button>
                 </div>
+              </div>
+
+              {/* Chat Base URL */}
+              <div className="pt-1 border-t border-[#444]">
+                <label className="block text-xs text-[#CCC] mb-0.5" htmlFor="cfg-chat-baseurl">Chat Base URL</label>
+                <input
+                  id="cfg-chat-baseurl"
+                  type="text"
+                  value={config.chatBaseUrl}
+                  onChange={(e) => updateConfig('chatBaseUrl', e.target.value)}
+                  placeholder="留空时回落到上方 Base URL / 服务端默认"
+                  className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                />
+              </div>
+
+              {/* Chat API Key */}
+              <div>
+                <label className="block text-xs text-[#CCC] mb-0.5 flex items-center gap-2">
+                  Chat API Key
+                  <span className={`${chatKeySourceColor} text-xs`}>
+                    ● {chatKeySourceLabel}
+                  </span>
+                </label>
+                <div className="flex">
+                  <input
+                    type={showChatKey ? 'text' : 'password'}
+                    value={config.chatApiKey}
+                    onChange={(e) => updateConfig('chatApiKey', e.target.value)}
+                    placeholder="留空时回落到上方 API Key / 服务端默认"
+                    className="flex-1 bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                  />
+                  <button
+                    onClick={() => setShowChatKey(!showChatKey)}
+                    className="btn-retro px-2 text-xs"
+                  >
+                    {showChatKey ? '隐藏' : '显示'}
+                  </button>
+                </div>
+                <p className="text-xs text-[#888] mt-1">
+                  仅 OpenAI 兼容的聊天模型（gpt-4o 等）使用。留空则与图片生成共用上方配置。
+                </p>
               </div>
 
               {/* Model */}
@@ -223,6 +279,19 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
           <fieldset className="tui-fieldset border-[#AAA]">
             <legend className="text-[#00aaaa] px-2">请求设置</legend>
             <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-[#CCC] mb-1">System Prompt</label>
+                <textarea
+                  value={config.systemPrompt}
+                  onChange={(e) => updateConfig('systemPrompt', e.target.value)}
+                  rows={4}
+                  placeholder="可选。设定 AI 角色或行为约束，仅在聊天模型下生效。"
+                  className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono resize-y"
+                />
+                <p className="text-xs text-[#888] mt-1">
+                  将作为 system 消息插入到聊天请求最前。仅对 gpt-4o 等聊天模型生效。
+                </p>
+              </div>
               <div>
                 <label className="block text-xs text-[#CCC] mb-1">请求超时（秒）</label>
                 <input

@@ -1,12 +1,16 @@
 import { AppConfig, AppOptions } from '@/types';
 
-function getHeaders(config: AppConfig, multipart = false) {
+type ProxyKind = 'image' | 'chat';
+
+function getHeaders(config: AppConfig, kind: ProxyKind = 'image') {
+  const apiKey = kind === 'chat' ? (config.chatApiKey || config.apiKey) : config.apiKey;
+  const baseUrl = kind === 'chat' ? (config.chatBaseUrl || config.baseUrl) : config.baseUrl;
   const headers: Record<string, string> = {
     'Accept': 'application/json',
+    'Content-Type': 'application/json',
   };
-  if (config.apiKey) headers['x-api-key'] = config.apiKey;
-  if (config.baseUrl) headers['x-base-url'] = config.baseUrl;
-  if (!multipart) headers['Content-Type'] = 'application/json';
+  if (apiKey) headers['x-api-key'] = apiKey;
+  if (baseUrl) headers['x-base-url'] = baseUrl;
   return headers;
 }
 
@@ -14,16 +18,28 @@ function stripSSEComments(text: string): string {
   return text.split('\n').filter(line => !line.startsWith(':')).join('\n').trim();
 }
 
+export const USER_ABORT_SENTINEL = '__USER_ABORT__';
+
 export async function proxyRequestStream(
   endpoint: string,
   config: AppConfig,
   body: unknown,
   options: AppOptions,
+  externalSignal?: AbortSignal,
+  kind: ProxyKind = 'image',
 ): Promise<{ ok: boolean; status: number; stream: ReadableStream<Uint8Array> | null; text: string }> {
-  const headers = getHeaders(config, false);
+  const headers = getHeaders(config, kind);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), options.timeout * 1000);
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timeoutId);
+      throw new Error(USER_ABORT_SENTINEL);
+    }
+    externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
 
   try {
     const res = await fetch(endpoint, {
@@ -39,10 +55,12 @@ export async function proxyRequestStream(
       return { ok: false, status: res.status, stream: null, text };
     }
 
+    clearTimeout(timeoutId);
     return { ok: true, status: res.status, stream: res.body, text: '' };
   } catch (err: unknown) {
     clearTimeout(timeoutId);
     if (err instanceof Error && err.name === 'AbortError') {
+      if (externalSignal?.aborted) throw new Error(USER_ABORT_SENTINEL);
       throw new Error(`请求超时 (${options.timeout}s)。可在设置中调大超时秒数。`);
     }
     throw err;
@@ -54,30 +72,20 @@ export async function proxyRequest(
   config: AppConfig,
   body: unknown,
   options: AppOptions,
-  multipart = false,
+  kind: ProxyKind = 'image',
 ) {
-  const headers = getHeaders(config, multipart);
+  const headers = getHeaders(config, kind);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), options.timeout * 1000);
 
   try {
-    let res: Response;
-    if (multipart && body instanceof FormData) {
-      res = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body,
-        signal: controller.signal,
-      });
-    } else {
-      res = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    }
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
 
     const rawText = await res.text();
     const cleaned = stripSSEComments(rawText);

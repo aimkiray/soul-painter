@@ -14,7 +14,10 @@ export default function Footer() {
     return () => clearInterval(id);
   }, []);
 
-  const statusColor = statusType === 'err' ? 'text-[#ff5555]' : statusType === 'ok' ? 'text-[#00aa00]' : 'text-black';
+  const statusColor = statusType === 'err' ? 'text-[#ff5555]'
+    : statusType === 'ok' ? 'text-[#00aa00]'
+    : statusType === 'warn' ? 'text-[#aa6600]'
+    : 'text-black';
 
   return (
     <footer className="flex-shrink-0 bg-[#AAA] text-black px-2 py-1.5 sm:py-1 font-mono text-sm flex items-center justify-between gap-2">
