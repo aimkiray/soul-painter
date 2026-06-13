@@ -23,7 +23,6 @@ import {
   HISTORY_STORAGE_KEY,
   HISTORY_MAX,
   LAST_PROMPT_KEY,
-  isImageModel,
 } from '@/lib/constants';
 
 // ── Pure helpers used by handleSend ──
@@ -137,7 +136,7 @@ async function processSSEStream(
     for (const block of blocks) {
       if (!block.trim()) continue;
       let eventType = 'message';
-      let dataLines: string[] = [];
+      const dataLines: string[] = [];
 
       for (const line of block.split('\n')) {
         if (line.startsWith('event:')) {
@@ -182,7 +181,7 @@ function HomeInner() {
   const [activeTab, setActiveTab] = useState<'generate' | 'decode'>('generate');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const { config, options, updateConfig } = useConfig();
+  const { config, options } = useConfig();
   const { messages, addBotMsg, addErrorMsg, addUserMsg, addTextBotMsg, updateLastBotMsg, updateLastBotText, setLoading, setStatus, setDebugRaw, isLoading, clearChat } = useChat();
   const { images, editingIndex, selectedIndices, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
 
@@ -243,9 +242,8 @@ function HomeInner() {
 
   // Send handler - core logic
   const handleSend = useCallback(async (prompt: string) => {
-    const baseUrl = config.baseUrl || '';
-    const apiKey = config.apiKey || '';
     const model = config.model;
+    const chatModel = config.chatModel;
     const size = config.size;
     const n = config.n;
     const quality = config.quality;
@@ -337,7 +335,7 @@ function HomeInner() {
         if (options.streaming) {
           body.stream = true;
           body.partial_images = 2;
-          const { ok, stream, text } = await proxyRequestStream('/api/images/edits', config, body, options);
+          const { ok, stream } = await proxyRequestStream('/api/images/edits', config, body, options);
           if (!ok || !stream) {
             delete body.stream;
             delete body.partial_images;
@@ -396,12 +394,12 @@ function HomeInner() {
             }
           }
         } else {
-          let probe = await tryWithRetry('/api/images/edits', body);
+          const probe = await tryWithRetry('/api/images/edits', body);
 
           if (!probe.ok) {
             if ([404, 405, 501, 503].includes(probe.status)) {
               const chatBody = {
-                model,
+                model: chatModel,
                 messages: [
                   ...(config.systemPrompt?.trim() ? [{ role: 'system' as const, content: config.systemPrompt.trim() }] : []),
                   ...imagesSnap.map(img => ({
@@ -461,10 +459,10 @@ function HomeInner() {
           }
         }
       }
-      // ---- Chat completions mode (non-image model, no images) ----
-      else if (!isImageModel(model)) {
+      // ---- Chat completions mode (explicit chat mode, no images) ----
+      else if (config.mode === 'chat') {
         const chatBody = {
-          model,
+          model: chatModel,
           messages: buildChatMessages(messagesRef.current, prompt, config.systemPrompt || ''),
           stream: options.streaming,
         };
@@ -509,7 +507,7 @@ function HomeInner() {
         if (options.streaming) {
           genBody.stream = true;
           genBody.partial_images = 2;
-          const { ok, stream, text } = await proxyRequestStream('/api/images/generations', config, genBody, options);
+          const { ok, stream } = await proxyRequestStream('/api/images/generations', config, genBody, options);
           if (!ok || !stream) {
             delete genBody.stream;
             delete genBody.partial_images;

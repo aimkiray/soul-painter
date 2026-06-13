@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useImages } from '@/contexts/ImageContext';
-import { SIZE_PRESETS, MODEL_PRESETS, QUALITY_OPTIONS, FORMAT_OPTIONS, BACKGROUND_OPTIONS, MODERATION_OPTIONS, LAST_PROMPT_KEY } from '@/lib/constants';
+import { IMAGE_MODEL_PRESETS, CHAT_MODEL_PRESETS, LAST_PROMPT_KEY, SIZE_PRESETS } from '@/lib/constants';
 
 interface ChatInputProps {
   onSend: (prompt: string) => void;
@@ -18,10 +18,11 @@ const sel = 'w-full cursor-pointer bg-[#AAA] text-black border border-[#999] tex
 
 export default function ChatInput({ onSend, isLoading, initialPrompt = '', onClearChat, onOpenSettings, onCancel }: ChatInputProps) {
   const { config, updateConfig, options } = useConfig();
-  const { images, hasImages, addFiles } = useImages();
+  const { hasImages, selectedIndices, addFiles } = useImages();
   const [prompt, setPrompt] = useState(initialPrompt);
   const [customSize, setCustomSize] = useState(false);
   const [customModel, setCustomModel] = useState(false);
+  const [customChatModel, setCustomChatModel] = useState(false);
   const [paramsOpen, setParamsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -38,44 +39,47 @@ export default function ChatInput({ onSend, isLoading, initialPrompt = '', onCle
 
   const send = () => { if (!prompt.trim() || isLoading) return; onSend(prompt.trim()); if (options.clearOnSubmit) setPrompt(''); };
   const kd = (e: React.KeyboardEvent) => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); send(); } else if (e.key === 'Enter' && !e.shiftKey && !e.repeat) { e.preventDefault(); send(); } };
+  const imageModeActive = config.mode === 'image' || selectedIndices.size > 0;
+  const imageModelIsPreset = IMAGE_MODEL_PRESETS.some(m => m.value === config.model);
+  const chatModelIsPreset = CHAT_MODEL_PRESETS.some(m => m.value === config.chatModel);
+  const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
 
   return (
     <div className="shrink min-h-0 flex flex-col w-full max-w-3xl mx-auto px-2 sm:px-3 pb-3 border-t md:border-t-0 border-[#AAA]">
       <div className="flex items-center justify-between gap-2 py-1.5 mb-1">
         <span className="flex items-center gap-2">
-          <button onClick={() => setParamsOpen(!paramsOpen)} className="text-xs sm:text-sm text-white cursor-pointer font-mono">{paramsOpen ? '参数 ▾' : '参数 ▸'}</button>
+          <button onClick={() => setParamsOpen(!paramsOpen)} className="text-xs sm:text-sm text-white cursor-pointer font-mono">{paramsOpen ? '模式 ▾' : '模式 ▸'}</button>
         </span>
         <button onClick={onClearChat} className="text-xs sm:text-sm text-[#ff5555] cursor-pointer font-mono">清空记录</button>
       </div>
 
       <div className={`${paramsOpen ? '' : 'hidden'} md:block w-full mb-1 space-y-1 overflow-y-auto max-h-[30vh]`}>
-          {/* Row 1 — 3 items on desktop, 2-col on mobile */}
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-1 w-full">
-            <select value={customSize?'__custom__':config.size} onChange={e=>{if(e.target.value==='__custom__')setCustomSize(true);else{setCustomSize(false);updateConfig('size',e.target.value)}}} className="col-span-2 md:col-span-1 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
-              <optgroup label="1K">{SIZE_PRESETS.filter(s=>s.group==='1K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
-              <optgroup label="2K">{SIZE_PRESETS.filter(s=>s.group==='2K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
-              <optgroup label="4K">{SIZE_PRESETS.filter(s=>s.group==='4K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
-              <option value="__custom__">自定义...</option>
-            </select>
-            {customSize && <input type="text" value={config.size} onChange={e=>updateConfig('size',e.target.value)} placeholder="WxH" className="col-span-2 md:col-span-1 bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
-            <select value={customModel?'__custom__':config.model} onChange={e=>{if(e.target.value==='__custom__')setCustomModel(true);else{setCustomModel(false);updateConfig('model',e.target.value)}}} className={sel}>
-              {MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}<option value="__custom__">自定义...</option>
-            </select>
-            <select value={config.format} onChange={e=>updateConfig('format',e.target.value)} className={sel}>{FORMAT_OPTIONS.map(f=>(<option key={f} value={f}>{f.toUpperCase()}</option>))}</select>
-          </div>
-          {/* Row 2 — 4 items on desktop, 2-col on mobile */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-1 w-full">
-            <select value={config.n} onChange={e=>updateConfig('n',parseInt(e.target.value,10))} className={sel}>{([] as number[]).concat(1,2,3,4,5,10,20).map(v=>(<option key={v} value={v}>N {v}</option>))}</select>
-            <select value={config.quality} onChange={e=>updateConfig('quality',e.target.value)} className={sel}>{QUALITY_OPTIONS.map(q=>(<option key={q} value={q}>质量 {q}</option>))}</select>
-            <select value={config.background} onChange={e=>updateConfig('background',e.target.value)} className={sel}>{BACKGROUND_OPTIONS.map(b=>(<option key={b} value={b}>背景 {b}</option>))}</select>
-            <select value={config.moderation} onChange={e=>updateConfig('moderation',e.target.value)} className={sel}>{MODERATION_OPTIONS.map(m=>(<option key={m} value={m}>审查 {m}</option>))}</select>
+            <select value={config.mode} onChange={e=>updateConfig('mode',e.target.value as 'image' | 'chat')} className={sel}>
+              <option value="image">图片</option>
+              <option value="chat">聊天</option>
+            </select>
+            {imageModeActive ? (
+              <>
+                <select value={(customModel || !imageModelIsPreset)?'__custom__':config.model} onChange={e=>{if(e.target.value==='__custom__')setCustomModel(true);else{setCustomModel(false);updateConfig('model',e.target.value)}}} className="col-span-1 md:col-span-1 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
+                  {IMAGE_MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}<option value="__custom__">自定义...</option>
+                </select>
+                <select value={(customSize || !sizeIsPreset)?'__custom__':config.size} onChange={e=>{if(e.target.value==='__custom__')setCustomSize(true);else{setCustomSize(false);updateConfig('size',e.target.value)}}} className="col-span-2 md:col-span-2 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
+                  <optgroup label="1K">{SIZE_PRESETS.filter(s=>s.group==='1K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
+                  <optgroup label="2K">{SIZE_PRESETS.filter(s=>s.group==='2K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
+                  <optgroup label="4K">{SIZE_PRESETS.filter(s=>s.group==='4K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
+                  <option value="__custom__">自定义...</option>
+                </select>
+              </>
+            ) : (
+              <select value={(customChatModel || !chatModelIsPreset)?'__custom__':config.chatModel} onChange={e=>{if(e.target.value==='__custom__')setCustomChatModel(true);else{setCustomChatModel(false);updateConfig('chatModel',e.target.value)}}} className="col-span-1 md:col-span-3 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
+                {CHAT_MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}<option value="__custom__">自定义...</option>
+              </select>
+            )}
           </div>
-          {customModel && <input type="text" value={config.model} onChange={e=>updateConfig('model',e.target.value)} className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
-
-          {/* Compression */}
-          {(config.format==='jpeg'||config.format==='webp')&&(
-            <label className="flex items-center gap-1 w-full bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono cursor-default">压缩 <input type="range" min={0} max={100} value={config.compression} onChange={e=>updateConfig('compression',parseInt(e.target.value,10))} className="flex-1 accent-[#00aaaa]" /><span className="font-mono w-5 text-right">{config.compression}</span></label>
-          )}
+          {(customSize || !sizeIsPreset) && imageModeActive && <input type="text" value={config.size} onChange={e=>updateConfig('size',e.target.value)} placeholder="WxH" className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
+          {(customModel || !imageModelIsPreset) && imageModeActive && <input type="text" value={config.model} onChange={e=>updateConfig('model',e.target.value)} className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
+          {(customChatModel || !chatModelIsPreset) && !imageModeActive && <input type="text" value={config.chatModel} onChange={e=>updateConfig('chatModel',e.target.value)} className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
 
         </div>
 

@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 import React, { useState } from 'react';
 import { ImageHit } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -13,6 +15,7 @@ interface ChatBubbleProps {
     code: string;
     extra: string;
   };
+  isPending?: boolean;
 }
 
 function getExt(link: string, isData: boolean) {
@@ -24,7 +27,7 @@ function getExt(link: string, isData: boolean) {
   return m ? m[1].toLowerCase().replace('jpeg', 'jpg') : 'png';
 }
 
-export default function ChatBubble({ message }: ChatBubbleProps) {
+export default function ChatBubble({ message, isPending = false }: ChatBubbleProps) {
   const { role, prompt, images, extra } = message;
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [imgErrors, setImgErrors] = useState<Set<number>>(new Set());
@@ -36,14 +39,14 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
     return () => document.removeEventListener('keydown', handler);
   }, [lightbox]);
 
-  const handleDownload = (hit: ImageHit, i: number) => {
+  const handleDownload = (hit: ImageHit, i: number, timestamp: number) => {
     const link = hit.dataUrl || hit.url || '';
     const isData = !!hit.dataUrl;
     const ext = getExt(link, isData);
     if (link.startsWith('data:')) {
       const a = document.createElement('a');
       a.href = link;
-      a.download = `micu-${Date.now()}-${i + 1}.${ext}`;
+      a.download = `micu-${Math.round(timestamp)}-${i + 1}.${ext}`;
       a.click();
     } else {
       window.open(link, '_blank');
@@ -71,6 +74,9 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
               {role === 'user' && <p className="text-sm break-words">{prompt}</p>}
               {role === 'bot' && (
                 <div>
+                  {isPending && (
+                    <span className="animate-pulse text-sm">生成中...</span>
+                  )}
                   {message.text && (
                     <div className="text-sm break-words mb-2">
                       <MarkdownRenderer content={message.text} />
@@ -80,7 +86,6 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
                     <div className={images.length > 1 ? 'grid grid-cols-2 gap-2 mb-2' : 'mb-2'}>
                       {images.map((hit, i) => {
                         const src = hit.dataUrl || hit.url || '';
-                        const isData = !!hit.dataUrl;
                         return (
                           <div key={i} className="relative group">
                             {imgErrors.has(i) ? (
@@ -134,7 +139,7 @@ export default function ChatBubble({ message }: ChatBubbleProps) {
                               放大
                             </button>
                             <button
-                              onClick={() => handleDownload(hit, i)}
+                              onClick={(e) => handleDownload(hit, i, e.timeStamp)}
                               className="btn-retro text-xs px-2 py-0.5"
                             >
                               {isData ? '下载' : '打开'}

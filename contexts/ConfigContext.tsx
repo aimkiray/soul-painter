@@ -1,10 +1,13 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useSyncExternalStore } from 'react';
 import { AppConfig, AppOptions } from '@/types';
 import {
+  CHAT_MODEL_PRESETS,
   DEFAULT_CONFIG,
   DEFAULT_OPTIONS,
+  IMAGE_MODEL_PRESETS,
+  LEGACY_CHAT_MODEL_VALUES,
   CFG_STORAGE_KEY,
   OPTS_STORAGE_KEY,
 } from '@/lib/constants';
@@ -25,6 +28,10 @@ interface ConfigContextValue {
 
 const ConfigContext = createContext<ConfigContextValue | undefined>(undefined);
 
+const subscribeClientReady = () => () => {};
+const getClientSnapshot = () => true;
+const getServerSnapshot = () => false;
+
 function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKey: boolean } {
   const urlConfig: Partial<AppConfig> = {};
   let hasUrlKey = false;
@@ -33,7 +40,10 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
       const sp = new URLSearchParams(window.location.search);
       if (sp.get('apiKey')) { urlConfig.apiKey = sp.get('apiKey')!; hasUrlKey = true; }
       if (sp.get('baseurl')) urlConfig.baseUrl = sp.get('baseurl')!;
+      if (sp.get('mode') === 'image' || sp.get('mode') === 'chat') urlConfig.mode = sp.get('mode') as AppConfig['mode'];
       if (sp.get('model')) urlConfig.model = sp.get('model')!;
+      if (sp.get('chatModel')) urlConfig.chatModel = sp.get('chatModel')!;
+      if (sp.get('chatmodel')) urlConfig.chatModel = sp.get('chatmodel')!;
       if (sp.get('size')) urlConfig.size = sp.get('size')!;
       if (sp.get('n')) urlConfig.n = parseInt(sp.get('n')!, 10) || 1;
       if (sp.get('quality')) urlConfig.quality = sp.get('quality')!;
@@ -62,26 +72,29 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
     compression: urlConfig.compression ?? storedConfig.compression ?? (DEFAULT_CONFIG.compression as number),
   };
 
+  const hasExplicitChatModel = !!urlConfig.chatModel || !!storedConfig.chatModel;
+  const modelIsImagePreset = IMAGE_MODEL_PRESETS.some((m) => m.value === config.model);
+  const modelLooksLikeChat =
+    CHAT_MODEL_PRESETS.some((m) => m.value === config.model) ||
+    LEGACY_CHAT_MODEL_VALUES.some((value) => value === config.model) ||
+    !modelIsImagePreset;
+  if (modelLooksLikeChat) {
+    if (!hasExplicitChatModel) config.chatModel = config.model;
+    config.model = IMAGE_MODEL_PRESETS[0].value;
+  }
+
   const options: AppOptions = { ...DEFAULT_OPTIONS, ...storedOpts };
 
   return { config, options, hasUrlKey };
 }
 
 export function ConfigProvider({ children }: { children: React.ReactNode }) {
-  const [mounted, setMounted] = useState(false);
+  const mounted = useSyncExternalStore(subscribeClientReady, getClientSnapshot, getServerSnapshot);
   const [initial] = useState(() => loadInitialConfig());
   const [config, setConfig] = useState<AppConfig>(initial.config);
   const [options, setOptions] = useState<AppOptions>(initial.options);
   const [hasDefaultKey, setHasDefaultKey] = useState(false);
   const [hasDefaultChatKey, setHasDefaultChatKey] = useState(false);
-
-  // Defer first render until client mount — avoids flash of defaults
-  useEffect(() => {
-    const stored = loadInitialConfig();
-    setConfig(stored.config);
-    setOptions(stored.options);
-    setMounted(true);
-  }, []);
 
   useEffect(() => {
     fetch('/api/config')

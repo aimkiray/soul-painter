@@ -2,25 +2,40 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
-import { MODEL_PRESETS, BACKGROUND_OPTIONS, MODERATION_OPTIONS } from '@/lib/constants';
+import {
+  BACKGROUND_OPTIONS,
+  CHAT_MODEL_PRESETS,
+  FORMAT_OPTIONS,
+  IMAGE_MODEL_PRESETS,
+  MODERATION_OPTIONS,
+  QUALITY_OPTIONS,
+  SIZE_PRESETS,
+} from '@/lib/constants';
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
 }
 
+const fieldsetClass = 'tui-fieldset border-[#AAA] min-w-0';
+const labelClass = 'block text-xs text-[#CCC] mb-0.5';
+const inputClass = 'w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono';
+const selectClass = 'w-full bg-[#AAA] text-black border border-[#999] text-sm py-1 px-1 cursor-pointer font-mono';
+const hintClass = 'text-xs text-[#888] mt-1';
+const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer';
+const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
+
 export default function SettingsModal({ open, onClose }: SettingsModalProps) {
-  const { config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey } = useConfig();
+  const { config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, chatKeySource } = useConfig();
   const [showKey, setShowKey] = useState(false);
   const [showChatKey, setShowChatKey] = useState(false);
-  const [customModel, setCustomModel] = useState(false);
-  const [savedMsg, setSavedMsg] = useState('');
+  const [customImageModel, setCustomImageModel] = useState(false);
+  const [customChatModel, setCustomChatModel] = useState(false);
+  const [customSize, setCustomSize] = useState(false);
 
-  useEffect(() => {
-    if (open) {
-      setCustomModel(!MODEL_PRESETS.some(m => m.value === config.model));
-    }
-  }, [open, config.model]);
+  const imageModelIsPreset = IMAGE_MODEL_PRESETS.some(m => m.value === config.model);
+  const chatModelIsPreset = CHAT_MODEL_PRESETS.some(m => m.value === config.chatModel);
+  const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
 
   const prevOpen = useRef(open);
   useEffect(() => {
@@ -40,13 +55,6 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   }, [open, onClose]);
 
   if (!open) return null;
-
-  const handleSave = () => {
-    saveConfig();
-    saveOptions();
-    setSavedMsg('配置已保存');
-    setTimeout(() => setSavedMsg(''), 2000);
-  };
 
   const keySourceLabel = {
     url: 'URL 预填',
@@ -79,264 +87,341 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative bg-black w-full max-w-lg max-h-[85vh] flex flex-col border-2 border-[#AAA] font-mono text-sm">
-        <div className="bg-[#0A0] text-white px-2 py-1 flex items-center justify-between shrink-0">
+      <div className="relative bg-black w-full max-w-3xl max-h-[88vh] flex flex-col border-2 border-[#AAA] font-mono text-sm">
+        <div className="bg-[#0A0] text-white px-2 py-1 flex items-center justify-between gap-2 shrink-0">
           <span>设置</span>
           <button onClick={onClose} className="text-white hover:text-[#ff5555] cursor-pointer">
             [X]
           </button>
         </div>
 
-        <div className="p-3 space-y-3 overflow-y-auto">
-          {/* API Config */}
-          <fieldset className="tui-fieldset border-[#AAA]">
-            <legend className="text-[#00aaaa] px-2">API 配置</legend>
-
-            <div className="space-y-2">
-              {/* Base URL */}
-              <div>
-                <label className="block text-xs text-[#CCC] mb-0.5" htmlFor="cfg-baseurl">Base URL</label>
-                <input
-                  id="cfg-baseurl"
-                  type="text"
-                  value={config.baseUrl}
-                  onChange={(e) => updateConfig('baseUrl', e.target.value)}
-                  placeholder="留空使用服务端默认"
-                  className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
-                />
-              </div>
-
-              {/* API Key */}
-              <div>
-                <label className="block text-xs text-[#CCC] mb-0.5 flex items-center gap-2">
-                  API Key
-                  <span className={`${keySourceColor} text-xs`}>
-                    ● {keySourceLabel}
-                  </span>
-                </label>
-                <div className="flex">
+        <div className="p-3 overflow-y-auto">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <fieldset className={fieldsetClass}>
+              <legend className="text-[#00aaaa] px-2">连接配置</legend>
+              <div className="space-y-3">
+                <div>
+                  <label className={labelClass} htmlFor="cfg-baseurl">Image Base URL</label>
                   <input
-                    type={showKey ? 'text' : 'password'}
-                    value={config.apiKey}
-                    onChange={(e) => updateConfig('apiKey', e.target.value)}
-                    placeholder="留空使用服务端默认 Key"
-                    className="flex-1 bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                    id="cfg-baseurl"
+                    type="text"
+                    value={config.baseUrl}
+                    onChange={(e) => updateConfig('baseUrl', e.target.value)}
+                    placeholder="留空使用服务端默认"
+                    className={inputClass}
                   />
-                  <button
-                    onClick={() => setShowKey(!showKey)}
-                    className="btn-retro px-2 text-xs"
-                  >
-                    {showKey ? '隐藏' : '显示'}
-                  </button>
+                </div>
+
+                <div>
+                  <label className={`${labelClass} flex items-center gap-2`}>
+                    Image API Key
+                    <span className={`${keySourceColor} text-xs`}>● {keySourceLabel}</span>
+                  </label>
+                  <div className="flex min-w-0">
+                    <input
+                      type={showKey ? 'text' : 'password'}
+                      value={config.apiKey}
+                      onChange={(e) => updateConfig('apiKey', e.target.value)}
+                      placeholder="留空使用服务端默认 Key"
+                      className="flex-1 min-w-0 bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                    />
+                    <button onClick={() => setShowKey(!showKey)} className="btn-retro px-2 text-xs shrink-0">
+                      {showKey ? '隐藏' : '显示'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-[#444]">
+                  <label className={labelClass} htmlFor="cfg-chat-baseurl">Chat Base URL</label>
+                  <input
+                    id="cfg-chat-baseurl"
+                    type="text"
+                    value={config.chatBaseUrl}
+                    onChange={(e) => updateConfig('chatBaseUrl', e.target.value)}
+                    placeholder="留空时回落到 Image Base URL"
+                    className={inputClass}
+                  />
+                </div>
+
+                <div>
+                  <label className={`${labelClass} flex items-center gap-2`}>
+                    Chat API Key
+                    <span className={`${chatKeySourceColor} text-xs`}>● {chatKeySourceLabel}</span>
+                  </label>
+                  <div className="flex min-w-0">
+                    <input
+                      type={showChatKey ? 'text' : 'password'}
+                      value={config.chatApiKey}
+                      onChange={(e) => updateConfig('chatApiKey', e.target.value)}
+                      placeholder="留空时回落到 Image API Key"
+                      className="flex-1 min-w-0 bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                    />
+                    <button onClick={() => setShowChatKey(!showChatKey)} className="btn-retro px-2 text-xs shrink-0">
+                      {showChatKey ? '隐藏' : '显示'}
+                    </button>
+                  </div>
                 </div>
               </div>
+            </fieldset>
 
-              {/* Chat Base URL */}
-              <div className="pt-1 border-t border-[#444]">
-                <label className="block text-xs text-[#CCC] mb-0.5" htmlFor="cfg-chat-baseurl">Chat Base URL</label>
-                <input
-                  id="cfg-chat-baseurl"
-                  type="text"
-                  value={config.chatBaseUrl}
-                  onChange={(e) => updateConfig('chatBaseUrl', e.target.value)}
-                  placeholder="留空时回落到上方 Base URL / 服务端默认"
-                  className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
-                />
-              </div>
-
-              {/* Chat API Key */}
-              <div>
-                <label className="block text-xs text-[#CCC] mb-0.5 flex items-center gap-2">
-                  Chat API Key
-                  <span className={`${chatKeySourceColor} text-xs`}>
-                    ● {chatKeySourceLabel}
-                  </span>
-                </label>
-                <div className="flex">
-                  <input
-                    type={showChatKey ? 'text' : 'password'}
-                    value={config.chatApiKey}
-                    onChange={(e) => updateConfig('chatApiKey', e.target.value)}
-                    placeholder="留空时回落到上方 API Key / 服务端默认"
-                    className="flex-1 bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
-                  />
-                  <button
-                    onClick={() => setShowChatKey(!showChatKey)}
-                    className="btn-retro px-2 text-xs"
-                  >
-                    {showChatKey ? '隐藏' : '显示'}
-                  </button>
+            <fieldset className={fieldsetClass}>
+              <legend className="text-[#00aaaa] px-2">模型</legend>
+              <div className="space-y-3">
+                <div>
+                  <label className={labelClass}>Image Model</label>
+                  <div className="space-y-1">
+                    <select
+                      value={(customImageModel || !imageModelIsPreset) ? '__custom__' : config.model}
+                      onChange={(e) => {
+                        if (e.target.value === '__custom__') {
+                          setCustomImageModel(true);
+                        } else {
+                          setCustomImageModel(false);
+                          updateConfig('model', e.target.value);
+                        }
+                      }}
+                      className={selectClass}
+                    >
+                      {IMAGE_MODEL_PRESETS.map(m => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                      <option value="__custom__">自定义...</option>
+                    </select>
+                    {(customImageModel || !imageModelIsPreset) && (
+                      <input
+                        type="text"
+                        value={config.model}
+                        onChange={(e) => updateConfig('model', e.target.value)}
+                        className={inputClass}
+                      />
+                    )}
+                  </div>
                 </div>
-                <p className="text-xs text-[#888] mt-1">
-                  仅 OpenAI 兼容的聊天模型（gpt-4o 等）使用。留空则与图片生成共用上方配置。
-                </p>
-              </div>
 
-              {/* Model */}
-              <div>
-                <label className="block text-xs text-[#CCC] mb-0.5">Model</label>
-                <div className="space-y-1">
+                <div>
+                  <label className={labelClass}>Chat Model</label>
+                  <div className="space-y-1">
+                    <select
+                      value={(customChatModel || !chatModelIsPreset) ? '__custom__' : config.chatModel}
+                      onChange={(e) => {
+                        if (e.target.value === '__custom__') {
+                          setCustomChatModel(true);
+                        } else {
+                          setCustomChatModel(false);
+                          updateConfig('chatModel', e.target.value);
+                        }
+                      }}
+                      className={selectClass}
+                    >
+                      {CHAT_MODEL_PRESETS.map(m => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                      <option value="__custom__">自定义...</option>
+                    </select>
+                    {(customChatModel || !chatModelIsPreset) && (
+                      <input
+                        type="text"
+                        value={config.chatModel}
+                        onChange={(e) => updateConfig('chatModel', e.target.value)}
+                        className={inputClass}
+                      />
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className={labelClass}>System Prompt</label>
+                  <textarea
+                    value={config.systemPrompt}
+                    onChange={(e) => updateConfig('systemPrompt', e.target.value)}
+                    rows={4}
+                    placeholder="仅聊天模式使用"
+                    className={`${inputClass} resize-y min-h-24`}
+                  />
+                </div>
+              </div>
+            </fieldset>
+
+            <fieldset className={`${fieldsetClass} lg:col-span-2`}>
+              <legend className="text-[#00aaaa] px-2">图像参数</legend>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                <div className="sm:col-span-2 lg:col-span-1">
+                  <label className={labelClass}>Size</label>
                   <select
-                    value={customModel ? '__custom__' : config.model}
+                    value={(customSize || !sizeIsPreset) ? '__custom__' : config.size}
                     onChange={(e) => {
                       if (e.target.value === '__custom__') {
-                        setCustomModel(true);
+                        setCustomSize(true);
                       } else {
-                        setCustomModel(false);
-                        updateConfig('model', e.target.value);
+                        setCustomSize(false);
+                        updateConfig('size', e.target.value);
                       }
                     }}
-                    className="w-full bg-[#AAA] text-black border border-[#999] text-sm py-1 px-1 cursor-pointer font-mono"
+                    className={selectClass}
                   >
-                    {MODEL_PRESETS.map(m => (
-                      <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
+                    <optgroup label="1K">
+                      {SIZE_PRESETS.filter(s => s.group === '1K').map(s => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="2K">
+                      {SIZE_PRESETS.filter(s => s.group === '2K').map(s => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="4K">
+                      {SIZE_PRESETS.filter(s => s.group === '4K').map(s => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </optgroup>
                     <option value="__custom__">自定义...</option>
                   </select>
-                  {customModel && (
+                  {(customSize || !sizeIsPreset) && (
                     <input
                       type="text"
-                      value={config.model}
-                      onChange={(e) => updateConfig('model', e.target.value)}
-                      className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                      value={config.size}
+                      onChange={(e) => updateConfig('size', e.target.value)}
+                      placeholder="WxH"
+                      className={`${inputClass} mt-1`}
                     />
                   )}
                 </div>
-                <p className="text-xs text-[#888] mt-1">
-                  添加附件自动走图生图，无附件走文生图。
-                </p>
-              </div>
 
-              {/* Background + Moderation */}
-              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-xs text-[#CCC] mb-0.5">Background</label>
+                  <label className={labelClass}>N</label>
                   <select
-                    value={config.background}
-                    onChange={(e) => updateConfig('background', e.target.value)}
-                    className="w-full bg-[#AAA] text-black border border-[#999] text-sm py-1 px-1 cursor-pointer font-mono"
+                    value={config.n}
+                    onChange={(e) => updateConfig('n', parseInt(e.target.value, 10))}
+                    className={selectClass}
                   >
+                    {[1, 2, 3, 4, 5, 10, 20].map(v => (
+                      <option key={v} value={v}>{v}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className={labelClass}>Quality</label>
+                  <select value={config.quality} onChange={(e) => updateConfig('quality', e.target.value)} className={selectClass}>
+                    {QUALITY_OPTIONS.map(q => (
+                      <option key={q} value={q}>{q}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className={labelClass}>Format</label>
+                  <select value={config.format} onChange={(e) => updateConfig('format', e.target.value)} className={selectClass}>
+                    {FORMAT_OPTIONS.map(f => (
+                      <option key={f} value={f}>{f.toUpperCase()}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className={labelClass}>Background</label>
+                  <select value={config.background} onChange={(e) => updateConfig('background', e.target.value)} className={selectClass}>
                     {BACKGROUND_OPTIONS.map(b => (
                       <option key={b} value={b}>{b}</option>
                     ))}
                   </select>
                 </div>
+
                 <div>
-                  <label className="block text-xs text-[#CCC] mb-0.5">Moderation</label>
-                  <select
-                    value={config.moderation}
-                    onChange={(e) => updateConfig('moderation', e.target.value)}
-                    className="w-full bg-[#AAA] text-black border border-[#999] text-sm py-1 px-1 cursor-pointer font-mono"
-                  >
+                  <label className={labelClass}>Moderation</label>
+                  <select value={config.moderation} onChange={(e) => updateConfig('moderation', e.target.value)} className={selectClass}>
                     {MODERATION_OPTIONS.map(m => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
                 </div>
-              </div>
 
-              <div className="flex items-center justify-between pt-1">
-                {savedMsg && <span className="text-xs text-[#0a0]">{savedMsg}</span>}
-                <button onClick={handleSave} className="ml-auto btn-retro px-3 py-1 text-xs">
-                  保存到本地
+                {(config.format === 'jpeg' || config.format === 'webp') && (
+                  <div>
+                    <label className={labelClass}>Compression</label>
+                    <label className="flex items-center gap-2 bg-[#AAA] text-black border border-[#999] text-sm py-1 px-2 font-mono">
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={config.compression}
+                        onChange={(e) => updateConfig('compression', parseInt(e.target.value, 10))}
+                        className="flex-1 accent-[#00aaaa]"
+                      />
+                      <span className="w-7 text-right">{config.compression}</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+            </fieldset>
+
+            <fieldset className={`${fieldsetClass} lg:col-span-2`}>
+              <legend className="text-[#00aaaa] px-2">运行设置</legend>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+                <div className="min-h-[58px] bg-black px-2 py-2">
+                  <label className={labelClass}>请求超时（秒）</label>
+                  <input
+                    type="number"
+                    value={options.timeout}
+                    onChange={(e) => updateOption('timeout', Math.max(10, Math.min(3600, parseInt(e.target.value, 10) || 600)))}
+                    className={inputClass}
+                  />
+                  <p className={hintClass}>10-3600</p>
+                </div>
+
+                <div className="bg-black px-2 py-2 space-y-3">
+                  <label className={optionRowClass}>
+                    <span className="text-xs text-[#CCC]">渐进加载</span>
+                    <input
+                      type="checkbox"
+                      checked={options.streaming}
+                      onChange={(e) => updateOption('streaming', e.target.checked)}
+                      className={toggleClass}
+                    />
+                  </label>
+
+                  <label className={optionRowClass}>
+                    <span className="text-xs text-[#CCC]">提交后清空输入框</span>
+                    <input
+                      type="checkbox"
+                      checked={options.clearOnSubmit}
+                      onChange={(e) => updateOption('clearOnSubmit', e.target.checked)}
+                      className={toggleClass}
+                    />
+                  </label>
+
+                  <label className={optionRowClass}>
+                    <span className="text-xs text-[#CCC]">重启后加载上次 Prompt</span>
+                    <input
+                      type="checkbox"
+                      checked={options.persistPrompt}
+                      onChange={(e) => updateOption('persistPrompt', e.target.checked)}
+                      className={toggleClass}
+                    />
+                  </label>
+                </div>
+              </div>
+            </fieldset>
+
+            <fieldset className="tui-fieldset border-[#aa0000] lg:col-span-2">
+              <legend className="text-[#ff5555] px-2">数据管理</legend>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <p className="text-xs text-[#ff5555] flex-1">
+                  清除 localStorage 中保存的配置、设置项和历史记录，并刷新页面。
+                </p>
+                <button
+                  onClick={() => {
+                    if (confirm('确认清除所有本地数据？这会删除 API URL / Key / 模型 / 设置项 / 历史记录，并刷新页面。')) {
+                      clearAll();
+                    }
+                  }}
+                  className="w-full sm:w-auto py-1 px-3 bg-[#aa0000] hover:bg-[#aa0000] text-white text-xs cursor-pointer shadow-[4px_4px_0_#aaaaaa] active:shadow-none active:bg-[#880000]"
+                >
+                  清除并刷新
                 </button>
               </div>
-            </div>
-          </fieldset>
-
-          {/* Options */}
-          <fieldset className="tui-fieldset border-[#AAA] w-full min-w-0">
-            <legend className="text-[#00aaaa] px-2">习惯配置</legend>
-            <div className="space-y-2">
-              <label className="flex items-center justify-between gap-3 py-1.5 bg-black cursor-pointer select-none">
-                <div>
-                  <span className="block text-xs text-[#CCC]">提交后清空输入框</span>
-                  <span className="block text-xs text-[#888]">提交成功后会清空 Prompt 和参考图。</span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={options.clearOnSubmit}
-                  onChange={(e) => updateOption('clearOnSubmit', e.target.checked)}
-                  className="shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer"
-                />
-              </label>
-              <label className="flex items-center justify-between gap-3 py-1.5 bg-black cursor-pointer select-none">
-                <div>
-                  <span className="block text-xs text-[#CCC]">重启后加载上次 Prompt</span>
-                  <span className="block text-xs text-[#888]">关闭后下次启动 Prompt 输入框为空。</span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={options.persistPrompt}
-                  onChange={(e) => updateOption('persistPrompt', e.target.checked)}
-                  className="shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer"
-                />
-              </label>
-            </div>
-          </fieldset>
-
-          {/* Timeout */}
-          <fieldset className="tui-fieldset border-[#AAA]">
-            <legend className="text-[#00aaaa] px-2">请求设置</legend>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-[#CCC] mb-1">System Prompt</label>
-                <textarea
-                  value={config.systemPrompt}
-                  onChange={(e) => updateConfig('systemPrompt', e.target.value)}
-                  rows={4}
-                  placeholder="可选。设定 AI 角色或行为约束，仅在聊天模型下生效。"
-                  className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono resize-y"
-                />
-                <p className="text-xs text-[#888] mt-1">
-                  将作为 system 消息插入到聊天请求最前。仅对 gpt-4o 等聊天模型生效。
-                </p>
-              </div>
-              <div>
-                <label className="block text-xs text-[#CCC] mb-1">请求超时（秒）</label>
-                <input
-                  type="number"
-                  value={options.timeout}
-                  onChange={(e) => updateOption('timeout', Math.max(10, Math.min(3600, parseInt(e.target.value, 10) || 600)))}
-                  className="w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
-                />
-                <p className="text-xs text-[#888] mt-1">
-                  单个请求最长等待时间。4K / pro 模型建议 ≥ 120s。
-                </p>
-              </div>
-              <label className="flex items-center justify-between gap-3 py-1.5 bg-black cursor-pointer select-none">
-                <div>
-                  <span className="block text-xs text-[#CCC]">渐进加载</span>
-                  <span className="block text-xs text-[#888]">启用后生成过程中会显示中间预览图。</span>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={options.streaming}
-                  onChange={(e) => updateOption('streaming', e.target.checked)}
-                  className="shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer"
-                />
-              </label>
-            </div>
-          </fieldset>
-
-          {/* Data management */}
-          <fieldset className="tui-fieldset border-[#aa0000]">
-            <legend className="text-[#ff5555] px-2">数据管理</legend>
-            <p className="text-sm text-[#ff5555] font-bold mb-1">清除所有本地数据</p>
-            <p className="text-xs text-[#ff5555] mb-2">
-              清除 localStorage 中保存的全部配置，并刷新页面恢复初始状态。
-            </p>
-            <button
-              onClick={() => {
-                if (confirm('确认清除所有本地数据？这会删除 API URL / Key / 模型 / 设置项 / 历史记录，并刷新页面。')) {
-                  clearAll();
-                }
-              }}
-              className="w-full py-1 bg-[#aa0000] hover:bg-[#aa0000] text-white text-xs cursor-pointer shadow-[4px_4px_0_#aaaaaa] active:shadow-none active:bg-[#880000]"
-            >
-              清除并刷新
-            </button>
-          </fieldset>
+            </fieldset>
+          </div>
         </div>
       </div>
     </div>

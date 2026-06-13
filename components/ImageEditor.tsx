@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useImages } from '@/contexts/ImageContext';
 
@@ -11,7 +13,6 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
   const { images, editingIndex, persistMask, closeEditor } = useImages();
   const [tool, setTool] = useState<'brush' | 'eraser'>('brush');
   const [brushSize, setBrushSize] = useState(32);
-  const [imgLoaded, setImgLoaded] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -21,8 +22,13 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
   const toolRef = useRef<'brush' | 'eraser'>('brush');
   const brushSizeRef = useRef(32);
 
-  toolRef.current = tool;
-  brushSizeRef.current = brushSize;
+  useEffect(() => {
+    toolRef.current = tool;
+  }, [tool]);
+
+  useEffect(() => {
+    brushSizeRef.current = brushSize;
+  }, [brushSize]);
 
   const image = editingIndex >= 0 ? images[editingIndex] : null;
 
@@ -60,7 +66,7 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
 
     const handleLoad = () => {
       requestAnimationFrame(() => {
-        if (setupCanvas()) setImgLoaded(true);
+        setupCanvas();
       });
     };
 

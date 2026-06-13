@@ -7,6 +7,11 @@ import ChatBubble from './ChatBubble';
 export default function ChatArea() {
   const { messages, isLoading } = useChat();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const lastMessage = messages[messages.length - 1];
+  const hasActiveBotMessage = isLoading && lastMessage?.role === 'bot';
+  const pendingBotIndex = hasActiveBotMessage && !lastMessage.text && lastMessage.images.length === 0 && !lastMessage.code && !lastMessage.extra
+    ? messages.length - 1
+    : -1;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -27,9 +32,9 @@ export default function ChatArea() {
   return (
     <div className="flex-1 overflow-y-auto p-2 sm:p-4 flex flex-col" id="chat-scroll">
       {messages.map((msg, i) => (
-        <ChatBubble key={i} message={msg} />
+        <ChatBubble key={i} message={msg} isPending={i === pendingBotIndex} />
       ))}
-      {isLoading && (
+      {isLoading && !hasActiveBotMessage && (
         <div className="flex flex-col gap-1 mb-3 items-start">
           <span className="text-xs px-1 text-[#CCC]">Assistant</span>
           <div className="bg-[#111] text-[#CCC] border border-[#AAA] py-2 px-3 max-w-[90%] sm:max-w-[80%]">

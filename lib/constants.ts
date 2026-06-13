@@ -9,17 +9,16 @@ export const SIZE_PRESETS = [
   { label: '2160×3840 · 9:16 竖', value: '2160x3840', group: '4K' },
 ] as const;
 
-export const MODEL_PRESETS = [
-  { label: 'gpt-image-2', value: 'gpt-image-2', type: 'image' as const },
-  { label: 'gpt-4o', value: 'gpt-4o', type: 'chat' as const },
-  { label: 'gpt-4o-mini', value: 'gpt-4o-mini', type: 'chat' as const },
+export const IMAGE_MODEL_PRESETS = [
+  { label: 'gpt-image-2', value: 'gpt-image-2' },
 ] as const;
 
-export function isImageModel(model: string): boolean {
-  const preset = MODEL_PRESETS.find(m => m.value === model);
-  if (preset) return preset.type === 'image';
-  return model.includes('image') || model.includes('dall');
-}
+export const CHAT_MODEL_PRESETS = [
+  { label: 'gpt-5.5', value: 'gpt-5.5' },
+  { label: 'gpt-5.4', value: 'gpt-5.4' },
+] as const;
+
+export const LEGACY_CHAT_MODEL_VALUES = ['gpt-4o', 'gpt-4o-mini'] as const;
 
 export const QUALITY_OPTIONS = ['auto', 'high', 'medium', 'low'] as const;
 export const FORMAT_OPTIONS = ['png', 'jpeg', 'webp'] as const;
@@ -29,7 +28,9 @@ export const MODERATION_OPTIONS = ['auto', 'low'] as const;
 export const DEFAULT_CONFIG = {
   baseUrl: '',
   apiKey: '',
+  mode: 'image',
   model: 'gpt-image-2',
+  chatModel: 'gpt-5.5',
   size: '3840x2160',
   n: 1,
   quality: 'high',

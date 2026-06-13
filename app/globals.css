@@ -34,6 +34,24 @@
     max-width: 100%;
   }
 
+  select {
+    outline: none;
+    box-shadow: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  select:focus,
+  select:focus-visible,
+  select:active {
+    outline: none;
+    box-shadow: none;
+  }
+
+  select option:checked {
+    background-color: #aaaaaa;
+    color: #000000;
+  }
+
   /* Press feedback for non-retro buttons */
   button:active { opacity: 0.75; }
 

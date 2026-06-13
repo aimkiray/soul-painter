@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 import React, { useState } from 'react';
 import { useImages } from '@/contexts/ImageContext';
 import { canvasHasStrokes } from '@/lib/mask';

@@ -42,6 +42,8 @@ next-env.d.ts
 
 # Claude
 CLAUDE.md
+.claude/
+AGENTS.md
 
 # Reference files
 *.png
