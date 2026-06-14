@@ -59,7 +59,7 @@ function buildMultipartForm(body: Record<string, unknown>): FormData {
 }
 
 export async function POST(request: NextRequest) {
-  const validated = validateRequest(request);
+  const validated = await validateRequest(request);
   if (validated instanceof NextResponse) return validated;
 
   try {

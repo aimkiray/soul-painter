@@ -1,38 +1,73 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
-import { MODEL_GATE_VERSION_TAPS } from '@/lib/model-gate';
 
 export default function StatusBar() {
-  const { config, options } = useConfig();
+  const { config, modelGateEnabled } = useConfig();
   const { setStatus } = useChat();
   const activeModel = config.mode === 'chat' ? config.chatModel : config.model;
   const [tapping, setTapping] = useState(false);
+  const pendingTapsRef = useRef(0);
+  const processingRef = useRef(false);
+  const mountedRef = useRef(true);
 
-  const handleVersionClick = useCallback(async () => {
-    if (!options.requireVersionUnlock || tapping) return;
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const postVersionTap = async () => {
+    const response = await fetch('/api/model-gate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'tap' }),
+    });
+    if (!response.ok) throw new Error('tap failed');
+    return response.json().catch(() => null) as Promise<{ unlocked?: boolean } | null>;
+  };
+
+  const flushPendingTaps = async () => {
+    if (processingRef.current) return;
+    processingRef.current = true;
     setTapping(true);
+
     try {
-      const response = await fetch('/api/model-gate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'tap' }),
-      });
-      const data = await response.json().catch(() => null) as { unlocked?: boolean; remaining?: number } | null;
-      if (data?.unlocked) {
+      let latest: { unlocked?: boolean } | null = null;
+      while (pendingTapsRef.current > 0) {
+        pendingTapsRef.current -= 1;
+        latest = await postVersionTap();
+        if (latest?.unlocked) {
+          pendingTapsRef.current = 0;
+          break;
+        }
+      }
+
+      if (!mountedRef.current) return;
+      if (latest?.unlocked) {
         setStatus('模型访问已解锁', 'ok');
       } else {
-        const remaining = Math.max(0, data?.remaining ?? MODEL_GATE_VERSION_TAPS);
-        setStatus(`还差 ${remaining} 次点击即可解锁`, 'warn');
+        setStatus('标题栏确认已记录', 'warn');
       }
     } catch {
-      setStatus('解锁状态同步失败', 'err');
+      pendingTapsRef.current = 0;
+      if (mountedRef.current) setStatus('解锁状态同步失败', 'err');
     } finally {
-      setTapping(false);
+      processingRef.current = false;
+      if (mountedRef.current) setTapping(false);
+      if (pendingTapsRef.current > 0 && mountedRef.current) {
+        void flushPendingTaps();
+      }
     }
-  }, [options.requireVersionUnlock, setStatus, tapping]);
+  };
+
+  const handleVersionClick = async () => {
+    if (!modelGateEnabled) return;
+    pendingTapsRef.current += 1;
+    void flushPendingTaps();
+  };
 
   return (
     <header className="flex-shrink-0 bg-[#aa0000] text-white px-2 py-1 font-mono text-sm flex items-center justify-center gap-2">
@@ -40,12 +75,12 @@ export default function StatusBar() {
       <span className="text-[#ffff55]">::</span>
       <span className="text-[#CCC]">{activeModel}</span>
       <span className="text-[#ffff55]">::</span>
-      {options.requireVersionUnlock ? (
+      {modelGateEnabled ? (
         <button
           type="button"
           onClick={handleVersionClick}
-          className="text-[#CCC] cursor-pointer hover:text-white"
-          title="连点 6 次解锁模型访问"
+          className={`text-[#CCC] cursor-pointer hover:text-white ${tapping ? 'animate-pulse' : ''}`}
+          title="版本信息"
         >
           v1.0
         </button>

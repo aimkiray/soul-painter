@@ -24,6 +24,7 @@ interface ConfigContextValue {
   hasDefaultKey: boolean;
   chatKeySource: 'user' | 'server' | 'inherit' | 'none';
   hasDefaultChatKey: boolean;
+  modelGateEnabled: boolean;
 }
 
 const ConfigContext = createContext<ConfigContextValue | undefined>(undefined);
@@ -87,7 +88,6 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
     ...DEFAULT_OPTIONS,
     ...storedOpts,
     contextLimit: Math.max(0, Math.min(5, Number(storedOpts.contextLimit ?? DEFAULT_OPTIONS.contextLimit) || 0)),
-    requireVersionUnlock: !!storedOpts.requireVersionUnlock,
   };
 
   return { config, options, hasUrlKey };
@@ -100,6 +100,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [options, setOptions] = useState<AppOptions>(initial.options);
   const [hasDefaultKey, setHasDefaultKey] = useState(false);
   const [hasDefaultChatKey, setHasDefaultChatKey] = useState(false);
+  const [modelGateEnabled, setModelGateEnabled] = useState(false);
 
   useEffect(() => {
     fetch('/api/config')
@@ -107,6 +108,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       .then((d) => {
         setHasDefaultKey(!!d.hasDefaultKey);
         setHasDefaultChatKey(!!d.hasDefaultChatKey);
+        setModelGateEnabled(!!d.modelGateEnabled);
       })
       .catch(() => { /* ignore */ });
   }, []);
@@ -132,7 +134,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     fetch('/api/model-gate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: false }),
+      body: JSON.stringify({ action: 'clear' }),
     })
       .catch(() => undefined)
       .finally(() => window.location.reload());
@@ -154,8 +156,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({
     config, options, updateConfig, updateOption,
-    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey,
-  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey]);
+    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey, modelGateEnabled,
+  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey, modelGateEnabled]);
 
   // Auto-persist config & options on change (debounced)
   useEffect(() => {
@@ -175,14 +177,6 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener('beforeunload', handleUnload);
     return () => window.removeEventListener('beforeunload', handleUnload);
   }, [config, options]);
-
-  useEffect(() => {
-    fetch('/api/model-gate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: options.requireVersionUnlock }),
-    }).catch(() => undefined);
-  }, [options.requireVersionUnlock]);
 
   if (!mounted) return <div className="min-h-screen bg-black" />;
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;

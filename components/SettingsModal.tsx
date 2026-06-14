@@ -420,16 +420,6 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   </label>
 
                   <label className={optionRowClass}>
-                    <span className="text-xs text-[#CCC]">版本号解锁模型</span>
-                    <input
-                      type="checkbox"
-                      checked={options.requireVersionUnlock}
-                      onChange={(e) => updateOption('requireVersionUnlock', e.target.checked)}
-                      className={toggleClass}
-                    />
-                  </label>
-
-                  <label className={optionRowClass}>
                     <span className="text-xs text-[#CCC]">重启后加载上次 Prompt</span>
                     <input
                       type="checkbox"

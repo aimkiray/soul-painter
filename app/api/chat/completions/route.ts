@@ -5,7 +5,7 @@ export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  const validated = validateRequest(request, 'chat');
+  const validated = await validateRequest(request, 'chat');
   if (validated instanceof NextResponse) return validated;
 
   try {

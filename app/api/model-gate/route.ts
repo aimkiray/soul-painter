@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  createModelGateUnlockToken,
   getRandomModelGateMessage,
   MODEL_GATE_ENABLED_COOKIE,
   MODEL_GATE_TAP_COOKIE,
   MODEL_GATE_UNLOCKED_COOKIE,
+  MODEL_GATE_UNLOCK_MAX_AGE_SEC,
   MODEL_GATE_VERSION_TAPS,
+  verifyModelGateUnlockToken,
 } from '@/lib/model-gate';
+import { isModelGateEnabled } from '@/lib/model-gate-env';
 
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
-const COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
+const COOKIE_MAX_AGE = MODEL_GATE_UNLOCK_MAX_AGE_SEC;
 
 function cookieOptions(maxAge = COOKIE_MAX_AGE) {
   return {
@@ -28,13 +32,14 @@ function clearGateCookies(response: NextResponse) {
   response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(0));
 }
 
-function readGateState(request: NextRequest) {
-  const enabled = request.cookies.get(MODEL_GATE_ENABLED_COOKIE)?.value === '1';
-  const unlocked = request.cookies.get(MODEL_GATE_UNLOCKED_COOKIE)?.value === '1';
-  const taps = Math.max(0, Math.min(
+async function readGateState(request: NextRequest) {
+  const enabled = isModelGateEnabled();
+  const unlocked = await verifyModelGateUnlockToken(request.cookies.get(MODEL_GATE_UNLOCKED_COOKIE)?.value);
+  const rawTaps = Math.max(0, Math.min(
     MODEL_GATE_VERSION_TAPS,
     parseInt(request.cookies.get(MODEL_GATE_TAP_COOKIE)?.value || '0', 10) || 0,
   ));
+  const taps = !unlocked && rawTaps >= MODEL_GATE_VERSION_TAPS ? 0 : rawTaps;
   return {
     enabled,
     unlocked,
@@ -44,18 +49,32 @@ function readGateState(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  return NextResponse.json(readGateState(request));
+  const current = await readGateState(request);
+  const response = NextResponse.json({
+    enabled: current.enabled,
+    unlocked: current.unlocked,
+    message: current.enabled && !current.unlocked ? getRandomModelGateMessage() : '',
+  });
+  if (!current.enabled || !current.unlocked) {
+    response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(0));
+  }
+  if (!current.enabled) clearGateCookies(response);
+  return response;
 }
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({} as Record<string, unknown>));
-  const action = body?.action === 'tap' ? 'tap' : 'configure';
-  const enabled = !!body?.enabled;
-  const current = readGateState(request);
+  const action = body?.action === 'tap' ? 'tap' : body?.action === 'clear' ? 'clear' : 'state';
+  const current = await readGateState(request);
 
   if (action === 'tap') {
     if (!current.enabled) {
-      return NextResponse.json(current);
+      const response = NextResponse.json({
+        enabled: false,
+        unlocked: false,
+      });
+      clearGateCookies(response);
+      return response;
     }
 
     const nextTaps = Math.min(MODEL_GATE_VERSION_TAPS, current.taps + 1);
@@ -63,48 +82,33 @@ export async function POST(request: NextRequest) {
     const response = NextResponse.json({
       enabled: true,
       unlocked,
-      taps: nextTaps,
-      remaining: unlocked ? 0 : Math.max(0, MODEL_GATE_VERSION_TAPS - nextTaps),
     });
 
-    response.cookies.set(MODEL_GATE_ENABLED_COOKIE, '1', cookieOptions());
     response.cookies.set(MODEL_GATE_TAP_COOKIE, String(nextTaps), cookieOptions());
     if (unlocked) {
-      response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '1', cookieOptions());
+      response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, await createModelGateUnlockToken(), cookieOptions());
     }
 
     return response;
   }
 
-  if (!enabled) {
+  if (action === 'clear') {
     const response = NextResponse.json({
-      enabled: false,
+      enabled: current.enabled,
       unlocked: false,
-      taps: 0,
-      remaining: MODEL_GATE_VERSION_TAPS,
     });
     clearGateCookies(response);
     return response;
   }
 
-  if (!current.enabled) {
-    const response = NextResponse.json({
-      enabled: true,
-      unlocked: false,
-      taps: 0,
-      remaining: MODEL_GATE_VERSION_TAPS,
-      message: getRandomModelGateMessage(),
-    });
-    response.cookies.set(MODEL_GATE_ENABLED_COOKIE, '1', cookieOptions());
-    response.cookies.set(MODEL_GATE_TAP_COOKIE, '0', cookieOptions());
-    response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(0));
-    return response;
-  }
-
   const response = NextResponse.json({
-    ...current,
-    message: current.unlocked ? '' : getRandomModelGateMessage(),
+    enabled: current.enabled,
+    unlocked: current.unlocked,
+    message: current.enabled && !current.unlocked ? getRandomModelGateMessage() : '',
   });
-  response.cookies.set(MODEL_GATE_ENABLED_COOKIE, '1', cookieOptions());
+  if (!current.enabled || !current.unlocked) {
+    response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(0));
+  }
+  if (!current.enabled) clearGateCookies(response);
   return response;
 }

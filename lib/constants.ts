@@ -56,7 +56,6 @@ export const DEFAULT_OPTIONS = {
   clearOnSubmit: false,
   contextLimit: 5,
   persistPrompt: true,
-  requireVersionUnlock: false,
   timeout: 600,
   streaming: true,
 } as const;

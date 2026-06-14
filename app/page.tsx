@@ -144,14 +144,10 @@ function buildChatMessages(
   return combined;
 }
 
-async function ensureModelGateAccess(requireVersionUnlock: boolean): Promise<void> {
-  if (!requireVersionUnlock) return;
+async function ensureModelGateAccess(modelGateEnabled: boolean): Promise<void> {
+  if (!modelGateEnabled) return;
 
-  const response = await fetch('/api/model-gate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled: true }),
-  });
+  const response = await fetch('/api/model-gate');
   const data = await response.json().catch(() => null) as { unlocked?: boolean; message?: string } | null;
   if (data?.unlocked) return;
 
@@ -226,7 +222,7 @@ function HomeInner() {
   const [activeTab, setActiveTab] = useState<'generate' | 'decode'>('generate');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const { config, options } = useConfig();
+  const { config, options, modelGateEnabled } = useConfig();
   const { messages, addBotMsg, addErrorMsg, addUserMsg, addTextBotMsg, updateLastBotMsg, updateLastBotText, setLoading, setStatus, setDebugRaw, isLoading, clearChat } = useChat();
   const { images, editingIndex, selectedIndices, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
 
@@ -304,30 +300,6 @@ function HomeInner() {
       try { localStorage.setItem(LAST_PROMPT_KEY, prompt); } catch { /* ignore */ }
     }
 
-    await ensureModelGateAccess(options.requireVersionUnlock);
-
-    const isChatMode = config.mode === 'chat';
-    // Only image mode may consume selected images; chat mode must stay text-only.
-    const activeImages = !isChatMode && selectedIndices.size > 0
-      ? images.filter((_, i) => selectedIndices.has(i))
-      : [];
-    const mode = isChatMode ? 'chat' : activeImages.length > 0 ? 'edits' : 'images';
-    const resolvedSize = resolveRequestSize(requestedSize, activeImages);
-    const sizeForBody = parseSize(resolvedSize) ? resolvedSize : null;
-
-    addUserMsg(prompt);
-
-    // Snapshot images before clearOnSubmit revokes objectUrls
-    const imagesSnap = [...activeImages];
-
-    if (options.clearOnSubmit) {
-      clearImages();
-    }
-
-    setLoading(true);
-    setStatus('请求发送中...');
-    setDebugRaw('（尚未请求）');
-
     const applyExtraParams = (target: RequestBody) => {
       if (quality && quality !== 'auto') setRequestParam(target, 'quality', quality);
       if (background && background !== 'auto') setRequestParam(target, 'background', background);
@@ -378,6 +350,30 @@ function HomeInner() {
     };
 
     try {
+      await ensureModelGateAccess(modelGateEnabled);
+
+      const isChatMode = config.mode === 'chat';
+      // Only image mode may consume selected images; chat mode must stay text-only.
+      const activeImages = !isChatMode && selectedIndices.size > 0
+        ? images.filter((_, i) => selectedIndices.has(i))
+        : [];
+      const mode = isChatMode ? 'chat' : activeImages.length > 0 ? 'edits' : 'images';
+      const resolvedSize = resolveRequestSize(requestedSize, activeImages);
+      const sizeForBody = parseSize(resolvedSize) ? resolvedSize : null;
+
+      addUserMsg(prompt);
+
+      // Snapshot images before clearOnSubmit revokes objectUrls
+      const imagesSnap = [...activeImages];
+
+      if (options.clearOnSubmit) {
+        clearImages();
+      }
+
+      setLoading(true);
+      setStatus('请求发送中...');
+      setDebugRaw('（尚未请求）');
+
       // ---- Image edits mode (single or multi) ----
       if (mode === 'edits') {
         const body = await buildEditsForm(imagesSnap, prompt, sizeForBody, model);
@@ -681,7 +677,7 @@ function HomeInner() {
       abortRef.current = null;
       setLoading(false);
     }
-  }, [config, options, images, selectedIndices, buildEditsForm, addBotMsg, addTextBotMsg, updateLastBotMsg, updateLastBotText, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
+  }, [config, options, modelGateEnabled, images, selectedIndices, buildEditsForm, addBotMsg, addTextBotMsg, updateLastBotMsg, updateLastBotText, addErrorMsg, addUserMsg, setLoading, setStatus, setDebugRaw, clearImages]);
 
   return (
     <ErrorBoundary>

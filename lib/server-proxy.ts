@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getRandomModelGateMessage,
-  MODEL_GATE_ENABLED_COOKIE,
   MODEL_GATE_UNLOCKED_COOKIE,
+  verifyModelGateUnlockToken,
 } from './model-gate';
+import { isModelGateEnabled } from './model-gate-env';
 
 export const TIMEOUT_SEC = 600;
 export const MAX_BODY_SIZE = 32 * 1024 * 1024;
@@ -15,10 +16,9 @@ export interface ValidatedRequest {
 
 /** Validate API key, base URL, and body size. Returns validated values or an error Response.
  *  When kind is 'chat', falls back to DEFAULT_CHAT_* env vars first, then DEFAULT_* shared envs. */
-export function validateRequest(request: NextRequest, kind: 'image' | 'chat' = 'image'): ValidatedRequest | NextResponse {
-  const modelGateEnabled = request.cookies.get(MODEL_GATE_ENABLED_COOKIE)?.value === '1';
-  const modelGateUnlocked = request.cookies.get(MODEL_GATE_UNLOCKED_COOKIE)?.value === '1';
-  if (modelGateEnabled && !modelGateUnlocked) {
+export async function validateRequest(request: NextRequest, kind: 'image' | 'chat' = 'image'): Promise<ValidatedRequest | NextResponse> {
+  const modelGateUnlocked = await verifyModelGateUnlockToken(request.cookies.get(MODEL_GATE_UNLOCKED_COOKIE)?.value);
+  if (isModelGateEnabled() && !modelGateUnlocked) {
     return NextResponse.json(
       { error: { code: 'model_gate_locked', message: getRandomModelGateMessage() } },
       { status: 418 }
