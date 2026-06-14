@@ -1,4 +1,13 @@
+export const ORIGINAL_ASPECT_SIZE = 'original-aspect';
+export const OFFICIAL_IMAGE_MAX_EDGE = 3840;
+export const OFFICIAL_IMAGE_MIN_PIXELS = 655_360;
+export const OFFICIAL_IMAGE_MAX_PIXELS = 8_294_400;
+export const OFFICIAL_IMAGE_SIZE_MULTIPLE = 16;
+export const OFFICIAL_IMAGE_MAX_RATIO = 3;
+
 export const SIZE_PRESETS = [
+  { label: '原图比例 · 自动', value: ORIGINAL_ASPECT_SIZE, group: 'AUTO' },
+  { label: 'auto · 默认', value: 'auto', group: 'AUTO' },
   { label: '1024×1024 · 1:1', value: '1024x1024', group: '1K' },
   { label: '1024×1536 · 2:3 竖', value: '1024x1536', group: '1K' },
   { label: '1536×1024 · 3:2 横', value: '1536x1024', group: '1K' },
@@ -31,7 +40,7 @@ export const DEFAULT_CONFIG = {
   mode: 'image',
   model: 'gpt-image-2',
   chatModel: 'gpt-5.5',
-  size: '3840x2160',
+  size: ORIGINAL_ASPECT_SIZE,
   n: 1,
   quality: 'high',
   format: 'png',
@@ -45,7 +54,9 @@ export const DEFAULT_CONFIG = {
 
 export const DEFAULT_OPTIONS = {
   clearOnSubmit: false,
+  contextLimit: 5,
   persistPrompt: true,
+  requireVersionUnlock: false,
   timeout: 600,
   streaming: true,
 } as const;
@@ -56,4 +67,4 @@ export const HISTORY_STORAGE_KEY = 'imggen-history-v1';
 export const LAST_PROMPT_KEY = 'imggen-last-prompt-v1';
 export const HISTORY_MAX = 20;
 export const COMPRESS_THRESHOLD = 1.5 * 1024 * 1024;
-export const MAX_EDGE = 2048;
+export const MAX_EDGE = OFFICIAL_IMAGE_MAX_EDGE;

@@ -83,7 +83,12 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
     config.model = IMAGE_MODEL_PRESETS[0].value;
   }
 
-  const options: AppOptions = { ...DEFAULT_OPTIONS, ...storedOpts };
+  const options: AppOptions = {
+    ...DEFAULT_OPTIONS,
+    ...storedOpts,
+    contextLimit: Math.max(0, Math.min(5, Number(storedOpts.contextLimit ?? DEFAULT_OPTIONS.contextLimit) || 0)),
+    requireVersionUnlock: !!storedOpts.requireVersionUnlock,
+  };
 
   return { config, options, hasUrlKey };
 }
@@ -124,7 +129,13 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const clearAll = useCallback(() => {
     try { localStorage.clear(); } catch { /* ignore */ }
-    window.location.reload();
+    fetch('/api/model-gate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    })
+      .catch(() => undefined)
+      .finally(() => window.location.reload());
   }, []);
 
   const keySource = useMemo<'url' | 'user' | 'server' | 'none'>(() => {
@@ -164,6 +175,14 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener('beforeunload', handleUnload);
     return () => window.removeEventListener('beforeunload', handleUnload);
   }, [config, options]);
+
+  useEffect(() => {
+    fetch('/api/model-gate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: options.requireVersionUnlock }),
+    }).catch(() => undefined);
+  }, [options.requireVersionUnlock]);
 
   if (!mounted) return <div className="min-h-screen bg-black" />;
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;

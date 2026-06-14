@@ -24,6 +24,7 @@ import {
   HISTORY_MAX,
   LAST_PROMPT_KEY,
 } from '@/lib/constants';
+import { parseSize, resolveRequestSize } from '@/lib/size';
 
 // ── Pure helpers used by handleSend ──
 
@@ -38,6 +39,29 @@ function parseErrorDetail(probeText: string): string {
 
 function parseResponseBody(probeText: string): unknown {
   try { return JSON.parse(probeText); } catch { return probeText; }
+}
+
+function extractModelGateMessage(errorText: string): string | null {
+  const match = /^HTTP 418:?\s*(.+)$/i.exec((errorText || '').trim());
+  return match?.[1]?.trim() || null;
+}
+
+type RequestBody = Record<string, unknown> | FormData;
+
+function setRequestParam(target: RequestBody, key: string, value: unknown) {
+  if (target instanceof FormData) {
+    target.set(key, String(value));
+    return;
+  }
+  target[key] = value;
+}
+
+function deleteRequestParam(target: RequestBody, key: string) {
+  if (target instanceof FormData) {
+    target.delete(key);
+    return;
+  }
+  delete target[key];
 }
 
 async function processChatStream(
@@ -87,21 +111,28 @@ function buildChatMessages(
   history: ChatMessage[],
   prompt: string,
   systemPrompt: string,
+  contextLimit: number,
 ): Array<{ role: string; content: string }> {
   const sys: Array<{ role: string; content: string }> = [];
   if (systemPrompt && systemPrompt.trim()) {
     sys.push({ role: 'system', content: systemPrompt.trim() });
   }
 
-  const turns: Array<{ role: string; content: string }> = [];
+  const rounds: Array<Array<{ role: string; content: string }>> = [];
   for (const msg of history) {
     if (msg.extra === 'error') continue;
     if (msg.role === 'user') {
-      if (msg.prompt) turns.push({ role: 'user', content: msg.prompt });
+      if (msg.prompt) rounds.push([{ role: 'user', content: msg.prompt }]);
     } else if (msg.text) {
-      turns.push({ role: 'assistant', content: msg.text });
+      const currentRound = rounds[rounds.length - 1];
+      if (currentRound) currentRound.push({ role: 'assistant', content: msg.text });
     }
   }
+  const clampedContextLimit = Math.max(0, Math.min(5, contextLimit));
+  const keptTurns = clampedContextLimit === 0
+    ? []
+    : rounds.slice(-clampedContextLimit).flat();
+  const turns = keptTurns.slice();
   turns.push({ role: 'user', content: prompt });
 
   let combined = [...sys, ...turns];
@@ -111,6 +142,20 @@ function buildChatMessages(
     combined = [...sys, ...turns];
   }
   return combined;
+}
+
+async function ensureModelGateAccess(requireVersionUnlock: boolean): Promise<void> {
+  if (!requireVersionUnlock) return;
+
+  const response = await fetch('/api/model-gate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: true }),
+  });
+  const data = await response.json().catch(() => null) as { unlocked?: boolean; message?: string } | null;
+  if (data?.unlocked) return;
+
+  throw new Error(`HTTP 418 ${data?.message || '模型访问未解锁'}`);
 }
 
 async function processSSEStream(
@@ -244,7 +289,7 @@ function HomeInner() {
   const handleSend = useCallback(async (prompt: string) => {
     const model = config.model;
     const chatModel = config.chatModel;
-    const size = config.size;
+    const requestedSize = config.size;
     const n = config.n;
     const quality = config.quality;
     const outFormat = config.format;
@@ -259,13 +304,16 @@ function HomeInner() {
       try { localStorage.setItem(LAST_PROMPT_KEY, prompt); } catch { /* ignore */ }
     }
 
-    // When images are selected, use those; otherwise text-to-image
-    const activeImages = selectedIndices.size > 0
+    await ensureModelGateAccess(options.requireVersionUnlock);
+
+    const isChatMode = config.mode === 'chat';
+    // Only image mode may consume selected images; chat mode must stay text-only.
+    const activeImages = !isChatMode && selectedIndices.size > 0
       ? images.filter((_, i) => selectedIndices.has(i))
       : [];
-    const mode = activeImages.length > 0 ? 'edits' : 'images';
-    const sizeMatch = /^(\d+)x(\d+)$/i.exec(size);
-    const sizeForBody = sizeMatch ? size : null;
+    const mode = isChatMode ? 'chat' : activeImages.length > 0 ? 'edits' : 'images';
+    const resolvedSize = resolveRequestSize(requestedSize, activeImages);
+    const sizeForBody = parseSize(resolvedSize) ? resolvedSize : null;
 
     addUserMsg(prompt);
 
@@ -280,17 +328,20 @@ function HomeInner() {
     setStatus('请求发送中...');
     setDebugRaw('（尚未请求）');
 
-    const applyExtraParams = (target: Record<string, unknown>) => {
-      if (quality && quality !== 'auto') target['quality'] = quality;
-      if (background && background !== 'auto') target['background'] = background;
-      target['output_format'] = outFormat || 'png';
-      if ((outFormat === 'jpeg' || outFormat === 'webp') && !isNaN(compression)) target['output_compression'] = compression;
-      if (moderation && moderation !== 'auto') target['moderation'] = moderation;
+    const applyExtraParams = (target: RequestBody) => {
+      if (quality && quality !== 'auto') setRequestParam(target, 'quality', quality);
+      if (background && background !== 'auto') setRequestParam(target, 'background', background);
+      setRequestParam(target, 'output_format', outFormat || 'png');
+      if ((outFormat === 'jpeg' || outFormat === 'webp') && !isNaN(compression)) {
+        setRequestParam(target, 'output_compression', compression);
+      }
+      if (moderation && moderation !== 'auto') setRequestParam(target, 'moderation', moderation);
     };
 
     const buildErrorHint = (msg: string): string => {
       if (msg.includes('401')) return '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
       if (msg.includes('400')) return '\n请求参数有误，请检查 Base URL 格式';
+      if (msg.includes('418')) return '';
       if (msg.includes('404') || msg.includes('405')) return '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
       if (/5\d\d/.test(msg)) return '\n上游服务器错误，请稍后重试或检查服务状态';
       return '\n请检查 API Key 和 Base URL 配置';
@@ -333,12 +384,12 @@ function HomeInner() {
         applyExtraParams(body);
 
         if (options.streaming) {
-          body.stream = true;
-          body.partial_images = 2;
+          setRequestParam(body, 'stream', true);
+          setRequestParam(body, 'partial_images', 2);
           const { ok, stream } = await proxyRequestStream('/api/images/edits', config, body, options);
           if (!ok || !stream) {
-            delete body.stream;
-            delete body.partial_images;
+            deleteRequestParam(body, 'stream');
+            deleteRequestParam(body, 'partial_images');
             const probe = await tryWithRetry('/api/images/edits', body);
             if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
             const resp = parseResponseBody(probe.text);
@@ -346,7 +397,7 @@ function HomeInner() {
             if (hit) {
               addBotMsg([hit], JSON.stringify(resp, null, 2), '');
               setStatus('生成完成 1 张', 'ok');
-              saveHistoryEntry(prompt, mode, model, size, [hit]);
+              saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
             } else {
               addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
               setStatus('未识别到图片内容', 'err');
@@ -372,10 +423,10 @@ function HomeInner() {
             if (hits.length > 0) {
               updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
               setStatus(`生成完成 ${hits.length} 张`, 'ok');
-              saveHistoryEntry(prompt, mode, model, size, hits);
+              saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
             } else if (streamError) {
-              delete body.stream;
-              delete body.partial_images;
+              deleteRequestParam(body, 'stream');
+              deleteRequestParam(body, 'partial_images');
               const probe = await tryWithRetry('/api/images/edits', body);
               if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
               const resp = parseResponseBody(probe.text);
@@ -383,7 +434,7 @@ function HomeInner() {
               if (hit) {
                 updateLastBotMsg([hit], JSON.stringify(resp, null, 2));
                 setStatus('生成完成 1 张', 'ok');
-                saveHistoryEntry(prompt, mode, model, size, [hit]);
+                saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
               } else {
                 updateLastBotMsg([], JSON.stringify(resp, null, 2));
                 setStatus('未识别到图片内容', 'err');
@@ -450,7 +501,7 @@ function HomeInner() {
               setDebugRaw(JSON.stringify(resp, null, 2));
               addBotMsg(hits, JSON.stringify(resp, null, 2), '');
               setStatus(`生成完成 ${hits.length} 张`, 'ok');
-              saveHistoryEntry(prompt, mode, model, size, hits);
+              saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
             } else {
               addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片，请查看调试面板');
               setStatus('未识别到图片内容', 'err');
@@ -461,11 +512,11 @@ function HomeInner() {
       }
       // ---- Chat completions mode (explicit chat mode, no images) ----
       else if (config.mode === 'chat') {
-        const chatBody = {
-          model: chatModel,
-          messages: buildChatMessages(messagesRef.current, prompt, config.systemPrompt || ''),
-          stream: options.streaming,
-        };
+          const chatBody = {
+            model: chatModel,
+            messages: buildChatMessages(messagesRef.current, prompt, config.systemPrompt || '', options.contextLimit),
+            stream: options.streaming,
+          };
 
         if (options.streaming) {
           abortRef.current = new AbortController();
@@ -501,7 +552,7 @@ function HomeInner() {
       }
       // ---- Text-to-image mode ----
       else {
-        const genBody: Record<string, unknown> = { model, prompt, n: 1, size };
+        const genBody: Record<string, unknown> = { model, prompt, n: 1, size: resolvedSize };
         applyExtraParams(genBody);
 
         if (options.streaming) {
@@ -518,7 +569,7 @@ function HomeInner() {
             if (hit) {
               addBotMsg([hit], JSON.stringify(resp, null, 2), '');
               setStatus('生成完成 1 张', 'ok');
-              saveHistoryEntry(prompt, mode, model, size, [hit]);
+              saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
             } else {
               addBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
               setStatus('未识别到图片内容', 'err');
@@ -544,7 +595,7 @@ function HomeInner() {
             if (hits.length > 0) {
               updateLastBotMsg(hits, JSON.stringify(hits[0], null, 2));
               setStatus(`生成完成 ${hits.length} 张`, 'ok');
-              saveHistoryEntry(prompt, mode, model, size, hits);
+              saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
             } else if (streamError) {
               delete genBody.stream;
               delete genBody.partial_images;
@@ -555,7 +606,7 @@ function HomeInner() {
               if (hit) {
                 updateLastBotMsg([hit], JSON.stringify(resp, null, 2));
                 setStatus('生成完成 1 张', 'ok');
-                saveHistoryEntry(prompt, mode, model, size, [hit]);
+                saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
               } else {
                 updateLastBotMsg([], JSON.stringify(resp, null, 2));
                 setStatus('未识别到图片内容', 'err');
@@ -594,13 +645,20 @@ function HomeInner() {
             setDebugRaw(debugResp);
             addBotMsg(hits, debugResp, '');
             setStatus(`生成完成 ${hits.length} 张`, 'ok');
-            saveHistoryEntry(prompt, mode, model, size, hits);
+            saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
           } else {
             const debugResp = errors.join('\n') || '无响应';
             setDebugRaw(debugResp);
             const first = errors[0] || '';
-            addErrorMsg((first || '请求未返回图片') + buildErrorHint(first));
-            setStatus('请求失败', 'err');
+            const gateMessage = extractModelGateMessage(first);
+            if (gateMessage) {
+              if (typeof window !== 'undefined') window.alert(gateMessage);
+              addErrorMsg(gateMessage);
+              setStatus('模型访问未解锁', 'warn');
+            } else {
+              addErrorMsg((first || '请求未返回图片') + buildErrorHint(first));
+              setStatus('请求失败', 'err');
+            }
           }
         }
       }
@@ -608,6 +666,12 @@ function HomeInner() {
       const msg = (e as Error).message || '请求失败';
       if (msg === USER_ABORT_SENTINEL) {
         setStatus('已取消', 'warn');
+      } else if (extractModelGateMessage(msg)) {
+        const gateMessage = extractModelGateMessage(msg)!;
+        setDebugRaw(gateMessage);
+        if (typeof window !== 'undefined') window.alert(gateMessage);
+        addErrorMsg(gateMessage);
+        setStatus('模型访问未解锁', 'warn');
       } else {
         setDebugRaw(msg);
         addErrorMsg(msg + buildErrorHint(msg));

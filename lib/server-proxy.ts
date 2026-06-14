@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  getRandomModelGateMessage,
+  MODEL_GATE_ENABLED_COOKIE,
+  MODEL_GATE_UNLOCKED_COOKIE,
+} from './model-gate';
 
 export const TIMEOUT_SEC = 600;
-export const MAX_BODY_SIZE = 10 * 1024 * 1024;
+export const MAX_BODY_SIZE = 32 * 1024 * 1024;
 
 export interface ValidatedRequest {
   apiKey: string;
@@ -11,6 +16,15 @@ export interface ValidatedRequest {
 /** Validate API key, base URL, and body size. Returns validated values or an error Response.
  *  When kind is 'chat', falls back to DEFAULT_CHAT_* env vars first, then DEFAULT_* shared envs. */
 export function validateRequest(request: NextRequest, kind: 'image' | 'chat' = 'image'): ValidatedRequest | NextResponse {
+  const modelGateEnabled = request.cookies.get(MODEL_GATE_ENABLED_COOKIE)?.value === '1';
+  const modelGateUnlocked = request.cookies.get(MODEL_GATE_UNLOCKED_COOKIE)?.value === '1';
+  if (modelGateEnabled && !modelGateUnlocked) {
+    return NextResponse.json(
+      { error: { code: 'model_gate_locked', message: getRandomModelGateMessage() } },
+      { status: 418 }
+    );
+  }
+
   const keyEnv = kind === 'chat'
     ? (process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY)
     : process.env.DEFAULT_API_KEY;
@@ -38,7 +52,7 @@ export function validateRequest(request: NextRequest, kind: 'image' | 'chat' = '
   const contentLength = parseInt(request.headers.get('content-length') || '0', 10);
   if (contentLength > MAX_BODY_SIZE) {
     return NextResponse.json(
-      { error: { message: `请求体 ${(contentLength / 1024 / 1024).toFixed(1)}MB 超过上限 10MB` } },
+      { error: { message: `请求体 ${(contentLength / 1024 / 1024).toFixed(1)}MB 超过上限 32MB` } },
       { status: 413 }
     );
   }
@@ -46,14 +60,14 @@ export function validateRequest(request: NextRequest, kind: 'image' | 'chat' = '
   return { apiKey, baseUrl };
 }
 
-/** Proxy a streaming fetch to upstream — pipes SSE with keepalive to prevent CDN timeout */
-export async function proxyUpstreamStream(
+async function proxyUpstreamBodyStream(
   baseUrl: string,
   apiKey: string,
   path: string,
-  body: string,
+  body: BodyInit,
   origin: string,
   requestSignal?: AbortSignal,
+  contentType?: string,
 ): Promise<Response> {
   const url = `${baseUrl}${path}`;
   console.log(`[proxy-stream] POST ${url}`);
@@ -74,12 +88,14 @@ export async function proxyUpstreamStream(
       try { ctrl.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
 
       try {
+        const headers: HeadersInit = {
+          'Authorization': `Bearer ${apiKey}`,
+        };
+        if (contentType) headers['Content-Type'] = contentType;
+
         const res = await fetch(url, {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers,
           body,
           signal: upstreamController.signal,
         });
@@ -125,4 +141,36 @@ export async function proxyUpstreamStream(
       'Access-Control-Allow-Origin': origin,
     },
   });
+}
+
+/** Proxy a JSON request body as a streaming response with keepalive. */
+export async function proxyUpstreamStream(
+  baseUrl: string,
+  apiKey: string,
+  path: string,
+  body: string,
+  origin: string,
+  requestSignal?: AbortSignal,
+): Promise<Response> {
+  return proxyUpstreamBodyStream(
+    baseUrl,
+    apiKey,
+    path,
+    body,
+    origin,
+    requestSignal,
+    'application/json',
+  );
+}
+
+/** Proxy multipart form data without overriding the generated boundary. */
+export async function proxyUpstreamFormDataStream(
+  baseUrl: string,
+  apiKey: string,
+  path: string,
+  body: FormData,
+  origin: string,
+  requestSignal?: AbortSignal,
+): Promise<Response> {
+  return proxyUpstreamBodyStream(baseUrl, apiKey, path, body, origin, requestSignal);
 }

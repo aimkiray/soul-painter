@@ -2,18 +2,25 @@
 
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { ImageRef } from '@/types';
-import { compressIfNeeded, fileToDataUrl } from '@/lib/compress';
+import { compressIfNeeded } from '@/lib/compress';
 import { canvasHasStrokes } from '@/lib/mask';
+import { OFFICIAL_IMAGE_MAX_EDGE } from '@/lib/constants';
 
-const API_MAX_EDGE = 2048;
+function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
 
-function imageToDataUrl(im: ImageRef): Promise<string> {
+function imageToBlob(im: ImageRef): Promise<Blob | null> {
   return new Promise((resolve) => {
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       const w = img.naturalWidth;
       const h = img.naturalHeight;
-      const scale = Math.min(1, API_MAX_EDGE / Math.max(w, h));
+      const scale = Math.min(1, OFFICIAL_IMAGE_MAX_EDGE / Math.max(w, h));
+      if (scale === 1) {
+        resolve(im.file);
+        return;
+      }
       const tw = Math.round(w * scale);
       const th = Math.round(h * scale);
       const canvas = document.createElement('canvas');
@@ -21,24 +28,15 @@ function imageToDataUrl(im: ImageRef): Promise<string> {
       canvas.height = th;
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        fileToDataUrl(im.file).then(resolve).catch(() => resolve(''));
+        resolve(im.file);
         return;
       }
       ctx.drawImage(img, 0, 0, tw, th);
-      const result = canvas.toDataURL('image/png');
-      if (!result || result.length < 100) {
-        fileToDataUrl(im.file).then(resolve).catch(() => resolve(''));
-      } else {
-        resolve(result);
-      }
+      resolve(await canvasToBlob(canvas) || im.file);
     };
-    img.onerror = () => fileToDataUrl(im.file).then(resolve).catch(() => resolve(''));
+    img.onerror = () => resolve(im.file);
     img.src = im.objectUrl;
   });
-}
-
-function canvasToDataUrl(canvas: HTMLCanvasElement): string {
-  return canvas.toDataURL('image/png');
 }
 
 interface ImageContextValue {
@@ -58,7 +56,7 @@ interface ImageContextValue {
   hasImages: boolean;
   anyMasked: boolean;
   persistMask: (canvas: HTMLCanvasElement) => void;
-  buildEditsForm: (imgs: ImageRef[], prompt: string, size: string | null, model: string) => Promise<Record<string, unknown>>;
+  buildEditsForm: (imgs: ImageRef[], prompt: string, size: string | null, model: string) => Promise<FormData>;
 }
 
 const ImageContext = createContext<ImageContextValue | undefined>(undefined);
@@ -176,20 +174,25 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
 
   const buildEditsForm = useCallback(async (
     imgs: ImageRef[], prompt: string, size: string | null, model: string
-  ): Promise<Record<string, unknown>> => {
-    const imageUrls = await Promise.all(imgs.map(imageToDataUrl));
-    const body: Record<string, unknown> = {
-      model,
-      prompt,
-      images: imageUrls.map((url) => ({ image_url: url })),
-    };
-    if (size) body.size = size;
+  ): Promise<FormData> => {
+    const form = new FormData();
+    form.append('model', model);
+    form.append('prompt', prompt);
+    if (size) form.append('size', size);
+
+    const imageBlobs = await Promise.all(imgs.map(imageToBlob));
+    imageBlobs.forEach((blob, i) => {
+      if (!blob) return;
+      const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
+      form.append('image[]', blob, `image-${i + 1}.${ext}`);
+    });
 
     const first = imgs[0];
     if (first?.maskCanvas && first.naturalWidth && canvasHasStrokes(first.maskCanvas)) {
-      body.mask = canvasToDataUrl(first.maskCanvas);
+      const mask = await canvasToBlob(first.maskCanvas);
+      if (mask) form.append('mask', mask, 'mask.png');
     }
-    return body;
+    return form;
   }, []);
 
   const hasImages = images.length > 0 || pendingCount > 0;

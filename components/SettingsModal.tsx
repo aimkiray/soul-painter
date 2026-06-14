@@ -2,15 +2,18 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useImages } from '@/contexts/ImageContext';
 import {
   BACKGROUND_OPTIONS,
   CHAT_MODEL_PRESETS,
   FORMAT_OPTIONS,
   IMAGE_MODEL_PRESETS,
   MODERATION_OPTIONS,
+  ORIGINAL_ASPECT_SIZE,
   QUALITY_OPTIONS,
   SIZE_PRESETS,
 } from '@/lib/constants';
+import { formatSizeDisplay } from '@/lib/size';
 
 interface SettingsModalProps {
   open: boolean;
@@ -27,6 +30,7 @@ const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-
 
 export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const { config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, chatKeySource } = useConfig();
+  const { images, selectedIndices } = useImages();
   const [showKey, setShowKey] = useState(false);
   const [showChatKey, setShowChatKey] = useState(false);
   const [customImageModel, setCustomImageModel] = useState(false);
@@ -36,6 +40,10 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const imageModelIsPreset = IMAGE_MODEL_PRESETS.some(m => m.value === config.model);
   const chatModelIsPreset = CHAT_MODEL_PRESETS.some(m => m.value === config.chatModel);
   const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
+  const activeImages = selectedIndices.size > 0
+    ? images.filter((_, i) => selectedIndices.has(i))
+    : [];
+  const originalAspectLabel = formatSizeDisplay(ORIGINAL_ASPECT_SIZE, activeImages);
 
   const prevOpen = useRef(open);
   useEffect(() => {
@@ -259,6 +267,11 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                     }}
                     className={selectClass}
                   >
+                    <optgroup label="AUTO">
+                      {SIZE_PRESETS.filter(s => s.group === 'AUTO').map(s => (
+                        <option key={s.value} value={s.value}>{s.value === ORIGINAL_ASPECT_SIZE ? originalAspectLabel : s.label}</option>
+                      ))}
+                    </optgroup>
                     <optgroup label="1K">
                       {SIZE_PRESETS.filter(s => s.group === '1K').map(s => (
                         <option key={s.value} value={s.value}>{s.label}</option>
@@ -358,15 +371,31 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
             <fieldset className={`${fieldsetClass} lg:col-span-2`}>
               <legend className="text-[#00aaaa] px-2">运行设置</legend>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
-                <div className="min-h-[58px] bg-black px-2 py-2">
-                  <label className={labelClass}>请求超时（秒）</label>
-                  <input
-                    type="number"
-                    value={options.timeout}
-                    onChange={(e) => updateOption('timeout', Math.max(10, Math.min(3600, parseInt(e.target.value, 10) || 600)))}
-                    className={inputClass}
-                  />
-                  <p className={hintClass}>10-3600</p>
+                <div className="bg-black px-2 py-2 space-y-3">
+                  <div className="min-h-[58px]">
+                    <label className={labelClass}>请求超时（秒）</label>
+                    <input
+                      type="number"
+                      value={options.timeout}
+                      onChange={(e) => updateOption('timeout', Math.max(10, Math.min(3600, parseInt(e.target.value, 10) || 600)))}
+                      className={inputClass}
+                    />
+                    <p className={hintClass}>10-3600</p>
+                  </div>
+
+                  <div className="min-h-[58px]">
+                    <label className={labelClass}>上下文数量限制</label>
+                    <select
+                      value={options.contextLimit}
+                      onChange={(e) => updateOption('contextLimit', Math.max(0, Math.min(5, parseInt(e.target.value, 10) || 0)))}
+                      className={selectClass}
+                    >
+                      {[0, 1, 2, 3, 4, 5].map(v => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                    <p className={hintClass}>0 表示不带上下文，最多保留最近 5 轮对话</p>
+                  </div>
                 </div>
 
                 <div className="bg-black px-2 py-2 space-y-3">
@@ -386,6 +415,16 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                       type="checkbox"
                       checked={options.clearOnSubmit}
                       onChange={(e) => updateOption('clearOnSubmit', e.target.checked)}
+                      className={toggleClass}
+                    />
+                  </label>
+
+                  <label className={optionRowClass}>
+                    <span className="text-xs text-[#CCC]">版本号解锁模型</span>
+                    <input
+                      type="checkbox"
+                      checked={options.requireVersionUnlock}
+                      onChange={(e) => updateOption('requireVersionUnlock', e.target.checked)}
                       className={toggleClass}
                     />
                   </label>

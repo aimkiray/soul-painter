@@ -33,7 +33,9 @@ export interface AppConfig {
 
 export interface AppOptions {
   clearOnSubmit: boolean;
+  contextLimit: number;
   persistPrompt: boolean;
+  requireVersionUnlock: boolean;
   timeout: number;
   streaming: boolean;
 }

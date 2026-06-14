@@ -35,6 +35,16 @@ interface ChatContextValue {
 
 const ChatContext = createContext<ChatContextValue | undefined>(undefined);
 
+function isEmptyBotMessage(message: ChatMessage | undefined) {
+  return !!message
+    && message.role === 'bot'
+    && !message.prompt
+    && message.images.length === 0
+    && !message.text
+    && !message.code
+    && !message.extra;
+}
+
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setLoading] = useState(false);
@@ -76,7 +86,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addErrorMsg = useCallback((error: string) => {
-    setMessages((prev) => [...prev, { role: 'bot', prompt: error, images: [], text: '', code: '', extra: 'error' }]);
+    setMessages((prev) => {
+      const errorMessage: ChatMessage = { role: 'bot', prompt: error, images: [], text: '', code: '', extra: 'error' };
+      if (isEmptyBotMessage(prev[prev.length - 1])) {
+        return [...prev.slice(0, -1), errorMessage];
+      }
+      return [...prev, errorMessage];
+    });
   }, []);
 
   const setStatus = useCallback((text: string, type: '' | 'ok' | 'err' | 'warn' = '') => {

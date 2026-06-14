@@ -2,13 +2,13 @@ import { AppConfig, AppOptions } from '@/types';
 
 type ProxyKind = 'image' | 'chat';
 
-function getHeaders(config: AppConfig, kind: ProxyKind = 'image') {
+function getHeaders(config: AppConfig, kind: ProxyKind = 'image', isFormData = false) {
   const apiKey = kind === 'chat' ? (config.chatApiKey || config.apiKey) : config.apiKey;
   const baseUrl = kind === 'chat' ? (config.chatBaseUrl || config.baseUrl) : config.baseUrl;
   const headers: Record<string, string> = {
     'Accept': 'application/json',
-    'Content-Type': 'application/json',
   };
+  if (!isFormData) headers['Content-Type'] = 'application/json';
   if (apiKey) headers['x-api-key'] = apiKey;
   if (baseUrl) headers['x-base-url'] = baseUrl;
   return headers;
@@ -28,7 +28,8 @@ export async function proxyRequestStream(
   externalSignal?: AbortSignal,
   kind: ProxyKind = 'image',
 ): Promise<{ ok: boolean; status: number; stream: ReadableStream<Uint8Array> | null; text: string }> {
-  const headers = getHeaders(config, kind);
+  const isFormData = body instanceof FormData;
+  const headers = getHeaders(config, kind, isFormData);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), options.timeout * 1000);
@@ -45,7 +46,7 @@ export async function proxyRequestStream(
     const res = await fetch(endpoint, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: isFormData ? body : JSON.stringify(body),
       signal: controller.signal,
     });
 
@@ -74,7 +75,8 @@ export async function proxyRequest(
   options: AppOptions,
   kind: ProxyKind = 'image',
 ) {
-  const headers = getHeaders(config, kind);
+  const isFormData = body instanceof FormData;
+  const headers = getHeaders(config, kind, isFormData);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), options.timeout * 1000);
@@ -83,7 +85,7 @@ export async function proxyRequest(
     const res = await fetch(endpoint, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: isFormData ? body : JSON.stringify(body),
       signal: controller.signal,
     });
 

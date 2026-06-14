@@ -56,6 +56,7 @@ export default function ImageGrid() {
                 )}
                 <span className="absolute top-0.5 left-0.5 bg-black/80 text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">#{i + 1}</span>
                 {isSelected && <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#00aaaa]"></span>}
+                {img.compressed && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
                 {hasMask && <span className="absolute bottom-0.5 left-0.5 bg-[#ff5555] text-white text-[0.7rem] px-0.5 py-0.5 leading-none">涂抹</span>}
                 {isSelected && (
                     <button
@@ -112,6 +113,7 @@ export default function ImageGrid() {
                   )}
                   <span className="absolute top-0.5 left-0.5 bg-black/80 text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">#{i + 1}</span>
                   {isSelected && <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#00aaaa]"></span>}
+                  {img.compressed && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
                   {isSelected && (
                     <button
                       onClick={(e) => { e.stopPropagation(); openEditor(i); }}
