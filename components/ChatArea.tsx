@@ -4,7 +4,7 @@ import React, { useRef, useEffect } from 'react';
 import { useChat } from '@/contexts/ChatContext';
 import ChatBubble from './ChatBubble';
 
-const CHAT_CONTENT_CLASS = 'w-full max-w-3xl mx-auto px-2 sm:px-3';
+const CHAT_CONTENT_CLASS = 'chat-content-width px-2 sm:px-3';
 
 export default function ChatArea() {
   const { messages, isLoading, activeSessionId, loadingSessionId } = useChat();
@@ -22,7 +22,7 @@ export default function ChatArea() {
 
   if (messages.length === 0 && !isActiveSessionLoading) {
     return (
-      <div className="flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col" style={{ scrollbarGutter: 'stable both-edges' }}>
+      <div className="chat-scroll-gutter flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col">
         <div className={`${CHAT_CONTENT_CLASS} flex-1 flex flex-col`}>
           <div className="m-auto flex flex-col items-center justify-center text-center px-4 py-8 select-none">
             <p className="text-[#CCC] text-sm">输入提示词开始生成图片</p>
@@ -35,7 +35,7 @@ export default function ChatArea() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col" id="chat-scroll" style={{ scrollbarGutter: 'stable both-edges' }}>
+    <div className="chat-scroll-gutter flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col" id="chat-scroll">
       <div className={`${CHAT_CONTENT_CLASS} flex flex-col`}>
         {messages.map((msg, i) => (
           <ChatBubble key={i} message={msg} isPending={i === pendingBotIndex} />
@@ -43,7 +43,7 @@ export default function ChatArea() {
         {isActiveSessionLoading && !hasActiveBotMessage && (
           <div className="flex flex-col gap-1 mb-3 items-start">
             <span className="text-xs px-1 text-[#CCC]">Assistant</span>
-            <div className="w-2/5 min-w-0 bg-[#111] text-[#CCC] border-2 border-[#AAA] py-2 px-3">
+            <div className="w-fit max-w-full min-w-0 bg-[#111] text-[#CCC] border-2 border-[#AAA] py-2 px-3">
               <span className="animate-pulse text-sm">生成中...</span>
             </div>
           </div>

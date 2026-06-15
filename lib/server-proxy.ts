@@ -78,8 +78,9 @@ async function proxyUpstreamBodyStream(
       const upstreamController = new AbortController();
       const timeoutId = setTimeout(() => upstreamController.abort(), TIMEOUT_SEC * 1000);
 
+      const abortUpstream = () => upstreamController.abort();
       if (requestSignal) {
-        requestSignal.addEventListener('abort', () => upstreamController.abort());
+        requestSignal.addEventListener('abort', abortUpstream, { once: true });
       }
 
       const keepalive = setInterval(() => {
@@ -92,6 +93,11 @@ async function proxyUpstreamBodyStream(
           'Authorization': `Bearer ${apiKey}`,
         };
         if (contentType) headers['Content-Type'] = contentType;
+
+        if (requestSignal?.aborted) {
+          ctrl.close();
+          return;
+        }
 
         const res = await fetch(url, {
           method: 'POST',
@@ -112,14 +118,26 @@ async function proxyUpstreamBodyStream(
 
         const reader = res.body.getReader();
         while (true) {
+          if (requestSignal?.aborted) {
+            await reader.cancel().catch(() => {});
+            break;
+          }
           const { done, value } = await reader.read();
           if (done) break;
+          if (requestSignal?.aborted) {
+            await reader.cancel().catch(() => {});
+            break;
+          }
           ctrl.enqueue(value);
         }
         ctrl.close();
       } catch (err: unknown) {
         clearInterval(keepalive);
         clearTimeout(timeoutId);
+        if (requestSignal?.aborted) {
+          try { ctrl.close(); } catch { /* already closed */ }
+          return;
+        }
         const msg = err instanceof Error && err.name === 'AbortError'
           ? `上游请求超时 (${TIMEOUT_SEC}s)`
           : `代理连接失败: ${(err as Error).message}`;
@@ -127,6 +145,10 @@ async function proxyUpstreamBodyStream(
           ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ error: true, status: 502, message: msg })}\n\n`));
           ctrl.close();
         } catch { /* already closed */ }
+      } finally {
+        if (requestSignal) {
+          requestSignal.removeEventListener('abort', abortUpstream);
+        }
       }
     },
   });

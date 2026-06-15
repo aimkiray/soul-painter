@@ -74,12 +74,21 @@ export async function proxyRequest(
   body: unknown,
   options: AppOptions,
   kind: ProxyKind = 'image',
+  externalSignal?: AbortSignal,
 ) {
   const isFormData = body instanceof FormData;
   const headers = getHeaders(config, kind, isFormData);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), options.timeout * 1000);
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timeoutId);
+      throw new Error(USER_ABORT_SENTINEL);
+    }
+    externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
 
   try {
     const res = await fetch(endpoint, {
@@ -106,6 +115,7 @@ export async function proxyRequest(
     return { ok: res.ok, status: res.status, statusText: res.statusText, text };
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
+      if (externalSignal?.aborted) throw new Error(USER_ABORT_SENTINEL);
       throw new Error(`请求超时 (${options.timeout}s)。可在设置中调大超时秒数。`);
     }
     throw err;

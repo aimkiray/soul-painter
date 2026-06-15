@@ -63,11 +63,46 @@
 ::-webkit-scrollbar-thumb:hover { background: #cccccc; }
 
 @layer components {
+  .chat-scroll-gutter {
+    scrollbar-gutter: stable;
+  }
+
+  @media (min-width: 768px) {
+    .chat-scroll-gutter {
+      scrollbar-gutter: stable both-edges;
+    }
+  }
+
+  .chat-content-width {
+    width: calc(100% - 6px);
+    max-width: 48rem;
+    margin-left: 6px;
+    margin-right: 0;
+  }
+
+  @media (min-width: 768px) {
+    .chat-content-width {
+      width: min(calc(100% + 12px), 48rem);
+      max-width: none;
+      margin-left: clamp(-6px, calc((100% - 960px + 12px) / 2 - 6px), 0px);
+      margin-right: clamp(-6px, calc((100% - 960px + 12px) / 2 - 6px), 0px);
+    }
+  }
+
+  @media (min-width: 972px) {
+    .chat-content-width {
+      width: 100%;
+      max-width: 48rem;
+      margin-left: auto;
+      margin-right: auto;
+    }
+  }
+
   .btn-retro {
     display: inline-block;
     background-color: #00aaaa;
     color: #000000;
-    border: none;
+    border: 2px solid #aaaaaa;
     font-family: inherit;
     cursor: pointer;
     padding: 4px 10px;

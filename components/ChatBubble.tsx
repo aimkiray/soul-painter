@@ -27,11 +27,53 @@ function getExt(link: string, isData: boolean) {
   return m ? m[1].toLowerCase().replace('jpeg', 'jpg') : 'png';
 }
 
+function toCopyableUrl(url: string) {
+  try {
+    return new URL(url, window.location.origin).toString();
+  } catch {
+    return url;
+  }
+}
+
+async function writeClipboardText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to the selection-based fallback for non-secure contexts.
+    }
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.focus({ preventScroll: true });
+    textarea.select();
+    textarea.setSelectionRange(0, text.length);
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 export default function ChatBubble({ message, isPending = false }: ChatBubbleProps) {
   const { role, prompt, images, extra } = message;
   const visibleImages = images.filter((hit) => hit.dataUrl || hit.url);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [imgErrors, setImgErrors] = useState<Set<number>>(new Set());
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [copyFailedUrl, setCopyFailedUrl] = useState<string | null>(null);
+  const copyFeedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   React.useEffect(() => {
     if (!lightbox) return;
@@ -39,6 +81,12 @@ export default function ChatBubble({ message, isPending = false }: ChatBubblePro
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [lightbox]);
+
+  React.useEffect(() => {
+    return () => {
+      if (copyFeedbackTimerRef.current) clearTimeout(copyFeedbackTimerRef.current);
+    };
+  }, []);
 
   const handleDownload = (hit: ImageHit, i: number, timestamp: number) => {
     const link = hit.dataUrl || hit.url || '';
@@ -54,8 +102,16 @@ export default function ChatBubble({ message, isPending = false }: ChatBubblePro
     }
   };
 
-  const handleCopyUrl = (url: string) => {
-    navigator.clipboard.writeText(url).catch(() => {});
+  const handleCopyUrl = async (url: string) => {
+    const ok = await writeClipboardText(toCopyableUrl(url));
+    if (copyFeedbackTimerRef.current) clearTimeout(copyFeedbackTimerRef.current);
+
+    setCopiedUrl(ok ? url : null);
+    setCopyFailedUrl(ok ? null : url);
+    copyFeedbackTimerRef.current = setTimeout(() => {
+      setCopiedUrl(null);
+      setCopyFailedUrl(null);
+    }, 1600);
   };
 
   return (
@@ -64,7 +120,7 @@ export default function ChatBubble({ message, isPending = false }: ChatBubblePro
         <span className={`text-xs px-1 ${role === 'user' ? 'text-[#00aaaa]' : 'text-[#CCC]'}`}>
           {role === 'user' ? 'You' : 'Assistant'}
         </span>
-        <div className={`w-2/5 min-w-0 ${role === 'user' ? 'bg-[#00aaaa] text-white border-2 border-[#00aaaa] p-3' : 'bg-[#111] text-[#CCC] border-2 border-[#AAA] p-3'}`}>
+        <div className={`w-fit max-w-full min-w-0 ${role === 'user' ? 'bg-[#00aaaa] text-white border-2 border-[#00aaaa] p-3' : 'bg-[#111] text-[#CCC] border-2 border-[#AAA] p-3'}`}>
           {extra === 'error' ? (
             <div className="flex flex-col gap-1">
               <span className="text-xs text-[#ff5555] uppercase font-bold">[ 错误 ]</span>
@@ -147,10 +203,10 @@ export default function ChatBubble({ message, isPending = false }: ChatBubblePro
                             </button>
                             {!isData && (
                               <button
-                                onClick={() => handleCopyUrl(link)}
+                                onClick={() => { void handleCopyUrl(link); }}
                                 className="btn-retro text-xs px-2 py-0.5"
                               >
-                                复制URL
+                                {copyFailedUrl === link ? '复制失败' : copiedUrl === link ? '已复制' : '复制URL'}
                               </button>
                             )}
                           </span>

@@ -22,8 +22,8 @@ interface SettingsModalProps {
 
 const fieldsetClass = 'tui-fieldset border-[#AAA] min-w-0';
 const labelClass = 'block text-xs text-[#CCC] mb-0.5';
-const inputClass = 'w-full bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono';
-const selectClass = 'w-full bg-[#AAA] text-black border border-[#999] text-sm py-1 px-1 cursor-pointer font-mono';
+const inputClass = 'w-full bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono';
+const selectClass = 'w-full bg-[#AAA] text-black border-2 border-[#999] text-sm py-1 px-1 cursor-pointer font-mono';
 const hintClass = 'text-xs text-[#888] mt-1';
 const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer';
 const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
@@ -131,7 +131,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                       value={config.apiKey}
                       onChange={(e) => updateConfig('apiKey', e.target.value)}
                       placeholder="留空使用服务端默认 Key"
-                      className="flex-1 min-w-0 bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                      className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                     />
                     <button onClick={() => setShowKey(!showKey)} className="btn-retro px-2 text-xs shrink-0">
                       {showKey ? '隐藏' : '显示'}
@@ -162,7 +162,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                       value={config.chatApiKey}
                       onChange={(e) => updateConfig('chatApiKey', e.target.value)}
                       placeholder="留空时回落到 Image API Key"
-                      className="flex-1 min-w-0 bg-black border border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                      className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                     />
                     <button onClick={() => setShowChatKey(!showChatKey)} className="btn-retro px-2 text-xs shrink-0">
                       {showChatKey ? '隐藏' : '显示'}
@@ -352,7 +352,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                 {(config.format === 'jpeg' || config.format === 'webp') && (
                   <div>
                     <label className={labelClass}>Compression</label>
-                    <label className="flex items-center gap-2 bg-[#AAA] text-black border border-[#999] text-sm py-1 px-2 font-mono">
+                    <label className="flex items-center gap-2 bg-[#AAA] text-black border-2 border-[#999] text-sm py-1 px-2 font-mono">
                       <input
                         type="range"
                         min={0}
@@ -444,7 +444,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                       clearAll();
                     }
                   }}
-                  className="w-full sm:w-auto py-1 px-3 bg-[#aa0000] hover:bg-[#aa0000] text-white text-xs cursor-pointer shadow-[4px_4px_0_#aaaaaa] active:shadow-none active:bg-[#880000]"
+                  className="w-full sm:w-auto py-1 px-3 bg-[#aa0000] hover:bg-[#aa0000] text-white text-xs cursor-pointer border-2 border-[#aaaaaa] shadow-[4px_4px_0_#aaaaaa] active:shadow-none active:bg-[#880000]"
                 >
                   清除并刷新
                 </button>

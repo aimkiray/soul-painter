@@ -169,12 +169,16 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
 
   if (!image) return null;
 
+  const imageSizeLabel = image.naturalWidth && image.naturalHeight
+    ? ` · ${image.naturalWidth}×${image.naturalHeight}`
+    : '';
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2">
       <div className="absolute inset-0 bg-black/60" onClick={handleDone} />
       <div className="relative bg-black w-full max-w-lg border-2 border-[#AAA] font-mono text-sm">
         <div className="bg-[#0A0] text-white px-2 py-1 flex items-center justify-between">
-          <span>编辑第 {editingIndex + 1} 张</span>
+          <span>编辑第 {editingIndex + 1} 张{imageSizeLabel}</span>
           <button onClick={handleDone} className="text-white hover:text-[#ff5555] cursor-pointer">
             [X]
           </button>
@@ -203,11 +207,11 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
             <div className="flex shrink-0">
               <button
                 onClick={() => setTool('brush')}
-                className={`px-2.5 py-1 text-xs border border-[#AAA] font-mono cursor-pointer ${tool === 'brush' ? 'bg-[#00aaaa] text-black border-[#00aaaa]' : 'bg-black text-[#CCC]'}`}
+                className={`px-2.5 py-1 text-xs border-2 border-[#AAA] font-mono cursor-pointer ${tool === 'brush' ? 'bg-[#00aaaa] text-black border-[#00aaaa]' : 'bg-black text-[#CCC]'}`}
               >笔刷</button>
               <button
                 onClick={() => setTool('eraser')}
-                className={`px-2.5 py-1 text-xs border border-[#AAA] font-mono cursor-pointer -ml-px ${tool === 'eraser' ? 'bg-[#00aaaa] text-black border-[#00aaaa]' : 'bg-black text-[#CCC]'}`}
+                className={`px-2.5 py-1 text-xs border-2 border-[#AAA] font-mono cursor-pointer -ml-[2px] ${tool === 'eraser' ? 'bg-[#00aaaa] text-black border-[#00aaaa]' : 'bg-black text-[#CCC]'}`}
               >擦除</button>
             </div>
 

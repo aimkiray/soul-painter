@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useImages } from '@/contexts/ImageContext';
 import { canvasHasStrokes } from '@/lib/mask';
 
@@ -14,9 +14,92 @@ const Placeholder = ({ className }: { className?: string }) => (
   </div>
 );
 
+const COMPRESSED_BADGE_MS = 3000;
+
+function ThumbnailEditButton({ index, onEdit }: { index: number; onEdit: (index: number) => void }) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onEdit(index);
+      }}
+      className="absolute inset-x-0 bottom-0 h-7 bg-black/70 border-x-2 border-b-2 border-[#00aaaa] text-[#00aaaa] text-xs font-mono flex items-center justify-center cursor-pointer hover:bg-[#111] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00aaaa] focus-visible:ring-inset"
+      aria-label={`编辑第 ${index + 1} 张图片`}
+    >
+      编辑
+    </button>
+  );
+}
+
 export default function ImageGrid() {
   const { images, openEditor, removeImage, selectedIndices, toggleSelect, pendingCount } = useImages();
   const [collapsed, setCollapsed] = useState(false);
+  const [compressedBadgeUrls, setCompressedBadgeUrls] = useState<Set<string>>(new Set());
+  const seenCompressedUrlsRef = useRef<Set<string>>(new Set());
+  const compressedBadgeTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    const activeUrls = new Set(images.map((img) => img.objectUrl));
+
+    for (const [url, timer] of compressedBadgeTimersRef.current) {
+      if (!activeUrls.has(url)) {
+        clearTimeout(timer);
+        compressedBadgeTimersRef.current.delete(url);
+      }
+    }
+
+    for (const url of seenCompressedUrlsRef.current) {
+      if (!activeUrls.has(url)) seenCompressedUrlsRef.current.delete(url);
+    }
+
+    const newBadgeUrls: string[] = [];
+    images.forEach((img) => {
+      if (!img.compressed || !img.objectUrl || seenCompressedUrlsRef.current.has(img.objectUrl)) return;
+      seenCompressedUrlsRef.current.add(img.objectUrl);
+      newBadgeUrls.push(img.objectUrl);
+
+      const timer = setTimeout(() => {
+        setCompressedBadgeUrls((prev) => {
+          if (!prev.has(img.objectUrl)) return prev;
+          const next = new Set(prev);
+          next.delete(img.objectUrl);
+          return next;
+        });
+        compressedBadgeTimersRef.current.delete(img.objectUrl);
+      }, COMPRESSED_BADGE_MS);
+
+      compressedBadgeTimersRef.current.set(img.objectUrl, timer);
+    });
+
+    setCompressedBadgeUrls((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+
+      for (const url of next) {
+        if (!activeUrls.has(url)) {
+          next.delete(url);
+          changed = true;
+        }
+      }
+
+      newBadgeUrls.forEach((url) => {
+        if (!next.has(url)) {
+          next.add(url);
+          changed = true;
+        }
+      });
+
+      return changed ? next : prev;
+    });
+  }, [images]);
+
+  useEffect(() => {
+    const badgeTimers = compressedBadgeTimersRef.current;
+    return () => {
+      badgeTimers.forEach((timer) => clearTimeout(timer));
+      badgeTimers.clear();
+    };
+  }, []);
 
   if (images.length === 0 && pendingCount === 0) return null;
 
@@ -37,6 +120,7 @@ export default function ImageGrid() {
           {images.map((img, i) => {
             const isSelected = selectedIndices.has(i);
             const hasMask = img.maskCanvas && canvasHasStrokes(img.maskCanvas);
+            const showCompressedBadge = compressedBadgeUrls.has(img.objectUrl);
             return (
               <div
                 key={i}
@@ -56,14 +140,9 @@ export default function ImageGrid() {
                 )}
                 <span className="absolute top-0.5 left-0.5 bg-black/80 text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">#{i + 1}</span>
                 {isSelected && <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#00aaaa]"></span>}
-                {img.compressed && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
-                {hasMask && <span className="absolute bottom-0.5 left-0.5 bg-[#ff5555] text-white text-[0.7rem] px-0.5 py-0.5 leading-none">涂抹</span>}
-                {isSelected && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); openEditor(i); }}
-                      className="absolute bottom-0.5 left-0.5 bg-black/80 text-[#00aaaa] text-[0.7rem] px-0.5 py-0.5 leading-none cursor-pointer hover:text-white"
-                    >edit</button>
-                )}
+                {showCompressedBadge && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
+                {hasMask && <span className={`absolute left-0.5 bg-[#ff5555] text-white text-[0.7rem] px-0.5 py-0.5 leading-none ${isSelected ? 'bottom-7' : 'bottom-0.5'}`}>涂抹</span>}
+                {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} />}
               </div>
             );
           })}
@@ -77,7 +156,7 @@ export default function ImageGrid() {
 
   // ── Mobile horizontal scroll strip ──
   const mobileStrip = (
-    <div className="bg-black border-t border-[#AAA] pb-2">
+    <div className="w-[calc(100%-12px)] md:w-full max-w-3xl mx-[6px] md:mx-auto bg-black border-t border-[#AAA] pb-2">
       <div className="flex items-center justify-between gap-2 px-2 sm:px-3 py-1.5">
         <span className="flex items-center gap-2">
           <button onClick={() => setCollapsed(!collapsed)} className="text-xs sm:text-sm text-white font-mono cursor-pointer">
@@ -96,6 +175,7 @@ export default function ImageGrid() {
           <div className="flex items-center gap-1.5 px-2 sm:px-3 py-1 overflow-x-auto">
             {images.map((img, i) => {
               const isSelected = selectedIndices.has(i);
+              const showCompressedBadge = compressedBadgeUrls.has(img.objectUrl);
               return (
                 <div key={i} className="relative shrink-0">
                   <img
@@ -113,13 +193,8 @@ export default function ImageGrid() {
                   )}
                   <span className="absolute top-0.5 left-0.5 bg-black/80 text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">#{i + 1}</span>
                   {isSelected && <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#00aaaa]"></span>}
-                  {img.compressed && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
-                  {isSelected && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); openEditor(i); }}
-                      className="absolute bottom-0.5 left-0.5 bg-black/80 text-[#00aaaa] text-[0.7rem] px-0.5 py-0.5 leading-none cursor-pointer hover:text-white"
-                    >edit</button>
-                  )}
+                  {showCompressedBadge && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
+                  {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} />}
                 </div>
               );
             })}
