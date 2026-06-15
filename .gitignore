@@ -20,6 +20,9 @@
 # production
 /build
 
+# local chat asset storage
+/data/
+
 # misc
 .DS_Store
 *.pem

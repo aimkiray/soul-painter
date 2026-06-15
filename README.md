@@ -44,6 +44,19 @@ npm run dev
 |---|---|
 | `DEFAULT_API_KEY` | API key used when the frontend doesn't provide one |
 | `DEFAULT_BASE_URL` | Upstream API base URL (e.g. `https://api.avemujica.moe`) |
+| `DEFAULT_CHAT_API_KEY` | Optional chat-specific API key; falls back to `DEFAULT_API_KEY` |
+| `DEFAULT_CHAT_BASE_URL` | Optional chat-specific base URL; falls back to `DEFAULT_BASE_URL` |
+| `MODEL_GATE_ENABLED` | Enables the header-tap gate for model access |
+| `MODEL_GATE_SECRET` | Secret used to sign the model-gate unlock cookie |
+| `CHAT_ASSET_MAX_IMAGE_BYTES` | Maximum size of a single server-stored chat image; defaults to 8 MB |
+| `CHAT_ASSET_SESSION_MAX_BYTES` | Maximum chat image storage per browser session; defaults to 256 MB |
+| `CHAT_ASSET_SESSION_MAX_FILES` | Maximum saved chat image files per browser session; defaults to 200 |
+| `CHAT_ASSET_SESSION_MAX_AGE_DAYS` | Removes inactive chat image sessions after this many days; defaults to 30 |
+| `CHAT_ASSET_MAX_BODY_BYTES` | Maximum JSON upload body accepted by the chat asset route |
+| `CHAT_ASSET_CACHE_MAX_AGE_SECONDS` | Browser cache lifetime for private chat asset responses; defaults to 3600 |
+| `CHAT_ASSET_COOKIE_SECURE` | `auto`, `true`, or `false`; controls whether chat asset cookies require HTTPS |
+| `CHAT_ASSET_REMOTE_FETCH_TIMEOUT_MS` | Timeout for server-side remote image mirroring; defaults to 15000 |
+| `CHAT_ASSET_REMOTE_FETCH_MAX_REDIRECTS` | Maximum redirects followed while mirroring remote images; defaults to 3 |
 
 ### API Key Sources
 

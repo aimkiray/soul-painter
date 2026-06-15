@@ -25,6 +25,8 @@ interface ConfigContextValue {
   chatKeySource: 'user' | 'server' | 'inherit' | 'none';
   hasDefaultChatKey: boolean;
   modelGateEnabled: boolean;
+  modelGateUnlocked: boolean;
+  setModelGateUnlocked: (unlocked: boolean) => void;
 }
 
 const ConfigContext = createContext<ConfigContextValue | undefined>(undefined);
@@ -101,6 +103,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [hasDefaultKey, setHasDefaultKey] = useState(false);
   const [hasDefaultChatKey, setHasDefaultChatKey] = useState(false);
   const [modelGateEnabled, setModelGateEnabled] = useState(false);
+  const [modelGateUnlocked, setModelGateUnlocked] = useState(false);
 
   useEffect(() => {
     fetch('/api/config')
@@ -109,6 +112,15 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         setHasDefaultKey(!!d.hasDefaultKey);
         setHasDefaultChatKey(!!d.hasDefaultChatKey);
         setModelGateEnabled(!!d.modelGateEnabled);
+      })
+      .catch(() => { /* ignore */ });
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/model-gate')
+      .then((r) => r.json())
+      .then((d) => {
+        setModelGateUnlocked((prev) => prev || !!d.unlocked);
       })
       .catch(() => { /* ignore */ });
   }, []);
@@ -131,11 +143,14 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const clearAll = useCallback(() => {
     try { localStorage.clear(); } catch { /* ignore */ }
-    fetch('/api/model-gate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'clear' }),
-    })
+    Promise.allSettled([
+      fetch('/api/chat-assets', { method: 'DELETE' }),
+      fetch('/api/model-gate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clear' }),
+      }),
+    ])
       .catch(() => undefined)
       .finally(() => window.location.reload());
   }, []);
@@ -156,8 +171,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({
     config, options, updateConfig, updateOption,
-    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey, modelGateEnabled,
-  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey, modelGateEnabled]);
+    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked,
+  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey, modelGateEnabled, modelGateUnlocked]);
 
   // Auto-persist config & options on change (debounced)
   useEffect(() => {

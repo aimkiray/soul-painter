@@ -2,14 +2,14 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useChat } from '@/contexts/ChatContext';
 import { useImages } from '@/contexts/ImageContext';
-import { IMAGE_MODEL_PRESETS, CHAT_MODEL_PRESETS, LAST_PROMPT_KEY, ORIGINAL_ASPECT_SIZE, SIZE_PRESETS } from '@/lib/constants';
+import { IMAGE_MODEL_PRESETS, CHAT_MODEL_PRESETS, chatSessionPromptStorageKey, ORIGINAL_ASPECT_SIZE, REPEATER_MODEL_LABEL, SIZE_PRESETS } from '@/lib/constants';
 import { formatSizeDisplay } from '@/lib/size';
 
 interface ChatInputProps {
   onSend: (prompt: string) => void;
   isLoading: boolean;
-initialPrompt?: string;
   onClearChat: () => void;
   onOpenSettings: () => void;
   onCancel?: () => void;
@@ -17,30 +17,93 @@ initialPrompt?: string;
 
 const sel = 'w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono';
 
-export default function ChatInput({ onSend, isLoading, initialPrompt = '', onClearChat, onOpenSettings, onCancel }: ChatInputProps) {
-  const { config, updateConfig, options } = useConfig();
+function readStoredPrompt(sessionId: string) {
+  try {
+    return localStorage.getItem(chatSessionPromptStorageKey(sessionId)) || '';
+  } catch {
+    return '';
+  }
+}
+
+export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettings, onCancel }: ChatInputProps) {
+  const { config, updateConfig, options, modelGateEnabled, modelGateUnlocked } = useConfig();
+  const {
+    sessions,
+    activeSessionId,
+    loadingSessionId,
+    createChatSession,
+    switchChatSession,
+    renameChatSession,
+    deleteChatSession,
+  } = useChat();
   const { images, hasImages, selectedIndices, addFiles } = useImages();
-  const [prompt, setPrompt] = useState(initialPrompt);
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [customSize, setCustomSize] = useState(false);
   const [customModel, setCustomModel] = useState(false);
   const [customChatModel, setCustomChatModel] = useState(false);
   const [paramsOpen, setParamsOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sessionMenuRef = useRef<HTMLDivElement>(null);
+  const activeSession = sessions.find((session) => session.id === activeSessionId);
+  const isActiveSessionLoading = isLoading && loadingSessionId === activeSessionId;
+  const prompt = promptDrafts[activeSessionId] ?? readStoredPrompt(activeSessionId);
+  const setPrompt = (nextPrompt: string) => {
+    setPromptDrafts((prev) => (
+      prev[activeSessionId] === nextPrompt
+        ? prev
+        : { ...prev, [activeSessionId]: nextPrompt }
+    ));
+  };
 
   // Auto-save prompt while typing (debounced, only if persistPrompt enabled)
   useEffect(() => {
     if (!options.persistPrompt) return;
     const timer = setTimeout(() => {
-      try { localStorage.setItem(LAST_PROMPT_KEY, prompt); } catch { /* ignore */ }
+      try { localStorage.setItem(chatSessionPromptStorageKey(activeSessionId), prompt); } catch { /* ignore */ }
     }, 500);
     return () => clearTimeout(timer);
-  }, [prompt, options.persistPrompt]);
+  }, [prompt, options.persistPrompt, activeSessionId]);
 
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'F1') { e.preventDefault(); onOpenSettings(); } }; document.addEventListener('keydown', h); return () => document.removeEventListener('keydown', h); }, [onOpenSettings]);
 
+  useEffect(() => {
+    if (!sessionMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (sessionMenuRef.current?.contains(event.target as Node)) return;
+      setSessionMenuOpen(false);
+      setConfirmingDelete(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setSessionMenuOpen(false);
+      setConfirmingDelete(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [sessionMenuOpen]);
+
   const send = () => { if (!prompt.trim() || isLoading) return; onSend(prompt.trim()); if (options.clearOnSubmit) setPrompt(''); };
   const kd = (e: React.KeyboardEvent) => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); send(); } else if (e.key === 'Enter' && !e.shiftKey && !e.repeat) { e.preventDefault(); send(); } };
+  const commitRename = () => {
+    const nextTitle = renameDraft.trim();
+    if (nextTitle) renameChatSession(activeSessionId, nextTitle);
+    setRenaming(false);
+  };
+  const closeSessionTools = () => {
+    setRenaming(false);
+    setConfirmingDelete(false);
+    setSessionMenuOpen(false);
+  };
   const imageModeActive = config.mode === 'image';
+  const lockedRepeaterMode = modelGateEnabled && !modelGateUnlocked;
   const imageModelIsPreset = IMAGE_MODEL_PRESETS.some(m => m.value === config.model);
   const chatModelIsPreset = CHAT_MODEL_PRESETS.some(m => m.value === config.chatModel);
   const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
@@ -51,14 +114,123 @@ export default function ChatInput({ onSend, isLoading, initialPrompt = '', onCle
 
   return (
     <div className="shrink min-h-0 flex flex-col w-full max-w-3xl mx-auto px-2 sm:px-3 pb-3 border-t md:border-t-0 border-[#AAA]">
-      <div className="flex items-center justify-between gap-2 py-1.5 mb-1">
-        <span className="flex items-center gap-2">
-          <button onClick={() => setParamsOpen(!paramsOpen)} className="text-xs sm:text-sm text-white cursor-pointer font-mono">{paramsOpen ? '模式 ▾' : '模式 ▸'}</button>
-        </span>
-        <button onClick={onClearChat} className="text-xs sm:text-sm text-[#ff5555] cursor-pointer font-mono">清空记录</button>
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 py-1.5 mb-1">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
+          <button
+            onClick={() => {
+              closeSessionTools();
+              createChatSession();
+            }}
+            className="min-h-8 sm:min-h-9 bg-[#00aaaa] text-black border border-[#00aaaa] px-2.5 sm:px-3 text-xs sm:text-sm cursor-pointer font-mono shrink-0"
+          >
+            新建
+          </button>
+          <select
+            value={activeSessionId}
+            onChange={(event) => {
+              closeSessionTools();
+              switchChatSession(event.target.value);
+            }}
+            className="min-w-0 flex-1 min-h-8 sm:min-h-9 cursor-pointer bg-black text-[#CCC] border border-[#AAA] text-xs sm:text-sm px-2 font-mono"
+            aria-label="切换聊天"
+          >
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>{session.title}</option>
+            ))}
+          </select>
+          <div className="relative shrink-0" ref={sessionMenuRef}>
+            <button
+              onClick={() => {
+                setRenaming(false);
+                setConfirmingDelete(false);
+                setSessionMenuOpen((open) => !open);
+              }}
+              className="min-h-8 sm:min-h-9 min-w-8 sm:min-w-9 border border-[#AAA] text-[#CCC] bg-black px-2 text-xs sm:text-sm cursor-pointer font-mono"
+              aria-label="会话操作"
+              aria-expanded={sessionMenuOpen}
+              aria-haspopup="menu"
+            >
+              ⋯
+            </button>
+            {sessionMenuOpen && (
+              <div className="absolute right-0 bottom-full mb-1 z-20 w-36 border border-[#AAA] bg-black text-[#CCC]" role="menu">
+                <button
+                  onClick={() => {
+                    setConfirmingDelete(false);
+                    setRenameDraft(activeSession?.title || '');
+                    setRenaming(true);
+                    setSessionMenuOpen(false);
+                  }}
+                  role="menuitem"
+                  className="block w-full text-left px-3 py-2 text-xs sm:text-sm hover:bg-[#111] cursor-pointer"
+                >
+                  改名
+                </button>
+                <button
+                  onClick={() => {
+                    onClearChat();
+                    closeSessionTools();
+                  }}
+                  role="menuitem"
+                  className="block w-full text-left px-3 py-2 text-xs sm:text-sm hover:bg-[#111] cursor-pointer"
+                >
+                  清空当前
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirmingDelete) {
+                      deleteChatSession(activeSessionId);
+                      closeSessionTools();
+                    } else {
+                      setConfirmingDelete(true);
+                    }
+                  }}
+                  disabled={isActiveSessionLoading}
+                  role="menuitem"
+                  className="block w-full text-left px-3 py-2 text-xs sm:text-sm text-[#ff5555] hover:bg-[#111] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {confirmingDelete ? '确认删除' : '删除会话'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={() => {
+            closeSessionTools();
+            setParamsOpen((open) => !open);
+          }}
+          className="min-h-8 sm:min-h-9 min-w-8 sm:min-w-9 border border-[#AAA] text-white bg-black px-2 text-xs sm:text-sm cursor-pointer font-mono shrink-0"
+          aria-label={paramsOpen ? '收起参数' : '展开参数'}
+          aria-expanded={paramsOpen}
+        >
+          {paramsOpen ? '▾' : '▸'}
+        </button>
       </div>
 
-      <div className={`${paramsOpen ? '' : 'hidden'} md:block w-full mb-1 space-y-1 overflow-y-auto max-h-[30vh]`}>
+      {renaming && (
+        <div className="flex items-center gap-2 mb-1">
+          <input
+            value={renameDraft}
+            onChange={(event) => setRenameDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                commitRename();
+              } else if (event.key === 'Escape') {
+                setRenaming(false);
+              }
+            }}
+            className="flex-1 min-w-0 bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 px-2 font-mono outline-none"
+            autoFocus
+            maxLength={24}
+          />
+          <button onClick={commitRename} className="text-xs sm:text-sm text-[#00aaaa] cursor-pointer font-mono">保存</button>
+          <button onClick={() => setRenaming(false)} className="text-xs sm:text-sm text-[#CCC] cursor-pointer font-mono">取消</button>
+        </div>
+      )}
+
+      <div className={`${paramsOpen ? '' : 'hidden'} w-full mb-1 space-y-1 overflow-y-auto max-h-[30vh]`}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-1 w-full">
             <select value={config.mode} onChange={e=>updateConfig('mode',e.target.value as 'image' | 'chat')} className={sel}>
               <option value="image">图片</option>
@@ -66,8 +238,9 @@ export default function ChatInput({ onSend, isLoading, initialPrompt = '', onCle
             </select>
             {imageModeActive ? (
               <>
-                <select value={(customModel || !imageModelIsPreset)?'__custom__':config.model} onChange={e=>{if(e.target.value==='__custom__')setCustomModel(true);else{setCustomModel(false);updateConfig('model',e.target.value)}}} className="col-span-1 md:col-span-1 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
-                  {IMAGE_MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}<option value="__custom__">自定义...</option>
+                <select value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : (customModel || !imageModelIsPreset) ? '__custom__' : config.model} disabled={lockedRepeaterMode} onChange={e=>{if(e.target.value==='__custom__')setCustomModel(true);else{setCustomModel(false);updateConfig('model',e.target.value)}}} className="col-span-1 md:col-span-1 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono disabled:opacity-100 disabled:cursor-default">
+                  {lockedRepeaterMode ? <option value={REPEATER_MODEL_LABEL}>{REPEATER_MODEL_LABEL}</option> : IMAGE_MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}
+                  {!lockedRepeaterMode && <option value="__custom__">自定义...</option>}
                 </select>
                 <select value={(customSize || !sizeIsPreset)?'__custom__':config.size} onChange={e=>{if(e.target.value==='__custom__')setCustomSize(true);else{setCustomSize(false);updateConfig('size',e.target.value)}}} className="col-span-2 md:col-span-2 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
                   <optgroup label="AUTO">{SIZE_PRESETS.filter(s=>s.group==='AUTO').map(s=>(<option key={s.value} value={s.value}>{s.value === ORIGINAL_ASPECT_SIZE ? originalAspectLabel : s.label}</option>))}</optgroup>
@@ -78,14 +251,15 @@ export default function ChatInput({ onSend, isLoading, initialPrompt = '', onCle
                 </select>
               </>
             ) : (
-              <select value={(customChatModel || !chatModelIsPreset)?'__custom__':config.chatModel} onChange={e=>{if(e.target.value==='__custom__')setCustomChatModel(true);else{setCustomChatModel(false);updateConfig('chatModel',e.target.value)}}} className="col-span-1 md:col-span-3 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
-                {CHAT_MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}<option value="__custom__">自定义...</option>
+              <select value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : (customChatModel || !chatModelIsPreset) ? '__custom__' : config.chatModel} disabled={lockedRepeaterMode} onChange={e=>{if(e.target.value==='__custom__')setCustomChatModel(true);else{setCustomChatModel(false);updateConfig('chatModel',e.target.value)}}} className="col-span-1 md:col-span-3 w-full cursor-pointer bg-[#AAA] text-black border border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono disabled:opacity-100 disabled:cursor-default">
+                {lockedRepeaterMode ? <option value={REPEATER_MODEL_LABEL}>{REPEATER_MODEL_LABEL}</option> : CHAT_MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}
+                {!lockedRepeaterMode && <option value="__custom__">自定义...</option>}
               </select>
             )}
           </div>
           {(customSize || !sizeIsPreset) && imageModeActive && <input type="text" value={config.size} onChange={e=>updateConfig('size',e.target.value)} placeholder="WxH" className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
-          {(customModel || !imageModelIsPreset) && imageModeActive && <input type="text" value={config.model} onChange={e=>updateConfig('model',e.target.value)} className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
-          {(customChatModel || !chatModelIsPreset) && !imageModeActive && <input type="text" value={config.chatModel} onChange={e=>updateConfig('chatModel',e.target.value)} className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
+          {!lockedRepeaterMode && (customModel || !imageModelIsPreset) && imageModeActive && <input type="text" value={config.model} onChange={e=>updateConfig('model',e.target.value)} className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
+          {!lockedRepeaterMode && (customChatModel || !chatModelIsPreset) && !imageModeActive && <input type="text" value={config.chatModel} onChange={e=>updateConfig('chatModel',e.target.value)} className="w-full bg-black border border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono outline-none" />}
 
         </div>
 

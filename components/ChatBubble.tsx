@@ -29,6 +29,7 @@ function getExt(link: string, isData: boolean) {
 
 export default function ChatBubble({ message, isPending = false }: ChatBubbleProps) {
   const { role, prompt, images, extra } = message;
+  const visibleImages = images.filter((hit) => hit.dataUrl || hit.url);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [imgErrors, setImgErrors] = useState<Set<number>>(new Set());
 
@@ -59,11 +60,11 @@ export default function ChatBubble({ message, isPending = false }: ChatBubblePro
 
   return (
     <>
-      <div className={`flex flex-col gap-1 mb-3 ${role === 'user' ? 'items-end' : 'items-start'}`}>
+      <div className={`flex flex-col gap-1 mb-3 ${role === 'user' ? 'items-end text-right' : 'items-start'}`}>
         <span className={`text-xs px-1 ${role === 'user' ? 'text-[#00aaaa]' : 'text-[#CCC]'}`}>
           {role === 'user' ? 'You' : 'Assistant'}
         </span>
-        <div className={`max-w-[90%] sm:max-w-[80%] ${role === 'user' ? 'bg-[#00aaaa] text-white border border-[#00aaaa] p-3' : 'bg-[#111] text-[#CCC] border border-[#AAA] p-3'}`}>
+        <div className={`w-2/5 min-w-0 ${role === 'user' ? 'bg-[#00aaaa] text-white border-2 border-[#00aaaa] p-3' : 'bg-[#111] text-[#CCC] border-2 border-[#AAA] p-3'}`}>
           {extra === 'error' ? (
             <div className="flex flex-col gap-1">
               <span className="text-xs text-[#ff5555] uppercase font-bold">[ 错误 ]</span>
@@ -82,9 +83,9 @@ export default function ChatBubble({ message, isPending = false }: ChatBubblePro
                       <MarkdownRenderer content={message.text} />
                     </div>
                   )}
-                  {images.length > 0 && (
-                    <div className={images.length > 1 ? 'grid grid-cols-2 gap-2 mb-2' : 'mb-2'}>
-                      {images.map((hit, i) => {
+                  {visibleImages.length > 0 && (
+                    <div className={visibleImages.length > 1 ? 'grid grid-cols-2 gap-2 mb-2' : 'mb-2'}>
+                      {visibleImages.map((hit, i) => {
                         const src = hit.dataUrl || hit.url || '';
                         return (
                           <div key={i} className="relative group">
@@ -102,9 +103,9 @@ export default function ChatBubble({ message, isPending = false }: ChatBubblePro
                                 onError={() => setImgErrors((prev) => new Set(prev).add(i))}
                               />
                             )}
-                            {images.length > 1 && (
+                            {visibleImages.length > 1 && (
                               <span className="absolute top-1 left-1 bg-black/70 text-white text-xs px-1 pointer-events-none">
-                                #{i + 1}/{images.length}
+                                #{i + 1}/{visibleImages.length}
                               </span>
                             )}
                           </div>
@@ -125,9 +126,9 @@ export default function ChatBubble({ message, isPending = false }: ChatBubblePro
                   {message.extra && message.extra !== 'error' && (
                     <p className="text-xs text-[#CCC] mt-1 break-all">{message.extra}</p>
                   )}
-                  {images.length > 0 && (
+                  {visibleImages.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
-                      {images.map((hit, i) => {
+                      {visibleImages.map((hit, i) => {
                         const link = hit.dataUrl || hit.url || '';
                         const isData = !!hit.dataUrl;
                         return (

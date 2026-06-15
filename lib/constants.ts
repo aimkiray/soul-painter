@@ -27,6 +27,8 @@ export const CHAT_MODEL_PRESETS = [
   { label: 'gpt-5.4', value: 'gpt-5.4' },
 ] as const;
 
+export const REPEATER_MODEL_LABEL = 'copy-fable-5';
+
 export const LEGACY_CHAT_MODEL_VALUES = ['gpt-4o', 'gpt-4o-mini'] as const;
 
 export const QUALITY_OPTIONS = ['auto', 'high', 'medium', 'low'] as const;
@@ -63,7 +65,20 @@ export const DEFAULT_OPTIONS = {
 export const CFG_STORAGE_KEY = 'imggen-cfg-v1';
 export const OPTS_STORAGE_KEY = 'imggen-opts-v1';
 export const HISTORY_STORAGE_KEY = 'imggen-history-v1';
+export const CHAT_MESSAGES_STORAGE_KEY = 'imggen-chat-messages-v1';
+export const CHAT_SESSIONS_STORAGE_KEY = 'imggen-chat-sessions-v1';
+export const ACTIVE_CHAT_SESSION_STORAGE_KEY = 'imggen-active-chat-session-v1';
 export const LAST_PROMPT_KEY = 'imggen-last-prompt-v1';
 export const HISTORY_MAX = 20;
+export const CHAT_MESSAGES_MAX = 100;
+export const CHAT_SESSIONS_MAX = 20;
 export const COMPRESS_THRESHOLD = 1.5 * 1024 * 1024;
 export const MAX_EDGE = OFFICIAL_IMAGE_MAX_EDGE;
+
+export function chatSessionPromptStorageKey(sessionId: string) {
+  return `${LAST_PROMPT_KEY}:${sessionId}`;
+}
+
+export function isChatSessionPromptStorageKey(key: string) {
+  return key.startsWith(`${LAST_PROMPT_KEY}:`);
+}
