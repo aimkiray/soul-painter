@@ -14,12 +14,38 @@ import {
 } from '@/lib/constants';
 
 export interface ChatMessage {
+  id: string;
   role: 'user' | 'bot';
   prompt: string;
   images: ImageHit[];
   text: string;
   code: string;
   extra: string;
+  request?: ChatTurnSnapshot;
+  createdAt: number;
+  updatedAt?: number;
+}
+
+export interface ChatReferenceImage {
+  image: ImageHit;
+  mask?: ImageHit;
+}
+
+export interface ChatTurnSnapshot {
+  mode: 'images' | 'edits' | 'chat';
+  model: string;
+  chatModel: string;
+  size: string;
+  n: number;
+  quality: string;
+  format: string;
+  background: string;
+  moderation: string;
+  compression: number;
+  systemPrompt: string;
+  streaming: boolean;
+  contextLimit: number;
+  referenceImages: ChatReferenceImage[];
 }
 
 export interface ChatSession {
@@ -44,12 +70,21 @@ interface ChatContextValue {
   switchChatSession: (sessionId: string) => void;
   renameChatSession: (sessionId: string, title: string) => void;
   deleteChatSession: (sessionId: string) => void;
-  addUserMsg: (prompt: string, sessionId?: string) => void;
-  addBotMsg: (images: ImageHit[], code: string, extra: string, sessionId?: string) => void;
-  addTextBotMsg: (text: string, code: string, sessionId?: string) => void;
+  addUserMsg: (prompt: string, sessionId?: string, request?: ChatTurnSnapshot) => string;
+  addBotMsg: (images: ImageHit[], code: string, extra: string, sessionId?: string) => string;
+  addTextBotMsg: (text: string, code: string, sessionId?: string) => string;
   updateLastBotMsg: (images: ImageHit[], code?: string, sessionId?: string) => void;
   updateLastBotText: (text: string, sessionId?: string) => void;
+  updateBotMsg: (messageId: string, images: ImageHit[], code?: string, sessionId?: string) => void;
+  updateBotText: (messageId: string, text: string, sessionId?: string) => void;
   addErrorMsg: (error: string, sessionId?: string) => void;
+  deleteMessage: (messageId: string, sessionId?: string) => void;
+  updateUserMessage: (messageId: string, prompt: string, sessionId?: string) => void;
+  replaceBotMessage: (
+    messageId: string,
+    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'>,
+    sessionId?: string,
+  ) => void;
   setLoading: (v: boolean, sessionId?: string) => void;
   setStatus: (text: string, type?: '' | 'ok' | 'err' | 'warn') => void;
   setDebugRaw: (text: string) => void;
@@ -72,6 +107,23 @@ function createSessionId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function createMessageId() {
+  return createSessionId();
+}
+
+function createChatMessage(
+  message: Pick<ChatMessage, 'role' | 'prompt' | 'images' | 'text' | 'code' | 'extra'> & {
+    request?: ChatTurnSnapshot;
+  },
+  id = createMessageId(),
+): ChatMessage {
+  return {
+    ...message,
+    id,
+    createdAt: Date.now(),
+  };
+}
+
 function normalizeSessionTitle(value: unknown, fallback = DEFAULT_CHAT_TITLE) {
   const title = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
   if (!title) return fallback;
@@ -81,6 +133,12 @@ function normalizeSessionTitle(value: unknown, fallback = DEFAULT_CHAT_TITLE) {
 function sessionTitleFromMessages(messages: ChatMessage[], fallback = DEFAULT_CHAT_TITLE) {
   const firstPrompt = messages.find((message) => message.role === 'user' && message.prompt.trim())?.prompt;
   return normalizeSessionTitle(firstPrompt, fallback);
+}
+
+function isAutoManagedSessionTitle(session: ChatSession) {
+  return session.title === DEFAULT_CHAT_TITLE
+    || session.title === LEGACY_CHAT_TITLE
+    || session.title === sessionTitleFromMessages(session.messages, session.title);
 }
 
 function createEmptySession(messages: ChatMessage[] = [], title?: string): ChatSession {
@@ -99,6 +157,7 @@ function normalizeStoredMessages(value: unknown): ChatMessage[] {
   return value
     .filter((message): message is Partial<ChatMessage> => !!message && typeof message === 'object')
     .map((message): ChatMessage => ({
+      id: typeof message.id === 'string' && message.id.trim() ? message.id : createMessageId(),
       role: message.role === 'user' ? 'user' : 'bot',
       prompt: typeof message.prompt === 'string' ? message.prompt : '',
       images: Array.isArray(message.images)
@@ -109,8 +168,48 @@ function normalizeStoredMessages(value: unknown): ChatMessage[] {
       text: typeof message.text === 'string' ? message.text : '',
       code: typeof message.code === 'string' ? message.code : '',
       extra: typeof message.extra === 'string' ? message.extra : '',
+      request: normalizeStoredTurnSnapshot(message.request),
+      createdAt: typeof message.createdAt === 'number' && Number.isFinite(message.createdAt) ? message.createdAt : Date.now(),
+      updatedAt: typeof message.updatedAt === 'number' && Number.isFinite(message.updatedAt) ? message.updatedAt : undefined,
     }))
     .slice(-CHAT_MESSAGES_MAX);
+}
+
+function normalizeStoredReferenceImage(value: unknown): ChatReferenceImage | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Partial<ChatReferenceImage>;
+  const image = normalizeChatImageHit(raw.image ?? value);
+  if (!image) return null;
+  const mask = normalizeChatImageHit(raw.mask);
+  return mask ? { image, mask } : { image };
+}
+
+function normalizeStoredTurnSnapshot(value: unknown): ChatTurnSnapshot | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<ChatTurnSnapshot>;
+  const mode = raw.mode === 'chat' || raw.mode === 'edits' ? raw.mode : 'images';
+  const referenceImages = Array.isArray(raw.referenceImages)
+    ? raw.referenceImages
+        .map(normalizeStoredReferenceImage)
+        .filter((image): image is ChatReferenceImage => image !== null)
+    : [];
+
+  return {
+    mode,
+    model: typeof raw.model === 'string' ? raw.model : '',
+    chatModel: typeof raw.chatModel === 'string' ? raw.chatModel : '',
+    size: typeof raw.size === 'string' ? raw.size : 'auto',
+    n: typeof raw.n === 'number' && Number.isFinite(raw.n) ? raw.n : 1,
+    quality: typeof raw.quality === 'string' ? raw.quality : 'auto',
+    format: typeof raw.format === 'string' ? raw.format : 'png',
+    background: typeof raw.background === 'string' ? raw.background : 'auto',
+    moderation: typeof raw.moderation === 'string' ? raw.moderation : 'auto',
+    compression: typeof raw.compression === 'number' && Number.isFinite(raw.compression) ? raw.compression : 80,
+    systemPrompt: typeof raw.systemPrompt === 'string' ? raw.systemPrompt : '',
+    streaming: typeof raw.streaming === 'boolean' ? raw.streaming : true,
+    contextLimit: typeof raw.contextLimit === 'number' && Number.isFinite(raw.contextLimit) ? raw.contextLimit : 5,
+    referenceImages,
+  };
 }
 
 function normalizeStoredSession(value: unknown): ChatSession | null {
@@ -208,7 +307,21 @@ function stripHeavyMessageData(message: ChatMessage): ChatMessage {
     ...message,
     code: '',
     images,
+    request: stripHeavyTurnSnapshotData(message.request),
   };
+}
+
+function stripHeavyTurnSnapshotData(request: ChatTurnSnapshot | undefined): ChatTurnSnapshot | undefined {
+  if (!request) return undefined;
+  const referenceImages = request.referenceImages
+    .map((reference) => {
+      const image = toStoredChatImageHit(reference.image);
+      if (!image) return null;
+      const mask = reference.mask ? toStoredChatImageHit(reference.mask) : null;
+      return mask ? { image, mask } : { image };
+    })
+    .filter((reference): reference is ChatReferenceImage => reference !== null);
+  return { ...request, referenceImages };
 }
 
 function persistStoredSessions(sessions: ChatSession[], activeSessionId: string) {
@@ -265,11 +378,68 @@ async function prepareMessagesForStorage(messages: ChatMessage[]): Promise<{
       }
     }
 
-    storedMessages.push({ ...message, images: storedImages, code: '' });
-    memoryMessages.push({ ...message, images: memoryImages });
+    const preparedRequest = await prepareTurnSnapshotForStorage(message.request);
+    changed = changed || preparedRequest.changed;
+
+    storedMessages.push({ ...message, images: storedImages, code: '', request: preparedRequest.storedRequest });
+    memoryMessages.push({ ...message, images: memoryImages, request: preparedRequest.memoryRequest });
   }
 
   return { storedMessages, memoryMessages, changed };
+}
+
+async function prepareImageHitForStorage(image: ImageHit | undefined): Promise<{
+  storedImage?: ImageHit;
+  memoryImage?: ImageHit;
+  changed: boolean;
+}> {
+  if (!image) return { changed: false };
+  const url = await imageHitToStoredUrl(image);
+  if (url) {
+    return {
+      storedImage: { url },
+      memoryImage: { url },
+      changed: !image.url || image.url !== url,
+    };
+  }
+  if (image.dataUrl) return { memoryImage: { dataUrl: image.dataUrl }, changed: false };
+  return { changed: false };
+}
+
+async function prepareTurnSnapshotForStorage(request: ChatTurnSnapshot | undefined): Promise<{
+  storedRequest?: ChatTurnSnapshot;
+  memoryRequest?: ChatTurnSnapshot;
+  changed: boolean;
+}> {
+  if (!request) return { changed: false };
+
+  const storedReferences: ChatReferenceImage[] = [];
+  const memoryReferences: ChatReferenceImage[] = [];
+  let changed = false;
+
+  for (const reference of request.referenceImages) {
+    const preparedImage = await prepareImageHitForStorage(reference.image);
+    const preparedMask = await prepareImageHitForStorage(reference.mask);
+    changed = changed || preparedImage.changed || preparedMask.changed;
+
+    if (preparedImage.storedImage) {
+      storedReferences.push(preparedMask.storedImage
+        ? { image: preparedImage.storedImage, mask: preparedMask.storedImage }
+        : { image: preparedImage.storedImage });
+    }
+
+    if (preparedImage.memoryImage) {
+      memoryReferences.push(preparedMask.memoryImage
+        ? { image: preparedImage.memoryImage, mask: preparedMask.memoryImage }
+        : { image: preparedImage.memoryImage });
+    }
+  }
+
+  return {
+    storedRequest: { ...request, referenceImages: storedReferences },
+    memoryRequest: { ...request, referenceImages: memoryReferences },
+    changed,
+  };
 }
 
 async function prepareSessionsForStorage(sessions: ChatSession[]): Promise<{
@@ -305,11 +475,6 @@ function isEmptyBotMessage(message: ChatMessage | undefined) {
     && !message.extra;
 }
 
-function shouldAutoRenameSession(session: ChatSession) {
-  return !session.messages.some((message) => message.role === 'user' && message.prompt.trim())
-    && (session.title === DEFAULT_CHAT_TITLE || session.title === LEGACY_CHAT_TITLE);
-}
-
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [initialState] = useState(loadChatState);
   const [sessions, setSessions] = useState<ChatSession[]>(initialState.sessions);
@@ -335,8 +500,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       if (session.id !== sessionId) return session;
 
       const nextMessages = updater(session.messages, session).slice(-CHAT_MESSAGES_MAX);
-      const title = shouldAutoRenameSession(session)
-        ? sessionTitleFromMessages(nextMessages, session.title)
+      const title = isAutoManagedSessionTitle(session)
+        ? sessionTitleFromMessages(nextMessages, DEFAULT_CHAT_TITLE)
         : session.title;
 
       return {
@@ -396,25 +561,31 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     }
   }, [sessions, activeSessionId, isLoading, loadingSessionId]);
 
-  const addUserMsg = useCallback((prompt: string, sessionId = activeSessionId) => {
+  const addUserMsg = useCallback((prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot) => {
+    const message = createChatMessage({ role: 'user', prompt, images: [], text: '', code: '', extra: '', request });
     updateSessionMessages(sessionId, (prev) => [
       ...prev,
-      { role: 'user', prompt, images: [], text: '', code: '', extra: '' },
+      message,
     ]);
+    return message.id;
   }, [activeSessionId, updateSessionMessages]);
 
   const addBotMsg = useCallback((images: ImageHit[], code: string, extra: string, sessionId = activeSessionId) => {
+    const message = createChatMessage({ role: 'bot', prompt: '', images, text: '', code, extra });
     updateSessionMessages(sessionId, (prev) => [
       ...prev,
-      { role: 'bot', prompt: '', images, text: '', code, extra },
+      message,
     ]);
+    return message.id;
   }, [activeSessionId, updateSessionMessages]);
 
   const addTextBotMsg = useCallback((text: string, code: string, sessionId = activeSessionId) => {
+    const message = createChatMessage({ role: 'bot', prompt: '', images: [], text, code, extra: '' });
     updateSessionMessages(sessionId, (prev) => [
       ...prev,
-      { role: 'bot', prompt: '', images: [], text, code, extra: '' },
+      message,
     ]);
+    return message.id;
   }, [activeSessionId, updateSessionMessages]);
 
   const updateLastBotMsg = useCallback((images: ImageHit[], code?: string, sessionId = activeSessionId) => {
@@ -422,7 +593,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1];
       if (last.role !== 'bot') return prev;
-      const updated: ChatMessage = { ...last, images: [...images], code: code ?? last.code };
+      const updated: ChatMessage = { ...last, images: [...images], code: code ?? last.code, updatedAt: Date.now() };
       return [...prev.slice(0, -1), updated];
     });
   }, [activeSessionId, updateSessionMessages]);
@@ -432,18 +603,60 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1];
       if (last.role !== 'bot') return prev;
-      return [...prev.slice(0, -1), { ...last, text }];
+      return [...prev.slice(0, -1), { ...last, text, updatedAt: Date.now() }];
     });
+  }, [activeSessionId, updateSessionMessages]);
+
+  const updateBotMsg = useCallback((messageId: string, images: ImageHit[], code?: string, sessionId = activeSessionId) => {
+    updateSessionMessages(sessionId, (prev) => prev.map((message) => (
+      message.id === messageId && message.role === 'bot'
+        ? { ...message, images: [...images], code: code ?? message.code, updatedAt: Date.now() }
+        : message
+    )));
+  }, [activeSessionId, updateSessionMessages]);
+
+  const updateBotText = useCallback((messageId: string, text: string, sessionId = activeSessionId) => {
+    updateSessionMessages(sessionId, (prev) => prev.map((message) => (
+      message.id === messageId && message.role === 'bot'
+        ? { ...message, text, updatedAt: Date.now() }
+        : message
+    )));
   }, [activeSessionId, updateSessionMessages]);
 
   const addErrorMsg = useCallback((error: string, sessionId = activeSessionId) => {
     updateSessionMessages(sessionId, (prev) => {
-      const errorMessage: ChatMessage = { role: 'bot', prompt: error, images: [], text: '', code: '', extra: 'error' };
+      const errorMessage = createChatMessage({ role: 'bot', prompt: error, images: [], text: '', code: '', extra: 'error' });
       if (isEmptyBotMessage(prev[prev.length - 1])) {
         return [...prev.slice(0, -1), errorMessage];
       }
       return [...prev, errorMessage];
     });
+  }, [activeSessionId, updateSessionMessages]);
+
+  const deleteMessage = useCallback((messageId: string, sessionId = activeSessionId) => {
+    updateSessionMessages(sessionId, (prev) => prev.filter((message) => message.id !== messageId));
+  }, [activeSessionId, updateSessionMessages]);
+
+  const updateUserMessage = useCallback((messageId: string, prompt: string, sessionId = activeSessionId) => {
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrompt) return;
+    updateSessionMessages(sessionId, (prev) => prev.map((message) => (
+      message.id === messageId && message.role === 'user'
+        ? { ...message, prompt: cleanPrompt, updatedAt: Date.now() }
+        : message
+    )));
+  }, [activeSessionId, updateSessionMessages]);
+
+  const replaceBotMessage = useCallback((
+    messageId: string,
+    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'>,
+    sessionId = activeSessionId,
+  ) => {
+    updateSessionMessages(sessionId, (prev) => prev.map((current) => (
+      current.id === messageId && current.role === 'bot'
+        ? { ...current, ...message, role: 'bot', updatedAt: Date.now() }
+        : current
+    )));
   }, [activeSessionId, updateSessionMessages]);
 
   const setLoading = useCallback((value: boolean, sessionId = activeSessionId) => {
@@ -515,7 +728,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     addTextBotMsg,
     updateLastBotMsg,
     updateLastBotText,
+    updateBotMsg,
+    updateBotText,
     addErrorMsg,
+    deleteMessage,
+    updateUserMessage,
+    replaceBotMessage,
     setLoading,
     setStatus,
     setDebugRaw,
@@ -542,7 +760,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     addTextBotMsg,
     updateLastBotMsg,
     updateLastBotText,
+    updateBotMsg,
+    updateBotText,
     addErrorMsg,
+    deleteMessage,
+    updateUserMessage,
+    replaceBotMessage,
     setLoading,
     setStatus,
     setDebugRaw,

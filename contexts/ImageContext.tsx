@@ -3,40 +3,11 @@
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { ImageRef } from '@/types';
 import { compressIfNeeded } from '@/lib/compress';
+import { imageRefToEditBlob } from '@/lib/image-edit';
 import { canvasHasStrokes } from '@/lib/mask';
-import { OFFICIAL_IMAGE_MAX_EDGE } from '@/lib/constants';
 
 function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-}
-
-function imageToBlob(im: ImageRef): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = async () => {
-      const w = img.naturalWidth;
-      const h = img.naturalHeight;
-      const scale = Math.min(1, OFFICIAL_IMAGE_MAX_EDGE / Math.max(w, h));
-      if (scale === 1) {
-        resolve(im.file);
-        return;
-      }
-      const tw = Math.round(w * scale);
-      const th = Math.round(h * scale);
-      const canvas = document.createElement('canvas');
-      canvas.width = tw;
-      canvas.height = th;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(im.file);
-        return;
-      }
-      ctx.drawImage(img, 0, 0, tw, th);
-      resolve(await canvasToBlob(canvas) || im.file);
-    };
-    img.onerror = () => resolve(im.file);
-    img.src = im.objectUrl;
-  });
 }
 
 interface ImageContextValue {
@@ -61,12 +32,30 @@ interface ImageContextValue {
 
 const ImageContext = createContext<ImageContextValue | undefined>(undefined);
 
+function pruneSelectedIndices(indices: Set<number>, imageCount: number) {
+  let changed = false;
+  const next = new Set<number>();
+  for (const index of indices) {
+    if (index >= 0 && index < imageCount) {
+      next.add(index);
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? next : indices;
+}
+
 export function ImageProvider({ children }: { children: React.ReactNode }) {
   const [images, setImages] = useState<ImageRef[]>([]);
   const [editingIndex, setEditingIndex] = useState(-1);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [compressing, setCompressing] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const safeSelectedIndices = useMemo(
+    () => pruneSelectedIndices(selectedIndices, images.length),
+    [selectedIndices, images.length],
+  );
+  const safeEditingIndex = editingIndex >= 0 && editingIndex < images.length ? editingIndex : -1;
 
   const addFiles = useCallback(async (fileList: FileList | File[]) => {
     const candidates = Array.from(fileList).filter(
@@ -92,7 +81,7 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
       const newIndices = new Set<number>();
       for (let i = prev.length; i < updated.length; i++) newIndices.add(i);
       setSelectedIndices((prevSel) => {
-        const merged = new Set(prevSel);
+        const merged = new Set(pruneSelectedIndices(prevSel, prev.length));
         newIndices.forEach((idx) => merged.add(idx));
         return merged;
       });
@@ -103,13 +92,14 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const toggleSelect = useCallback((i: number) => {
+    if (i < 0 || i >= images.length) return;
     setSelectedIndices((prev) => {
       const next = new Set(prev);
       if (next.has(i)) next.delete(i);
       else next.add(i);
       return next;
     });
-  }, []);
+  }, [images.length]);
 
   const selectAll = useCallback(() => {
     setSelectedIndices(new Set(images.map((_, i) => i)));
@@ -120,6 +110,7 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const removeImage = useCallback((i: number) => {
+    if (i < 0 || i >= images.length) return;
     setImages((prev) => {
       const img = prev[i];
       if (img?.objectUrl) URL.revokeObjectURL(img.objectUrl);
@@ -140,11 +131,12 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
       }
       return next;
     });
-  }, []);
+  }, [images.length]);
 
   const openEditor = useCallback((i: number) => {
+    if (i < 0 || i >= images.length) return;
     setEditingIndex(i);
-  }, []);
+  }, [images.length]);
 
   const closeEditor = useCallback(() => {
     setEditingIndex(-1);
@@ -180,7 +172,7 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
     form.append('prompt', prompt);
     if (size) form.append('size', size);
 
-    const imageBlobs = await Promise.all(imgs.map(imageToBlob));
+    const imageBlobs = await Promise.all(imgs.map(imageRefToEditBlob));
     imageBlobs.forEach((blob, i) => {
       if (!blob) return;
       const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
@@ -199,11 +191,11 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
   const anyMasked = images.some((im) => im.maskCanvas && canvasHasStrokes(im.maskCanvas));
 
   const value = useMemo(() => ({
-    images, editingIndex, selectedIndices, compressing, pendingCount,
+    images, editingIndex: safeEditingIndex, selectedIndices: safeSelectedIndices, compressing, pendingCount,
     addFiles, removeImage, openEditor, closeEditor, clearAll, toggleSelect, selectAll, deselectAll,
     hasImages, anyMasked, persistMask,
     buildEditsForm,
-  }), [images, editingIndex, selectedIndices, compressing, pendingCount,
+  }), [images, safeEditingIndex, safeSelectedIndices, compressing, pendingCount,
     addFiles, removeImage, openEditor, closeEditor, clearAll, toggleSelect, selectAll, deselectAll,
     hasImages, anyMasked, persistMask,
     buildEditsForm]);

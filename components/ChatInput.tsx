@@ -15,8 +15,6 @@ interface ChatInputProps {
   onCancel?: () => void;
 }
 
-const sel = 'w-full cursor-pointer bg-[#AAA] text-black border-2 border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono';
-
 function readStoredPrompt(sessionId: string) {
   try {
     return localStorage.getItem(chatSessionPromptStorageKey(sessionId)) || '';
@@ -213,6 +211,15 @@ export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettin
             )}
           </div>
         </div>
+        <select
+          value={config.mode}
+          onChange={(event) => updateConfig('mode', event.target.value as 'image' | 'chat')}
+          className="h-8 sm:h-9 w-16 sm:w-20 shrink-0 cursor-pointer bg-black text-[#CCC] border-2 border-[#AAA] text-xs sm:text-sm px-1.5 sm:px-2 font-mono"
+          aria-label="生成模式"
+        >
+          <option value="image">图片</option>
+          <option value="chat">聊天</option>
+        </select>
         <button
           onClick={() => {
             closeSessionTools();
@@ -260,17 +267,13 @@ export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettin
 
       <div className={`${paramsOpen ? '' : 'hidden'} w-full mb-1 space-y-1 overflow-y-auto max-h-[30vh]`}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-1 w-full">
-            <select value={config.mode} onChange={e=>updateConfig('mode',e.target.value as 'image' | 'chat')} className={sel}>
-              <option value="image">图片</option>
-              <option value="chat">聊天</option>
-            </select>
             {imageModeActive ? (
               <>
-                <select value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : (customModel || !imageModelIsPreset) ? '__custom__' : config.model} disabled={lockedRepeaterMode} onChange={e=>{if(e.target.value==='__custom__')setCustomModel(true);else{setCustomModel(false);updateConfig('model',e.target.value)}}} className="col-span-1 md:col-span-1 w-full cursor-pointer bg-[#AAA] text-black border-2 border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono disabled:opacity-100 disabled:cursor-default">
+                <select value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : (customModel || !imageModelIsPreset) ? '__custom__' : config.model} disabled={lockedRepeaterMode} onChange={e=>{if(e.target.value==='__custom__')setCustomModel(true);else{setCustomModel(false);updateConfig('model',e.target.value)}}} className="col-span-2 md:col-span-1 w-full cursor-pointer bg-[#AAA] text-black border-2 border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono disabled:opacity-100 disabled:cursor-default">
                   {lockedRepeaterMode ? <option value={REPEATER_MODEL_LABEL}>{REPEATER_MODEL_LABEL}</option> : IMAGE_MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}
                   {!lockedRepeaterMode && <option value="__custom__">自定义...</option>}
                 </select>
-                <select value={(customSize || !sizeIsPreset)?'__custom__':config.size} onChange={e=>{if(e.target.value==='__custom__')setCustomSize(true);else{setCustomSize(false);updateConfig('size',e.target.value)}}} className="col-span-2 md:col-span-2 w-full cursor-pointer bg-[#AAA] text-black border-2 border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
+                <select value={(customSize || !sizeIsPreset)?'__custom__':config.size} onChange={e=>{if(e.target.value==='__custom__')setCustomSize(true);else{setCustomSize(false);updateConfig('size',e.target.value)}}} className="col-span-2 md:col-span-3 w-full cursor-pointer bg-[#AAA] text-black border-2 border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono">
                   <optgroup label="AUTO">{SIZE_PRESETS.filter(s=>s.group==='AUTO').map(s=>(<option key={s.value} value={s.value}>{s.value === ORIGINAL_ASPECT_SIZE ? originalAspectLabel : s.label}</option>))}</optgroup>
                   <optgroup label="1K">{SIZE_PRESETS.filter(s=>s.group==='1K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
                   <optgroup label="2K">{SIZE_PRESETS.filter(s=>s.group==='2K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
@@ -279,7 +282,7 @@ export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettin
                 </select>
               </>
             ) : (
-              <select value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : (customChatModel || !chatModelIsPreset) ? '__custom__' : config.chatModel} disabled={lockedRepeaterMode} onChange={e=>{if(e.target.value==='__custom__')setCustomChatModel(true);else{setCustomChatModel(false);updateConfig('chatModel',e.target.value)}}} className="col-span-1 md:col-span-3 w-full cursor-pointer bg-[#AAA] text-black border-2 border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono disabled:opacity-100 disabled:cursor-default">
+              <select value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : (customChatModel || !chatModelIsPreset) ? '__custom__' : config.chatModel} disabled={lockedRepeaterMode} onChange={e=>{if(e.target.value==='__custom__')setCustomChatModel(true);else{setCustomChatModel(false);updateConfig('chatModel',e.target.value)}}} className="col-span-2 md:col-span-4 w-full cursor-pointer bg-[#AAA] text-black border-2 border-[#999] text-xs sm:text-sm py-1 sm:py-1.5 px-2 font-mono disabled:opacity-100 disabled:cursor-default">
                 {lockedRepeaterMode ? <option value={REPEATER_MODEL_LABEL}>{REPEATER_MODEL_LABEL}</option> : CHAT_MODEL_PRESETS.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}
                 {!lockedRepeaterMode && <option value="__custom__">自定义...</option>}
               </select>

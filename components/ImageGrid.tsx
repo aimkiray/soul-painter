@@ -123,7 +123,7 @@ export default function ImageGrid() {
             const showCompressedBadge = compressedBadgeUrls.has(img.objectUrl);
             return (
               <div
-                key={i}
+                key={img.objectUrl || `image-${i}`}
                 onClick={() => toggleSelect(i)}
                 className={`relative aspect-square overflow-hidden bg-black cursor-pointer border-2 ${isSelected ? 'border-[#00aaaa]' : 'border-[#555]'}`}
               >
@@ -177,7 +177,7 @@ export default function ImageGrid() {
               const isSelected = selectedIndices.has(i);
               const showCompressedBadge = compressedBadgeUrls.has(img.objectUrl);
               return (
-                <div key={i} className="relative shrink-0">
+                <div key={img.objectUrl || `image-${i}`} className="relative shrink-0">
                   <img
                     src={img.objectUrl}
                     alt={`ref ${i + 1}`}
