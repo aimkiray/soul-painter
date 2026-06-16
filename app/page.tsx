@@ -6,6 +6,7 @@ import { ChatProvider, useChat } from '@/contexts/ChatContext';
 import { ImageProvider, useImages } from '@/contexts/ImageContext';
 import StatusBar from '@/components/StatusBar';
 import MenuBar from '@/components/MenuBar';
+import ChatSidebar from '@/components/ChatSidebar';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import TabDecode from '@/components/TabDecode';
 import ChatArea from '@/components/ChatArea';
@@ -22,6 +23,7 @@ import type { ChatMessage, ChatReferenceImage, ChatTurnSnapshot } from '@/contex
 import {
   HISTORY_STORAGE_KEY,
   HISTORY_MAX,
+  CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY,
   chatSessionPromptStorageKey,
 } from '@/lib/constants';
 import { imageHitToStoredUrl, uploadChatImage } from '@/lib/chat-asset-client';
@@ -394,6 +396,14 @@ function HomeInner() {
   const [activeTab, setActiveTab] = useState<'generate' | 'decode'>('generate');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pendingRegenerateMessageId, setPendingRegenerateMessageId] = useState<string | null>(null);
+  const [chatSidebarCollapsed, setChatSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
 
   const { config, options, modelGateEnabled } = useConfig();
   const {
@@ -412,13 +422,20 @@ function HomeInner() {
     setStatus,
     setDebugRaw,
     isLoading,
-    clearChat,
   } = useChat();
   const { images, editingIndex, selectedIndices, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
 
   const abortRef = useRef<AbortController | null>(null);
   const sessionsRef = useRef(sessions);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY, chatSidebarCollapsed ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [chatSidebarCollapsed]);
 
   const handleCancel = useCallback(() => {
     abortRef.current?.abort();
@@ -1003,6 +1020,7 @@ function HomeInner() {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenChatSidebar={() => setChatSidebarOpen(true)}
       />
 
       <main className="flex-1 flex flex-col overflow-hidden" role="main">
@@ -1011,6 +1029,12 @@ function HomeInner() {
         ) : (
           <>
             <div id="tab-generate" role="tabpanel" className="flex-1 flex overflow-hidden">
+              <ChatSidebar
+                open={chatSidebarOpen}
+                collapsed={chatSidebarCollapsed}
+                onClose={() => setChatSidebarOpen(false)}
+                onToggleCollapse={() => setChatSidebarCollapsed((value) => !value)}
+              />
               <div className="flex-1 flex flex-col overflow-hidden min-w-0">
                 <ChatArea
                   onRegenerateMessage={handleRegenerateMessage}
@@ -1021,7 +1045,6 @@ function HomeInner() {
                 <ChatInput
                   onSend={handleSend}
                   isLoading={isLoading}
-                  onClearChat={clearChat}
                   onOpenSettings={() => setSettingsOpen(true)}
                   onCancel={handleCancel}
                 />

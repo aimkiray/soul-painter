@@ -70,6 +70,7 @@ interface ChatContextValue {
   switchChatSession: (sessionId: string) => void;
   renameChatSession: (sessionId: string, title: string) => void;
   deleteChatSession: (sessionId: string) => void;
+  clearChatSession: (sessionId: string) => void;
   addUserMsg: (prompt: string, sessionId?: string, request?: ChatTurnSnapshot) => string;
   addBotMsg: (images: ImageHit[], code: string, extra: string, sessionId?: string) => string;
   addTextBotMsg: (text: string, code: string, sessionId?: string) => string;
@@ -561,6 +562,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     }
   }, [sessions, activeSessionId, isLoading, loadingSessionId]);
 
+  const clearChatSession = useCallback((sessionId: string) => {
+    if (isLoading && loadingSessionId === sessionId) return;
+    updateSessionMessages(sessionId, () => []);
+    if (sessionId !== activeSessionId) return;
+    setStatusText('');
+    setStatusType('');
+    setDebugRaw('（尚未请求）');
+    setDebugVisible(false);
+  }, [activeSessionId, isLoading, loadingSessionId, updateSessionMessages]);
+
   const addUserMsg = useCallback((prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot) => {
     const message = createChatMessage({ role: 'user', prompt, images: [], text: '', code: '', extra: '', request });
     updateSessionMessages(sessionId, (prev) => [
@@ -702,12 +713,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [sessions, activeSessionId]);
 
   const clearCurrentChat = useCallback(() => {
-    updateSessionMessages(activeSessionId, () => []);
-    setStatusText('');
-    setStatusType('');
-    setDebugRaw('（尚未请求）');
-    setDebugVisible(false);
-  }, [activeSessionId, updateSessionMessages]);
+    clearChatSession(activeSessionId);
+  }, [activeSessionId, clearChatSession]);
 
   const value = useMemo(() => ({
     sessions,
@@ -723,6 +730,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     switchChatSession,
     renameChatSession,
     deleteChatSession,
+    clearChatSession,
     addUserMsg,
     addBotMsg,
     addTextBotMsg,
@@ -755,6 +763,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     switchChatSession,
     renameChatSession,
     deleteChatSession,
+    clearChatSession,
     addUserMsg,
     addBotMsg,
     addTextBotMsg,

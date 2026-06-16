@@ -10,7 +10,6 @@ import { formatSizeDisplay } from '@/lib/size';
 interface ChatInputProps {
   onSend: (prompt: string) => void;
   isLoading: boolean;
-  onClearChat: () => void;
   onOpenSettings: () => void;
   onCancel?: () => void;
 }
@@ -31,31 +30,16 @@ function readStoredParamsOpen() {
   }
 }
 
-export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettings, onCancel }: ChatInputProps) {
+export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel }: ChatInputProps) {
   const { config, updateConfig, options, modelGateEnabled, modelGateUnlocked } = useConfig();
-  const {
-    sessions,
-    activeSessionId,
-    loadingSessionId,
-    createChatSession,
-    switchChatSession,
-    renameChatSession,
-    deleteChatSession,
-  } = useChat();
+  const { activeSessionId } = useChat();
   const { images, hasImages, selectedIndices, addFiles } = useImages();
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [customSize, setCustomSize] = useState(false);
   const [customModel, setCustomModel] = useState(false);
   const [customChatModel, setCustomChatModel] = useState(false);
   const [paramsOpen, setParamsOpen] = useState(readStoredParamsOpen);
-  const [renaming, setRenaming] = useState(false);
-  const [renameDraft, setRenameDraft] = useState('');
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const sessionMenuRef = useRef<HTMLDivElement>(null);
-  const activeSession = sessions.find((session) => session.id === activeSessionId);
-  const isActiveSessionLoading = isLoading && loadingSessionId === activeSessionId;
   const prompt = promptDrafts[activeSessionId] ?? readStoredPrompt(activeSessionId);
   const setPrompt = (nextPrompt: string) => {
     setPromptDrafts((prev) => (
@@ -82,38 +66,8 @@ export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettin
     } catch { /* ignore */ }
   }, [paramsOpen]);
 
-  useEffect(() => {
-    if (!sessionMenuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (sessionMenuRef.current?.contains(event.target as Node)) return;
-      setSessionMenuOpen(false);
-      setConfirmingDelete(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      setSessionMenuOpen(false);
-      setConfirmingDelete(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [sessionMenuOpen]);
-
   const send = () => { if (!prompt.trim() || isLoading) return; onSend(prompt.trim()); if (options.clearOnSubmit) setPrompt(''); };
   const kd = (e: React.KeyboardEvent) => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); send(); } else if (e.key === 'Enter' && !e.shiftKey && !e.repeat) { e.preventDefault(); send(); } };
-  const commitRename = () => {
-    const nextTitle = renameDraft.trim();
-    if (nextTitle) renameChatSession(activeSessionId, nextTitle);
-    setRenaming(false);
-  };
-  const closeSessionTools = () => {
-    setRenaming(false);
-    setConfirmingDelete(false);
-    setSessionMenuOpen(false);
-  };
   const imageModeActive = config.mode === 'image';
   const lockedRepeaterMode = modelGateEnabled && !modelGateUnlocked;
   const imageModelIsPreset = IMAGE_MODEL_PRESETS.some(m => m.value === config.model);
@@ -127,94 +81,10 @@ export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettin
   return (
     <div className="shrink min-h-0 flex flex-col w-[calc(100%-12px)] md:w-full max-w-3xl mx-[6px] md:mx-auto px-2 sm:px-3 pb-3 border-t md:border-t-0 border-[#AAA]">
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 py-1.5 mb-1">
-        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
-          <button
-            onClick={() => {
-              closeSessionTools();
-              createChatSession();
-            }}
-            className="min-h-8 sm:min-h-9 bg-[#00aaaa] text-black border-2 border-[#00aaaa] px-2.5 sm:px-3 text-xs sm:text-sm cursor-pointer font-mono shrink-0"
-          >
-            新建
-          </button>
-          <select
-            value={activeSessionId}
-            onChange={(event) => {
-              closeSessionTools();
-              switchChatSession(event.target.value);
-            }}
-            className="min-w-0 flex-1 min-h-8 sm:min-h-9 cursor-pointer bg-black text-[#CCC] border-2 border-[#AAA] text-xs sm:text-sm px-2 font-mono"
-            aria-label="切换聊天"
-          >
-            {sessions.map((session) => (
-              <option key={session.id} value={session.id}>{session.title}</option>
-            ))}
-          </select>
-          <div className="relative shrink-0" ref={sessionMenuRef}>
-            <button
-              onClick={() => {
-                setRenaming(false);
-                setConfirmingDelete(false);
-                setSessionMenuOpen((open) => !open);
-              }}
-              className="h-8 sm:h-9 w-10 sm:w-10 border-2 border-[#AAA] text-[#CCC] bg-black text-base sm:text-lg leading-none cursor-pointer font-mono shrink-0 flex items-center justify-center"
-              aria-label="会话操作"
-              aria-expanded={sessionMenuOpen}
-              aria-haspopup="menu"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" className="block h-5 w-5 sm:h-[22px] sm:w-[22px]" aria-hidden="true">
-                <path d="M0 0h22v22H0z" fill="none" />
-                <path fill="currentColor" d="M16 2h1v1h1v1h1v1h1v1h-1v1h-1v1h-1V7h-1V6h-1V5h-1V4h1V3h1Z" />
-                <path fill="currentColor" d="M12 6h2v1h1v1h1v2h-1v1h-1v1h-1v1h-1v1h-1v1h-1v1H9v1H8v1H7v1H6v1H2v-4h1v-1h1v-1h1v-1h1v-1h1v-1h1v-1h1V9h1V8h1V7h1Z" />
-              </svg>
-            </button>
-            {sessionMenuOpen && (
-              <div className="absolute right-0 bottom-full mb-1 z-20 w-36 border-2 border-[#AAA] bg-black text-[#CCC]" role="menu">
-                <button
-                  onClick={() => {
-                    setConfirmingDelete(false);
-                    setRenameDraft(activeSession?.title || '');
-                    setRenaming(true);
-                    setSessionMenuOpen(false);
-                  }}
-                  role="menuitem"
-                  className="block w-full text-left px-3 py-2 text-xs sm:text-sm hover:bg-[#111] cursor-pointer"
-                >
-                  改名
-                </button>
-                <button
-                  onClick={() => {
-                    onClearChat();
-                    closeSessionTools();
-                  }}
-                  role="menuitem"
-                  className="block w-full text-left px-3 py-2 text-xs sm:text-sm hover:bg-[#111] cursor-pointer"
-                >
-                  清空当前
-                </button>
-                <button
-                  onClick={() => {
-                    if (confirmingDelete) {
-                      deleteChatSession(activeSessionId);
-                      closeSessionTools();
-                    } else {
-                      setConfirmingDelete(true);
-                    }
-                  }}
-                  disabled={isActiveSessionLoading}
-                  role="menuitem"
-                  className="block w-full text-left px-3 py-2 text-xs sm:text-sm text-[#ff5555] hover:bg-[#111] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {confirmingDelete ? '确认删除' : '删除会话'}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
         <select
           value={config.mode}
           onChange={(event) => updateConfig('mode', event.target.value as 'image' | 'chat')}
-          className="h-8 sm:h-9 w-16 sm:w-20 shrink-0 cursor-pointer bg-black text-[#CCC] border-2 border-[#AAA] text-xs sm:text-sm px-1.5 sm:px-2 font-mono"
+          className="h-8 sm:h-9 w-20 sm:w-24 shrink-0 cursor-pointer bg-black text-[#CCC] border-2 border-[#AAA] text-xs sm:text-sm px-1.5 sm:px-2 font-mono"
           aria-label="生成模式"
         >
           <option value="image">图片</option>
@@ -222,7 +92,6 @@ export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettin
         </select>
         <button
           onClick={() => {
-            closeSessionTools();
             setParamsOpen((open) => !open);
           }}
           className="min-h-8 sm:min-h-9 w-10 sm:w-10 border-2 border-[#AAA] text-white bg-black px-2 text-base sm:text-lg leading-none cursor-pointer font-mono shrink-0"
@@ -242,28 +111,6 @@ export default function ChatInput({ onSend, isLoading, onClearChat, onOpenSettin
           )}
         </button>
       </div>
-
-      {renaming && (
-        <div className="flex items-center gap-2 mb-1">
-          <input
-            value={renameDraft}
-            onChange={(event) => setRenameDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                commitRename();
-              } else if (event.key === 'Escape') {
-                setRenaming(false);
-              }
-            }}
-            className="flex-1 min-w-0 bg-black border-2 border-[#00aaaa] text-[#CCC] text-xs sm:text-sm py-1 px-2 font-mono outline-none"
-            autoFocus
-            maxLength={24}
-          />
-          <button onClick={commitRename} className="text-xs sm:text-sm text-[#00aaaa] cursor-pointer font-mono">保存</button>
-          <button onClick={() => setRenaming(false)} className="text-xs sm:text-sm text-[#CCC] cursor-pointer font-mono">取消</button>
-        </div>
-      )}
 
       <div className={`${paramsOpen ? '' : 'hidden'} w-full mb-1 space-y-1 overflow-y-auto max-h-[30vh]`}>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-1 w-full">

@@ -70,6 +70,7 @@ export const CHAT_SESSIONS_STORAGE_KEY = 'imggen-chat-sessions-v1';
 export const ACTIVE_CHAT_SESSION_STORAGE_KEY = 'imggen-active-chat-session-v1';
 export const LAST_PROMPT_KEY = 'imggen-last-prompt-v1';
 export const PARAMS_OPEN_STORAGE_KEY = 'imggen-params-open-v1';
+export const CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY = 'imggen-chat-sidebar-collapsed-v1';
 export const HISTORY_MAX = 20;
 export const CHAT_MESSAGES_MAX = 100;
 export const CHAT_SESSIONS_MAX = 20;
