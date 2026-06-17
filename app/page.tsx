@@ -59,6 +59,7 @@ type RequestBody = Record<string, unknown> | FormData;
 type RunMode = ChatTurnSnapshot['mode'];
 
 interface PromptRunOptions {
+  existingUserMessageId?: string;
   targetBotMessageId?: string;
   historyMessages?: ChatMessage[];
   requestSnapshot?: ChatTurnSnapshot;
@@ -418,6 +419,8 @@ function HomeInner() {
     updateBotMsg,
     updateBotText,
     replaceBotMessage,
+    updateUserMessage,
+    truncateChatAfterMessage,
     setLoading,
     setStatus,
     setDebugRaw,
@@ -436,6 +439,17 @@ function HomeInner() {
       // ignore
     }
   }, [chatSidebarCollapsed]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1024px)');
+    const closeMobileSidebar = () => {
+      if (media.matches) setChatSidebarOpen(false);
+    };
+
+    closeMobileSidebar();
+    media.addEventListener('change', closeMobileSidebar);
+    return () => media.removeEventListener('change', closeMobileSidebar);
+  }, []);
 
   const handleCancel = useCallback(() => {
     abortRef.current?.abort();
@@ -490,16 +504,26 @@ function HomeInner() {
     runOptions: PromptRunOptions = {},
   ) => {
     const sessionId = activeSessionId;
+    const existingUserMessageId = runOptions.existingUserMessageId;
     const targetBotMessageId = runOptions.targetBotMessageId;
     if (!prompt) return;
 
-    if (targetBotMessageId) setPendingRegenerateMessageId(targetBotMessageId);
     const currentSessionMessages = sessionsRef.current.find((session) => session.id === sessionId)?.messages ?? [];
     const sessionMessages = runOptions.historyMessages
       ?? currentSessionMessages;
     const originalTargetMessage = targetBotMessageId
       ? currentSessionMessages.find((message) => message.id === targetBotMessageId && message.role === 'bot')
       : undefined;
+    if (targetBotMessageId) {
+      setPendingRegenerateMessageId(targetBotMessageId);
+      replaceBotMessage(targetBotMessageId, {
+        prompt: '',
+        images: [],
+        text: '',
+        code: '',
+        extra: '',
+      }, sessionId);
+    }
 
     abortRef.current?.abort();
     const requestController = new AbortController();
@@ -542,7 +566,10 @@ function HomeInner() {
     const runContextLimit = turnSnapshot.contextLimit;
     const sizeForBody = parseSize(resolvedSize) ? resolvedSize : null;
 
-    if (!targetBotMessageId) {
+    if (existingUserMessageId) {
+      updateUserMessage(existingUserMessageId, prompt, sessionId, turnSnapshot);
+      truncateChatAfterMessage(existingUserMessageId, sessionId);
+    } else if (!targetBotMessageId) {
       addUserMsg(prompt, sessionId, turnSnapshot);
     }
 
@@ -984,8 +1011,10 @@ function HomeInner() {
     updateBotMsg,
     updateBotText,
     replaceBotMessage,
+    truncateChatAfterMessage,
     addErrorMsg,
     addUserMsg,
+    updateUserMessage,
     setLoading,
     setStatus,
     setDebugRaw,
@@ -1008,6 +1037,21 @@ function HomeInner() {
     void runPrompt(userMessage.prompt, {
       targetBotMessageId: messageId,
       historyMessages: priorMessages.filter((message) => message.id !== userMessage.id),
+      requestSnapshot: userMessage.request,
+    });
+  }, [activeSessionId, isLoading, runPrompt]);
+
+  const handleEditMessage = useCallback((messageId: string, prompt: string) => {
+    if (isLoading) return;
+    const session = sessionsRef.current.find((item) => item.id === activeSessionId);
+    if (!session) return;
+    const messageIndex = session.messages.findIndex((message) => message.id === messageId && message.role === 'user');
+    if (messageIndex < 0) return;
+    const userMessage = session.messages[messageIndex];
+    const historyMessages = session.messages.slice(0, messageIndex);
+    void runPrompt(prompt, {
+      existingUserMessageId: messageId,
+      historyMessages,
       requestSnapshot: userMessage.request,
     });
   }, [activeSessionId, isLoading, runPrompt]);
@@ -1038,10 +1082,10 @@ function HomeInner() {
               <div className="flex-1 flex flex-col overflow-hidden min-w-0">
                 <ChatArea
                   onRegenerateMessage={handleRegenerateMessage}
+                  onEditMessage={handleEditMessage}
                   pendingMessageId={pendingRegenerateMessageId}
                 />
-                {/* Mobile thumbnail strip rendered inline */}
-                <div className="md:hidden"><ImageGrid /></div>
+                <div className="lg:hidden"><ImageGrid layout="strip" /></div>
                 <ChatInput
                   onSend={handleSend}
                   isLoading={isLoading}
@@ -1049,7 +1093,7 @@ function HomeInner() {
                   onCancel={handleCancel}
                 />
               </div>
-              <div className="hidden md:flex"><ImageGrid /></div>
+              <div className="hidden lg:flex"><ImageGrid layout="sidebar" /></div>
             </div>
             {editingIndex >= 0 && (
               <ErrorBoundary><ImageEditor onClose={() => closeEditor()} /></ErrorBoundary>

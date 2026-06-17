@@ -18,6 +18,7 @@ interface ChatBubbleProps {
     updatedAt?: number;
   };
   isPending?: boolean;
+  isRegenerating?: boolean;
   messageIndex: number;
   disabled?: boolean;
   canRegenerate?: boolean;
@@ -74,9 +75,46 @@ async function writeClipboardText(text: string) {
   }
 }
 
+function EditIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true">
+      <path d="M0 0h22v22H0z" fill="none" />
+      <path fill="currentColor" d="M16 2h1v1h1v1h1v1h1v1h-1v1h-1v1h-1V7h-1V6h-1V5h-1V4h1V3h1m-4 3h2v1h1v1h1v2h-1v1h-1v1h-1v1h-1v1h-1v1h-1v1H9v1H8v1H7v1H6v1H2v-4h1v-1h1v-1h1v-1h1v-1h1v-1h1v-1h1V9h1V8h1V7h1" />
+    </svg>
+  );
+}
+
+function DeleteIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true">
+      <path d="M0 0h22v22H0z" fill="none" />
+      <path fill="currentColor" d="M10 7v9H8V7zm2 0h2v9h-2zM8 2h6v1h5v2h-1v14h-1v1H5v-1H4V5H3V3h5zM6 5v13h10V5z" />
+    </svg>
+  );
+}
+
+function RegenerateIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true">
+      <path d="M0 0h22v22H0z" fill="none" />
+      <path fill="currentColor" d="M22 11v1h-1v1h-1v1h-1v1h-2v-1h-1v-1h-1v-1h-1v-1h3V9h-1V7h-1V6h-2V5H9v1H7v1H6v2H5v4h1v2h1v1h2v1h4v-1h3v2h-2v1H8v-1H6v-1H5v-1H4v-2H3V8h1V6h1V5h1V4h2V3h6v1h2v1h1v1h1v2h1v3z" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true">
+      <path d="M0 0h22v22H0z" fill="none" />
+      <path fill="currentColor" d="M2 5h1V4h4V2h2V1h4v1h2v2h4v1h1v15h-1v1H3v-1H2zm8-2v2h2V3zm8 3h-2v2H6V6H4v13h14z" />
+    </svg>
+  );
+}
+
 export default function ChatBubble({
   message,
   isPending = false,
+  isRegenerating = false,
   messageIndex,
   disabled = false,
   canRegenerate = false,
@@ -90,7 +128,6 @@ export default function ChatBubble({
   const [imgErrors, setImgErrors] = useState<Set<number>>(new Set());
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [copyFailedUrl, setCopyFailedUrl] = useState<string | null>(null);
-  const [actionsOpen, setActionsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(prompt);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -160,10 +197,9 @@ export default function ChatBubble({
     if (!nextPrompt || disabled || !onEdit) return;
     onEdit(message.id, nextPrompt);
     setEditing(false);
-    setActionsOpen(false);
   };
 
-  const actionButtonClass = 'block w-full text-left bg-black text-[#CCC] px-3 py-1.5 text-xs font-mono cursor-pointer hover:bg-[#111] hover:text-[#00aaaa] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-[#CCC]';
+  const actionButtonClass = 'flex h-7 w-7 items-center justify-center border-2 border-[#555] bg-black text-base leading-none text-[#AAA] cursor-pointer hover:border-[#00aaaa] hover:text-[#00aaaa] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-[#555] disabled:hover:text-[#AAA]';
   const showEdited = !!message.updatedAt && message.updatedAt > 0;
 
   return (
@@ -177,7 +213,6 @@ export default function ChatBubble({
           </span>
           <span className="text-[0.65rem] text-[#666]">#{messageIndex + 1}</span>
           {showEdited && <span className="text-[0.65rem] text-[#888]">已编辑</span>}
-          {isPending && <span className="text-[0.65rem] text-[#00aaaa] animate-pulse">重新生成中</span>}
         </div>
         <div className={`w-fit max-w-full min-w-0 ${role === 'user' ? 'bg-[#00aaaa] text-white border-2 border-[#00aaaa] p-3' : 'bg-[#111] text-[#CCC] border-2 border-[#AAA] p-3'}`}>
           {extra === 'error' ? (
@@ -234,7 +269,7 @@ export default function ChatBubble({
               {role === 'bot' && (
                 <div>
                   {isPending && !message.text && visibleImages.length === 0 && !message.code && !message.extra && (
-                    <span className="animate-pulse text-sm">生成中...</span>
+                    <span className="animate-pulse text-sm">{isRegenerating ? '重新生成中...' : '生成中...'}</span>
                   )}
                   {message.text && (
                     <div className="text-sm break-words mb-2">
@@ -325,23 +360,9 @@ export default function ChatBubble({
         </div>
         {!editing && (
           <div
-            className={`absolute top-5 z-10 ${role === 'user' ? 'right-full mr-1' : 'left-full ml-1'}`}
+            className={`flex flex-wrap gap-1 ${role === 'user' ? 'justify-end' : 'justify-start'}`}
             onClick={(event) => event.stopPropagation()}
           >
-            <button
-              type="button"
-              onClick={() => {
-                setActionsOpen((open) => !open);
-                setConfirmingDelete(false);
-              }}
-              className={`h-7 w-7 border-2 border-[#AAA] bg-black text-[#CCC] text-sm leading-none cursor-pointer hover:border-[#00aaaa] hover:text-[#00aaaa] flex items-center justify-center transition-opacity ${actionsOpen ? 'opacity-100' : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100'}`}
-              aria-label="消息操作"
-              aria-expanded={actionsOpen}
-            >
-              ...
-            </button>
-            {actionsOpen && (
-              <div className={`absolute top-8 w-24 border-2 border-[#AAA] bg-black text-[#CCC] ${role === 'user' ? 'right-0' : 'left-0'}`}>
             {role === 'user' ? (
               <>
                 <button
@@ -350,20 +371,24 @@ export default function ChatBubble({
                     if (disabled) return;
                     setEditDraft(prompt);
                     setEditing(true);
-                    setActionsOpen(true);
+                    setConfirmingDelete(false);
                   }}
                   disabled={disabled}
                   className={actionButtonClass}
+                  aria-label="编辑并重发"
+                  title="编辑并重发"
                 >
-                  编辑
+                  <EditIcon />
                 </button>
                 <button
                   type="button"
                   onClick={requestDelete}
-                  disabled={disabled}
+                  disabled={disabled || !onDelete}
                   className={`${actionButtonClass} ${confirmingDelete ? 'text-[#ff5555]' : ''}`}
+                  aria-label={confirmingDelete ? '确认删除消息' : '删除消息'}
+                  title={confirmingDelete ? '确认删除' : '删除'}
                 >
-                  {confirmingDelete ? '确认删除' : '删除'}
+                  <DeleteIcon />
                 </button>
               </>
             ) : (
@@ -371,30 +396,34 @@ export default function ChatBubble({
                 <button
                   type="button"
                   onClick={() => onRegenerate?.(message.id)}
-                  disabled={disabled || !canRegenerate}
+                  disabled={disabled || !canRegenerate || !onRegenerate}
                   className={actionButtonClass}
+                  aria-label="重新生成"
+                  title="重新生成"
                 >
-                  重新生成
+                  <RegenerateIcon />
                 </button>
                 <button
                   type="button"
                   onClick={() => { void handleCopyText(); }}
                   disabled={disabled || !(message.text || message.prompt || message.extra)}
                   className={actionButtonClass}
+                  aria-label="复制消息"
+                  title="复制"
                 >
-                  复制
+                  <CopyIcon />
                 </button>
                 <button
                   type="button"
                   onClick={requestDelete}
-                  disabled={disabled}
+                  disabled={disabled || !onDelete}
                   className={`${actionButtonClass} ${confirmingDelete ? 'text-[#ff5555]' : ''}`}
+                  aria-label={confirmingDelete ? '确认删除消息' : '删除消息'}
+                  title={confirmingDelete ? '确认删除' : '删除'}
                 >
-                  {confirmingDelete ? '确认删除' : '删除'}
+                  <DeleteIcon />
                 </button>
               </>
-            )}
-              </div>
             )}
           </div>
         )}

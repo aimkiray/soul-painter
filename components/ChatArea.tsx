@@ -17,17 +17,17 @@ function isPendingBotMessage(message: { role: string; prompt: string; images: un
 
 interface ChatAreaProps {
   onRegenerateMessage?: (messageId: string) => void;
+  onEditMessage?: (messageId: string, prompt: string) => void;
   pendingMessageId?: string | null;
 }
 
-export default function ChatArea({ onRegenerateMessage, pendingMessageId = null }: ChatAreaProps) {
+export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMessageId = null }: ChatAreaProps) {
   const {
     messages,
     isLoading,
     activeSessionId,
     loadingSessionId,
     deleteMessage,
-    updateUserMessage,
   } = useChat();
   const isActiveSessionLoading = isLoading && loadingSessionId === activeSessionId;
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -57,8 +57,8 @@ export default function ChatArea({ onRegenerateMessage, pendingMessageId = null 
     <div className="chat-scroll-gutter flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col" id="chat-scroll">
       <div className={`${CHAT_CONTENT_CLASS} flex flex-col`}>
         {messages.map((msg, i) => {
-          const isMessagePending = isActiveSessionLoading
-            && (isPendingBotMessage(msg) || msg.id === pendingMessageId);
+          const isRegeneratingMessage = msg.id === pendingMessageId;
+          const isMessagePending = isRegeneratingMessage || (isActiveSessionLoading && isPendingBotMessage(msg));
           const canRegenerate = msg.role === 'bot'
             && messages.slice(0, i).some((message) => message.role === 'user' && message.prompt.trim());
           return (
@@ -67,10 +67,11 @@ export default function ChatArea({ onRegenerateMessage, pendingMessageId = null 
               message={msg}
               messageIndex={i}
               isPending={isMessagePending}
+              isRegenerating={isRegeneratingMessage}
               disabled={isLoading}
               canRegenerate={canRegenerate}
               onDelete={(messageId) => deleteMessage(messageId, activeSessionId)}
-              onEdit={(messageId, prompt) => updateUserMessage(messageId, prompt, activeSessionId)}
+              onEdit={onEditMessage}
               onRegenerate={onRegenerateMessage}
             />
           );

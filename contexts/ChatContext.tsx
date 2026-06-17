@@ -80,7 +80,8 @@ interface ChatContextValue {
   updateBotText: (messageId: string, text: string, sessionId?: string) => void;
   addErrorMsg: (error: string, sessionId?: string) => void;
   deleteMessage: (messageId: string, sessionId?: string) => void;
-  updateUserMessage: (messageId: string, prompt: string, sessionId?: string) => void;
+  updateUserMessage: (messageId: string, prompt: string, sessionId?: string, request?: ChatTurnSnapshot) => void;
+  truncateChatAfterMessage: (messageId: string, sessionId?: string) => void;
   replaceBotMessage: (
     messageId: string,
     message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'>,
@@ -648,14 +649,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateSessionMessages(sessionId, (prev) => prev.filter((message) => message.id !== messageId));
   }, [activeSessionId, updateSessionMessages]);
 
-  const updateUserMessage = useCallback((messageId: string, prompt: string, sessionId = activeSessionId) => {
+  const updateUserMessage = useCallback((messageId: string, prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot) => {
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt) return;
     updateSessionMessages(sessionId, (prev) => prev.map((message) => (
       message.id === messageId && message.role === 'user'
-        ? { ...message, prompt: cleanPrompt, updatedAt: Date.now() }
+        ? { ...message, prompt: cleanPrompt, request: request ?? message.request, updatedAt: Date.now() }
         : message
     )));
+  }, [activeSessionId, updateSessionMessages]);
+
+  const truncateChatAfterMessage = useCallback((messageId: string, sessionId = activeSessionId) => {
+    updateSessionMessages(sessionId, (prev) => {
+      const index = prev.findIndex((message) => message.id === messageId);
+      if (index < 0) return prev;
+      return prev.slice(0, index + 1);
+    });
   }, [activeSessionId, updateSessionMessages]);
 
   const replaceBotMessage = useCallback((
@@ -741,6 +750,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     addErrorMsg,
     deleteMessage,
     updateUserMessage,
+    truncateChatAfterMessage,
     replaceBotMessage,
     setLoading,
     setStatus,
@@ -774,6 +784,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     addErrorMsg,
     deleteMessage,
     updateUserMessage,
+    truncateChatAfterMessage,
     replaceBotMessage,
     setLoading,
     setStatus,
