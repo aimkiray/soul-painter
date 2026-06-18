@@ -31,9 +31,13 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
   } = useChat();
   const isActiveSessionLoading = isLoading && loadingSessionId === activeSessionId;
   const bottomRef = useRef<HTMLDivElement>(null);
-  const hasActivePendingBotMessage = isActiveSessionLoading && messages.some((message) => (
-    isPendingBotMessage(message) || message.id === pendingMessageId
-  ));
+  const lastUserIndex = messages.findLastIndex((message) => message.role === 'user');
+  const hasAssistantForCurrentTurn = lastUserIndex >= 0
+    && messages.slice(lastUserIndex + 1).some((message) => message.role === 'bot');
+  const hasActiveAssistantMessage = isActiveSessionLoading && (
+    hasAssistantForCurrentTurn
+    || messages.some((message) => isPendingBotMessage(message) || message.id === pendingMessageId)
+  );
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -76,7 +80,7 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
             />
           );
         })}
-        {isActiveSessionLoading && !hasActivePendingBotMessage && (
+        {isActiveSessionLoading && !hasActiveAssistantMessage && (
           <div className="flex flex-col gap-1 mb-3 items-start">
             <span className="text-xs px-1 text-[#CCC]">Assistant</span>
             <div className="w-fit max-w-full min-w-0 bg-[#111] text-[#CCC] border-2 border-[#AAA] py-2 px-3">

@@ -35,18 +35,20 @@ export function toStoredChatImageHit(value: ImageHit): ImageHit | null {
   return url && SAFE_LOCAL_CHAT_ASSET_URL.test(url) ? { url } : null;
 }
 
-async function postChatAsset(body: { image?: string; url?: string }): Promise<string | null> {
+async function postChatAsset(body: { image?: string; url?: string }, signal?: AbortSignal): Promise<string | null> {
   try {
     const response = await fetch('/api/chat-assets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     });
     if (!response.ok) return null;
     const data = await response.json().catch(() => null) as { url?: string } | null;
     const url = normalizeChatImageUrl(data?.url);
     return url && SAFE_LOCAL_CHAT_ASSET_URL.test(url) ? url : null;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     return null;
   }
 }
@@ -75,23 +77,25 @@ function cacheResolve(key: string, resolve: () => Promise<string | null>): Promi
   return pending;
 }
 
-export async function uploadChatImage(dataUrl: string): Promise<string | null> {
+export async function uploadChatImage(dataUrl: string, signal?: AbortSignal): Promise<string | null> {
   const normalizedDataUrl = normalizeChatImageDataUrl(dataUrl);
   if (!normalizedDataUrl) return null;
+  if (signal) return postChatAsset({ image: normalizedDataUrl }, signal);
   return cacheResolve(
     `data:${normalizedDataUrl.length}:${hashString(normalizedDataUrl)}`,
     () => postChatAsset({ image: normalizedDataUrl }),
   );
 }
 
-export async function imageHitToStoredUrl(image: ImageHit): Promise<string | null> {
+export async function imageHitToStoredUrl(image: ImageHit, signal?: AbortSignal): Promise<string | null> {
   const url = normalizeChatImageUrl(image.url);
   if (url) {
     if (SAFE_LOCAL_CHAT_ASSET_URL.test(url)) return url;
+    if (signal) return postChatAsset({ url }, signal);
     return cacheResolve(`url:${url}`, () => postChatAsset({ url }));
   }
 
   const dataUrl = normalizeChatImageDataUrl(image.dataUrl);
   if (!dataUrl) return null;
-  return uploadChatImage(dataUrl);
+  return uploadChatImage(dataUrl, signal);
 }

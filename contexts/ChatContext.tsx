@@ -24,6 +24,7 @@ export interface ChatMessage {
   request?: ChatTurnSnapshot;
   createdAt: number;
   updatedAt?: number;
+  editedAt?: number;
 }
 
 export interface ChatReferenceImage {
@@ -51,6 +52,7 @@ export interface ChatTurnSnapshot {
 export interface ChatSession {
   id: string;
   title: string;
+  titleSource?: 'auto' | 'generated' | 'manual';
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;
@@ -69,6 +71,7 @@ interface ChatContextValue {
   createChatSession: () => string;
   switchChatSession: (sessionId: string) => void;
   renameChatSession: (sessionId: string, title: string) => void;
+  setGeneratedSessionTitle: (sessionId: string, title: string) => void;
   deleteChatSession: (sessionId: string) => void;
   clearChatSession: (sessionId: string) => void;
   addUserMsg: (prompt: string, sessionId?: string, request?: ChatTurnSnapshot) => string;
@@ -80,7 +83,14 @@ interface ChatContextValue {
   updateBotText: (messageId: string, text: string, sessionId?: string) => void;
   addErrorMsg: (error: string, sessionId?: string) => void;
   deleteMessage: (messageId: string, sessionId?: string) => void;
-  updateUserMessage: (messageId: string, prompt: string, sessionId?: string, request?: ChatTurnSnapshot) => void;
+  restoreSessionMessages: (sessionId: string, messages: ChatMessage[]) => void;
+  updateUserMessage: (
+    messageId: string,
+    prompt: string,
+    sessionId?: string,
+    request?: ChatTurnSnapshot,
+    options?: { markEdited?: boolean },
+  ) => void;
   truncateChatAfterMessage: (messageId: string, sessionId?: string) => void;
   replaceBotMessage: (
     messageId: string,
@@ -138,16 +148,27 @@ function sessionTitleFromMessages(messages: ChatMessage[], fallback = DEFAULT_CH
 }
 
 function isAutoManagedSessionTitle(session: ChatSession) {
+  if (session.titleSource === 'generated' || session.titleSource === 'manual') return false;
   return session.title === DEFAULT_CHAT_TITLE
     || session.title === LEGACY_CHAT_TITLE
     || session.title === sessionTitleFromMessages(session.messages, session.title);
 }
 
+function inferTitleSource(title: string, messages: ChatMessage[]): ChatSession['titleSource'] {
+  return title === DEFAULT_CHAT_TITLE
+    || title === LEGACY_CHAT_TITLE
+    || title === sessionTitleFromMessages(messages, title)
+      ? 'auto'
+      : 'manual';
+}
+
 function createEmptySession(messages: ChatMessage[] = [], title?: string): ChatSession {
   const now = Date.now();
+  const normalizedTitle = normalizeSessionTitle(title || sessionTitleFromMessages(messages));
   return {
     id: createSessionId(),
-    title: normalizeSessionTitle(title || sessionTitleFromMessages(messages)),
+    title: normalizedTitle,
+    titleSource: inferTitleSource(normalizedTitle, messages),
     messages: messages.slice(-CHAT_MESSAGES_MAX),
     createdAt: now,
     updatedAt: now,
@@ -173,6 +194,7 @@ function normalizeStoredMessages(value: unknown): ChatMessage[] {
       request: normalizeStoredTurnSnapshot(message.request),
       createdAt: typeof message.createdAt === 'number' && Number.isFinite(message.createdAt) ? message.createdAt : Date.now(),
       updatedAt: typeof message.updatedAt === 'number' && Number.isFinite(message.updatedAt) ? message.updatedAt : undefined,
+      editedAt: typeof message.editedAt === 'number' && Number.isFinite(message.editedAt) ? message.editedAt : undefined,
     }))
     .slice(-CHAT_MESSAGES_MAX);
 }
@@ -225,6 +247,9 @@ function normalizeStoredSession(value: unknown): ChatSession | null {
   return {
     id,
     title: normalizeSessionTitle(raw.title, sessionTitleFromMessages(messages)),
+    titleSource: raw.titleSource === 'generated' || raw.titleSource === 'manual' || raw.titleSource === 'auto'
+      ? raw.titleSource
+      : inferTitleSource(normalizeSessionTitle(raw.title, sessionTitleFromMessages(messages)), messages),
     messages,
     createdAt,
     updatedAt,
@@ -536,7 +561,17 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     if (!cleanTitle) return;
     setSessions((prev) => prev.map((session) => (
       session.id === sessionId
-        ? { ...session, title: cleanTitle, updatedAt: Date.now() }
+        ? { ...session, title: cleanTitle, titleSource: 'manual', updatedAt: Date.now() }
+        : session
+    )));
+  }, []);
+
+  const setGeneratedSessionTitle = useCallback((sessionId: string, title: string) => {
+    const cleanTitle = normalizeSessionTitle(title, '');
+    if (!cleanTitle) return;
+    setSessions((prev) => prev.map((session) => (
+      session.id === sessionId && isAutoManagedSessionTitle(session)
+        ? { ...session, title: cleanTitle, titleSource: 'generated', updatedAt: Date.now() }
         : session
     )));
   }, []);
@@ -565,13 +600,23 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const clearChatSession = useCallback((sessionId: string) => {
     if (isLoading && loadingSessionId === sessionId) return;
-    updateSessionMessages(sessionId, () => []);
+    setSessions((prev) => prev.map((session) => (
+      session.id === sessionId
+        ? {
+          ...session,
+          title: DEFAULT_CHAT_TITLE,
+          titleSource: 'auto',
+          messages: [],
+          updatedAt: Date.now(),
+        }
+        : session
+    )));
     if (sessionId !== activeSessionId) return;
     setStatusText('');
     setStatusType('');
     setDebugRaw('（尚未请求）');
     setDebugVisible(false);
-  }, [activeSessionId, isLoading, loadingSessionId, updateSessionMessages]);
+  }, [activeSessionId, isLoading, loadingSessionId]);
 
   const addUserMsg = useCallback((prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot) => {
     const message = createChatMessage({ role: 'user', prompt, images: [], text: '', code: '', extra: '', request });
@@ -649,12 +694,28 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateSessionMessages(sessionId, (prev) => prev.filter((message) => message.id !== messageId));
   }, [activeSessionId, updateSessionMessages]);
 
-  const updateUserMessage = useCallback((messageId: string, prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot) => {
+  const restoreSessionMessages = useCallback((sessionId: string, messages: ChatMessage[]) => {
+    updateSessionMessages(sessionId, () => messages);
+  }, [updateSessionMessages]);
+
+  const updateUserMessage = useCallback((
+    messageId: string,
+    prompt: string,
+    sessionId = activeSessionId,
+    request?: ChatTurnSnapshot,
+    options?: { markEdited?: boolean },
+  ) => {
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt) return;
     updateSessionMessages(sessionId, (prev) => prev.map((message) => (
       message.id === messageId && message.role === 'user'
-        ? { ...message, prompt: cleanPrompt, request: request ?? message.request, updatedAt: Date.now() }
+        ? {
+          ...message,
+          prompt: cleanPrompt,
+          request: request ?? message.request,
+          updatedAt: Date.now(),
+          editedAt: options?.markEdited ? Date.now() : message.editedAt,
+        }
         : message
     )));
   }, [activeSessionId, updateSessionMessages]);
@@ -738,6 +799,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     createChatSession,
     switchChatSession,
     renameChatSession,
+    setGeneratedSessionTitle,
     deleteChatSession,
     clearChatSession,
     addUserMsg,
@@ -749,6 +811,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateBotText,
     addErrorMsg,
     deleteMessage,
+    restoreSessionMessages,
     updateUserMessage,
     truncateChatAfterMessage,
     replaceBotMessage,
@@ -772,6 +835,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     createChatSession,
     switchChatSession,
     renameChatSession,
+    setGeneratedSessionTitle,
     deleteChatSession,
     clearChatSession,
     addUserMsg,
@@ -783,6 +847,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateBotText,
     addErrorMsg,
     deleteMessage,
+    restoreSessionMessages,
     updateUserMessage,
     truncateChatAfterMessage,
     replaceBotMessage,

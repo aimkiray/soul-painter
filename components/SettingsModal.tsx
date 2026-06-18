@@ -13,6 +13,7 @@ import {
   QUALITY_OPTIONS,
   SIZE_PRESETS,
 } from '@/lib/constants';
+import { addModelToList, mergeModelOptions, removeModelFromList } from '@/lib/model-options';
 import { formatSizeDisplay } from '@/lib/size';
 
 interface SettingsModalProps {
@@ -33,12 +34,15 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const { images, selectedIndices } = useImages();
   const [showKey, setShowKey] = useState(false);
   const [showChatKey, setShowChatKey] = useState(false);
-  const [customImageModel, setCustomImageModel] = useState(false);
-  const [customChatModel, setCustomChatModel] = useState(false);
+  const [newImageModel, setNewImageModel] = useState('');
+  const [newChatModel, setNewChatModel] = useState('');
   const [customSize, setCustomSize] = useState(false);
 
-  const imageModelIsPreset = IMAGE_MODEL_PRESETS.some(m => m.value === config.model);
-  const chatModelIsPreset = CHAT_MODEL_PRESETS.some(m => m.value === config.chatModel);
+  const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
+  const chatModelOptions = mergeModelOptions(CHAT_MODEL_PRESETS, config.customChatModels);
+  const imageModelIsOption = imageModelOptions.some(m => m.value === config.model);
+  const chatModelIsOption = chatModelOptions.some(m => m.value === config.chatModel);
+  const titleModelIsOption = chatModelOptions.some(m => m.value === config.titleModel);
   const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
   const activeImages = selectedIndices.size > 0
     ? images.filter((_, i) => selectedIndices.has(i))
@@ -91,6 +95,39 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     inherit: 'text-[#ffff55]',
     none: 'text-[#ff5555]',
   }[chatKeySource];
+
+  const addImageModel = () => {
+    const model = newImageModel.trim();
+    if (!model) return;
+    const exists = imageModelOptions.some((option) => option.value === model);
+    if (!exists) {
+      updateConfig('customImageModels', addModelToList(config.customImageModels, model));
+    }
+    updateConfig('model', model);
+    setNewImageModel('');
+  };
+
+  const addChatModel = () => {
+    const model = newChatModel.trim();
+    if (!model) return;
+    const exists = chatModelOptions.some((option) => option.value === model);
+    if (!exists) {
+      updateConfig('customChatModels', addModelToList(config.customChatModels, model));
+    }
+    updateConfig('chatModel', model);
+    setNewChatModel('');
+  };
+
+  const deleteImageModel = (model: string) => {
+    updateConfig('customImageModels', removeModelFromList(config.customImageModels, model));
+    if (config.model === model) updateConfig('model', IMAGE_MODEL_PRESETS[0].value);
+  };
+
+  const deleteChatModel = (model: string) => {
+    updateConfig('customChatModels', removeModelFromList(config.customChatModels, model));
+    if (config.chatModel === model) updateConfig('chatModel', CHAT_MODEL_PRESETS[0].value);
+    if (config.titleModel === model) updateConfig('titleModel', CHAT_MODEL_PRESETS[0].value);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2">
@@ -179,29 +216,41 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   <label className={labelClass}>Image Model</label>
                   <div className="space-y-1">
                     <select
-                      value={(customImageModel || !imageModelIsPreset) ? '__custom__' : config.model}
+                      value={imageModelIsOption ? config.model : '__current__'}
                       onChange={(e) => {
-                        if (e.target.value === '__custom__') {
-                          setCustomImageModel(true);
-                        } else {
-                          setCustomImageModel(false);
-                          updateConfig('model', e.target.value);
-                        }
+                        if (e.target.value !== '__current__') updateConfig('model', e.target.value);
                       }}
                       className={selectClass}
                     >
-                      {IMAGE_MODEL_PRESETS.map(m => (
+                      {!imageModelIsOption && <option value="__current__">{config.model}</option>}
+                      {imageModelOptions.map(m => (
                         <option key={m.value} value={m.value}>{m.label}</option>
                       ))}
-                      <option value="__custom__">自定义...</option>
                     </select>
-                    {(customImageModel || !imageModelIsPreset) && (
+                    <div className="flex min-w-0">
                       <input
                         type="text"
-                        value={config.model}
-                        onChange={(e) => updateConfig('model', e.target.value)}
-                        className={inputClass}
+                        value={newImageModel}
+                        onChange={(e) => setNewImageModel(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addImageModel(); } }}
+                        placeholder="添加图片模型"
+                        className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                       />
+                      <button onClick={addImageModel} className="btn-retro px-2 text-xs shrink-0">
+                        添加
+                      </button>
+                    </div>
+                    {config.customImageModels.length > 0 && (
+                      <div className="space-y-1">
+                        {config.customImageModels.map((model) => (
+                          <div key={model} className="flex min-w-0 items-center gap-2 border-2 border-[#444] bg-black px-2 py-1">
+                            <span className="min-w-0 flex-1 truncate text-xs text-[#CCC]">{model}</span>
+                            <button onClick={() => deleteImageModel(model)} className="text-xs text-[#ff5555] hover:text-white cursor-pointer">
+                              删除
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -210,30 +259,61 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   <label className={labelClass}>Chat Model</label>
                   <div className="space-y-1">
                     <select
-                      value={(customChatModel || !chatModelIsPreset) ? '__custom__' : config.chatModel}
+                      value={chatModelIsOption ? config.chatModel : '__current__'}
                       onChange={(e) => {
-                        if (e.target.value === '__custom__') {
-                          setCustomChatModel(true);
-                        } else {
-                          setCustomChatModel(false);
-                          updateConfig('chatModel', e.target.value);
-                        }
+                        if (e.target.value !== '__current__') updateConfig('chatModel', e.target.value);
                       }}
                       className={selectClass}
                     >
-                      {CHAT_MODEL_PRESETS.map(m => (
+                      {!chatModelIsOption && <option value="__current__">{config.chatModel}</option>}
+                      {chatModelOptions.map(m => (
                         <option key={m.value} value={m.value}>{m.label}</option>
                       ))}
-                      <option value="__custom__">自定义...</option>
                     </select>
-                    {(customChatModel || !chatModelIsPreset) && (
+                    <div className="flex min-w-0">
                       <input
                         type="text"
-                        value={config.chatModel}
-                        onChange={(e) => updateConfig('chatModel', e.target.value)}
-                        className={inputClass}
+                        value={newChatModel}
+                        onChange={(e) => setNewChatModel(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChatModel(); } }}
+                        placeholder="添加聊天模型"
+                        className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                       />
+                      <button onClick={addChatModel} className="btn-retro px-2 text-xs shrink-0">
+                        添加
+                      </button>
+                    </div>
+                    {config.customChatModels.length > 0 && (
+                      <div className="space-y-1">
+                        {config.customChatModels.map((model) => (
+                          <div key={model} className="flex min-w-0 items-center gap-2 border-2 border-[#444] bg-black px-2 py-1">
+                            <span className="min-w-0 flex-1 truncate text-xs text-[#CCC]">{model}</span>
+                            <button onClick={() => deleteChatModel(model)} className="text-xs text-[#ff5555] hover:text-white cursor-pointer">
+                              删除
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className={labelClass}>Title Model</label>
+                  <div className="space-y-1">
+                    <select
+                      value={titleModelIsOption ? config.titleModel : '__current__'}
+                      onChange={(e) => {
+                        if (e.target.value !== '__current__') updateConfig('titleModel', e.target.value);
+                      }}
+                      className={selectClass}
+                    >
+                      {!titleModelIsOption && <option value="__current__">{config.titleModel}</option>}
+                      {chatModelOptions.map(m => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                    <p className={hintClass}>用于第一轮回复后自动总结聊天标题</p>
                   </div>
                 </div>
 
@@ -410,7 +490,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   </label>
 
                   <label className={optionRowClass}>
-                    <span className="text-xs text-[#CCC]">提交后清空输入框</span>
+                    <span className="text-xs text-[#CCC]">提交后清空参考图</span>
                     <input
                       type="checkbox"
                       checked={options.clearOnSubmit}

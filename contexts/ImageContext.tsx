@@ -2,12 +2,35 @@
 
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { ImageRef } from '@/types';
+import { USER_ABORT_SENTINEL } from '@/lib/api';
 import { compressIfNeeded } from '@/lib/compress';
 import { imageRefToEditBlob } from '@/lib/image-edit';
 import { canvasHasStrokes } from '@/lib/mask';
 
-function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+function canvasToBlob(canvas: HTMLCanvasElement, signal?: AbortSignal): Promise<Blob | null> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(USER_ABORT_SENTINEL));
+      return;
+    }
+
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', handleAbort);
+      fn();
+    };
+    const handleAbort = () => settle(() => reject(new Error(USER_ABORT_SENTINEL)));
+
+    signal?.addEventListener('abort', handleAbort, { once: true });
+    canvas.toBlob((blob) => {
+      settle(() => {
+        if (signal?.aborted) reject(new Error(USER_ABORT_SENTINEL));
+        else resolve(blob);
+      });
+    }, 'image/png');
+  });
 }
 
 interface ImageContextValue {
@@ -27,7 +50,13 @@ interface ImageContextValue {
   hasImages: boolean;
   anyMasked: boolean;
   persistMask: (canvas: HTMLCanvasElement) => void;
-  buildEditsForm: (imgs: ImageRef[], prompt: string, size: string | null, model: string) => Promise<FormData>;
+  buildEditsForm: (
+    imgs: ImageRef[],
+    prompt: string,
+    size: string | null,
+    model: string,
+    signal?: AbortSignal,
+  ) => Promise<FormData>;
 }
 
 const ImageContext = createContext<ImageContextValue | undefined>(undefined);
@@ -165,14 +194,16 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
   }, [editingIndex]);
 
   const buildEditsForm = useCallback(async (
-    imgs: ImageRef[], prompt: string, size: string | null, model: string
+    imgs: ImageRef[], prompt: string, size: string | null, model: string, signal?: AbortSignal
   ): Promise<FormData> => {
     const form = new FormData();
     form.append('model', model);
     form.append('prompt', prompt);
     if (size) form.append('size', size);
 
-    const imageBlobs = await Promise.all(imgs.map(imageRefToEditBlob));
+    if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+    const imageBlobs = await Promise.all(imgs.map((image) => imageRefToEditBlob(image, signal)));
+    if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
     imageBlobs.forEach((blob, i) => {
       if (!blob) return;
       const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
@@ -181,7 +212,7 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
 
     const first = imgs[0];
     if (first?.maskCanvas && first.naturalWidth && canvasHasStrokes(first.maskCanvas)) {
-      const mask = await canvasToBlob(first.maskCanvas);
+      const mask = await canvasToBlob(first.maskCanvas, signal);
       if (mask) form.append('mask', mask, 'mask.png');
     }
     return form;

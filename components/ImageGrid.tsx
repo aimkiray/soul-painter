@@ -21,14 +21,24 @@ const Placeholder = ({ className }: { className?: string }) => (
 
 const COMPRESSED_BADGE_MS = 3000;
 
-function ThumbnailEditButton({ index, onEdit }: { index: number; onEdit: (index: number) => void }) {
+function ThumbnailEditButton({
+  index,
+  layout,
+  onEdit,
+}: {
+  index: number;
+  layout: ImageGridProps['layout'];
+  onEdit: (index: number) => void;
+}) {
+  const edgeBorderClass = layout === 'strip' ? 'border-x-2 border-b-2 border-[#00aaaa]' : '';
+
   return (
     <button
       onClick={(e) => {
         e.stopPropagation();
         onEdit(index);
       }}
-      className="absolute inset-x-0 bottom-0 h-7 bg-black/70 border-x-2 border-b-2 border-[#00aaaa] text-[#00aaaa] text-xs font-mono flex items-center justify-center cursor-pointer hover:bg-[#111] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00aaaa] focus-visible:ring-inset"
+      className={`absolute inset-x-0 bottom-0 h-7 bg-black/70 ${edgeBorderClass} text-[#00aaaa] text-xs font-mono flex items-center justify-center cursor-pointer hover:bg-[#111] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00aaaa] focus-visible:ring-inset`}
       aria-label={`编辑第 ${index + 1} 张图片`}
     >
       编辑
@@ -146,7 +156,7 @@ export default function ImageGrid({ layout }: ImageGridProps) {
                   {isSelected && <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#00aaaa]"></span>}
                   {showCompressedBadge && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
                   {hasMask && <span className={`absolute left-0.5 bg-[#ff5555] text-white text-[0.7rem] px-0.5 py-0.5 leading-none ${isSelected ? 'bottom-7' : 'bottom-0.5'}`}>涂抹</span>}
-                  {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} />}
+                  {isSelected && <ThumbnailEditButton index={i} layout={layout} onEdit={openEditor} />}
                 </div>
               );
             })}
@@ -161,7 +171,7 @@ export default function ImageGrid({ layout }: ImageGridProps) {
 
   return (
     <div className={`${COMPOSER_FRAME_CLASS} bg-black border-t border-[#AAA] pb-2`}>
-      <div className="flex items-center justify-between gap-2 px-2 sm:px-3 py-1.5">
+      <div className="flex items-center justify-between gap-2 py-1.5">
         <span className="flex items-center gap-2">
           <button onClick={() => setCollapsed(!collapsed)} className="text-xs sm:text-sm text-white font-mono cursor-pointer">
             {collapsed ? '图片 ▸' : '图片 ▾'}
@@ -176,7 +186,7 @@ export default function ImageGrid({ layout }: ImageGridProps) {
       </div>
 
       {!collapsed && (
-        <div className="flex items-center gap-1.5 px-2 sm:px-3 py-1 overflow-x-auto">
+        <div className="flex items-center gap-1.5 py-1 overflow-x-auto">
           {images.map((img, i) => {
             const isSelected = selectedIndices.has(i);
             const showCompressedBadge = compressedBadgeUrls.has(img.objectUrl);
@@ -198,7 +208,7 @@ export default function ImageGrid({ layout }: ImageGridProps) {
                 <span className="absolute top-0.5 left-0.5 bg-black/80 text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">#{i + 1}</span>
                 {isSelected && <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#00aaaa]"></span>}
                 {showCompressedBadge && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
-                {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} />}
+                {isSelected && <ThumbnailEditButton index={i} layout={layout} onEdit={openEditor} />}
               </div>
             );
           })}

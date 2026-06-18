@@ -11,6 +11,7 @@ import {
   CFG_STORAGE_KEY,
   OPTS_STORAGE_KEY,
 } from '@/lib/constants';
+import { mergeModelOptions, normalizeModelList } from '@/lib/model-options';
 
 interface ConfigContextValue {
   config: AppConfig;
@@ -47,6 +48,8 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
       if (sp.get('model')) urlConfig.model = sp.get('model')!;
       if (sp.get('chatModel')) urlConfig.chatModel = sp.get('chatModel')!;
       if (sp.get('chatmodel')) urlConfig.chatModel = sp.get('chatmodel')!;
+      if (sp.get('titleModel')) urlConfig.titleModel = sp.get('titleModel')!;
+      if (sp.get('titlemodel')) urlConfig.titleModel = sp.get('titlemodel')!;
       if (sp.get('size')) urlConfig.size = sp.get('size')!;
       if (sp.get('n')) urlConfig.n = parseInt(sp.get('n')!, 10) || 1;
       if (sp.get('quality')) urlConfig.quality = sp.get('quality')!;
@@ -71,17 +74,22 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
     ...DEFAULT_CONFIG,
     ...storedConfig,
     ...urlConfig,
+    customImageModels: normalizeModelList(storedConfig.customImageModels),
+    customChatModels: normalizeModelList(storedConfig.customChatModels),
     n: urlConfig.n ?? storedConfig.n ?? (DEFAULT_CONFIG.n as number),
     compression: urlConfig.compression ?? storedConfig.compression ?? (DEFAULT_CONFIG.compression as number),
   };
 
   const hasExplicitChatModel = !!urlConfig.chatModel || !!storedConfig.chatModel;
-  const modelIsImagePreset = IMAGE_MODEL_PRESETS.some((m) => m.value === config.model);
-  const modelLooksLikeChat =
-    CHAT_MODEL_PRESETS.some((m) => m.value === config.model) ||
-    LEGACY_CHAT_MODEL_VALUES.some((value) => value === config.model) ||
-    !modelIsImagePreset;
-  if (modelLooksLikeChat) {
+  const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
+  const chatModelOptions = mergeModelOptions(CHAT_MODEL_PRESETS, config.customChatModels);
+  const modelIsImageOption = imageModelOptions.some((m) => m.value === config.model);
+  const modelIsKnownChatModel =
+    chatModelOptions.some((m) => m.value === config.model) ||
+    LEGACY_CHAT_MODEL_VALUES.some((value) => value === config.model);
+  if (!modelIsImageOption && config.model.trim() && config.mode === 'image' && !modelIsKnownChatModel) {
+    config.customImageModels = normalizeModelList([...config.customImageModels, config.model]);
+  } else if (!modelIsImageOption && (modelIsKnownChatModel || config.mode === 'chat')) {
     if (!hasExplicitChatModel) config.chatModel = config.model;
     config.model = IMAGE_MODEL_PRESETS[0].value;
   }

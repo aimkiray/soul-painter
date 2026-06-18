@@ -19,6 +19,9 @@ export interface AppConfig {
   mode: 'image' | 'chat';
   model: string;
   chatModel: string;
+  titleModel: string;
+  customImageModels: string[];
+  customChatModels: string[];
   size: string;
   n: number;
   quality: string;

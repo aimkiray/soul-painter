@@ -25,6 +25,7 @@ export const IMAGE_MODEL_PRESETS = [
 export const CHAT_MODEL_PRESETS = [
   { label: 'gpt-5.5', value: 'gpt-5.5' },
   { label: 'gpt-5.4', value: 'gpt-5.4' },
+  { label: 'gpt-5.4-mini', value: 'gpt-5.4-mini' },
 ] as const;
 
 export const REPEATER_MODEL_LABEL = 'copy-fable-5';
@@ -42,6 +43,9 @@ export const DEFAULT_CONFIG = {
   mode: 'image',
   model: 'gpt-image-2',
   chatModel: 'gpt-5.5',
+  titleModel: 'gpt-5.4-mini',
+  customImageModels: [],
+  customChatModels: [],
   size: ORIGINAL_ASPECT_SIZE,
   n: 1,
   quality: 'high',

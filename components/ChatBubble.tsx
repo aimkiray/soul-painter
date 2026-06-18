@@ -16,6 +16,7 @@ interface ChatBubbleProps {
     code: string;
     extra: string;
     updatedAt?: number;
+    editedAt?: number;
   };
   isPending?: boolean;
   isRegenerating?: boolean;
@@ -200,7 +201,7 @@ export default function ChatBubble({
   };
 
   const actionButtonClass = 'flex h-7 w-7 items-center justify-center border-2 border-[#555] bg-black text-base leading-none text-[#AAA] cursor-pointer hover:border-[#00aaaa] hover:text-[#00aaaa] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-[#555] disabled:hover:text-[#AAA]';
-  const showEdited = !!message.updatedAt && message.updatedAt > 0;
+  const showEdited = !!message.editedAt && message.editedAt > 0;
 
   return (
     <>
@@ -379,6 +380,16 @@ export default function ChatBubble({
                   title="编辑并重发"
                 >
                   <EditIcon />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void handleCopyText(); }}
+                  disabled={disabled || !prompt.trim()}
+                  className={actionButtonClass}
+                  aria-label="复制消息"
+                  title="复制"
+                >
+                  <CopyIcon />
                 </button>
                 <button
                   type="button"

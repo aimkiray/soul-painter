@@ -85,47 +85,68 @@ function getFormImageCount(form: FormData) {
   return form.getAll('image[]').filter((value) => value instanceof Blob).length;
 }
 
-function blobToDataUrl(blob: Blob): Promise<string> {
+function blobToDataUrl(blob: Blob, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(USER_ABORT_SENTINEL));
+      return;
+    }
+
     const reader = new FileReader();
+    const handleAbort = () => {
+      reader.abort();
+      reject(new Error(USER_ABORT_SENTINEL));
+    };
+
+    signal?.addEventListener('abort', handleAbort, { once: true });
     reader.onload = () => resolve(String(reader.result || ''));
     reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+    reader.onabort = () => reject(new Error(USER_ABORT_SENTINEL));
+    reader.onloadend = () => signal?.removeEventListener('abort', handleAbort);
     reader.readAsDataURL(blob);
   });
 }
 
-async function canvasToImageHit(canvas: HTMLCanvasElement | null): Promise<ImageHit | undefined> {
+async function canvasToImageHit(canvas: HTMLCanvasElement | null, signal?: AbortSignal): Promise<ImageHit | undefined> {
   if (!canvas) return undefined;
+  if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
   const dataUrl = canvas.toDataURL('image/png');
-  const url = await uploadChatImage(dataUrl);
+  if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+  const url = await uploadChatImage(dataUrl, signal);
   return url ? { url } : { dataUrl };
 }
 
-async function imageRefToStoredHit(image: ImageRef): Promise<ImageHit | null> {
+async function imageRefToStoredHit(image: ImageRef, signal?: AbortSignal): Promise<ImageHit | null> {
   try {
-    const dataUrl = await blobToDataUrl(image.file);
-    const url = await uploadChatImage(dataUrl);
+    if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+    const dataUrl = await blobToDataUrl(image.file, signal);
+    if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+    const url = await uploadChatImage(dataUrl, signal);
     return url ? { url } : { dataUrl };
-  } catch {
+  } catch (error) {
+    if ((error as Error).message === USER_ABORT_SENTINEL || signal?.aborted) throw error;
     return null;
   }
 }
 
-async function imageRefToReferenceImage(image: ImageRef): Promise<ChatReferenceImage | null> {
-  const storedImage = await imageRefToStoredHit(image);
+async function imageRefToReferenceImage(image: ImageRef, signal?: AbortSignal): Promise<ChatReferenceImage | null> {
+  const storedImage = await imageRefToStoredHit(image, signal);
   if (!storedImage) return null;
-  const mask = await canvasToImageHit(image.maskCanvas);
+  const mask = await canvasToImageHit(image.maskCanvas, signal);
   return mask ? { image: storedImage, mask } : { image: storedImage };
 }
 
-async function imageHitToBlob(image: ImageHit): Promise<Blob | null> {
+async function imageHitToBlob(image: ImageHit, signal?: AbortSignal): Promise<Blob | null> {
   const source = image.dataUrl || image.url;
   if (!source) return null;
   try {
-    const response = await fetch(source);
+    if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+    const response = await fetch(source, { signal });
     if (!response.ok) return null;
-    return blobToEditBlob(await response.blob(), source);
-  } catch {
+    if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+    return blobToEditBlob(await response.blob(), source, signal);
+  } catch (error) {
+    if ((error as Error).message === USER_ABORT_SENTINEL || signal?.aborted) throw error;
     return null;
   }
 }
@@ -142,19 +163,22 @@ async function buildEditsFormFromReferences(
   prompt: string,
   size: string | null,
   model: string,
+  signal?: AbortSignal,
 ): Promise<FormData> {
   const form = new FormData();
   form.append('model', model);
   form.append('prompt', prompt);
   if (size) form.append('size', size);
 
-  const imageBlobs = await Promise.all(references.map((reference) => imageHitToBlob(reference.image)));
+  if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+  const imageBlobs = await Promise.all(references.map((reference) => imageHitToBlob(reference.image, signal)));
+  if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
   imageBlobs.forEach((blob, i) => {
     if (!blob) return;
     form.append('image[]', blob, `image-${i + 1}.${blobExt(blob)}`);
   });
 
-  const maskBlob = await imageHitToBlob(references[0]?.mask || {});
+  const maskBlob = await imageHitToBlob(references[0]?.mask || {}, signal);
   if (maskBlob) form.append('mask', maskBlob, `mask.${blobExt(maskBlob)}`);
   return form;
 }
@@ -279,11 +303,29 @@ function buildChatMessages(
   return combined;
 }
 
-async function ensureModelGateAccess(modelGateEnabled: boolean): Promise<void> {
-  if (!modelGateEnabled) return;
+function normalizeGeneratedTitle(value: string): string {
+  return value
+    .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 24);
+}
 
-  const response = await fetch('/api/model-gate');
+async function ensureModelGateAccess(modelGateEnabled: boolean, signal?: AbortSignal): Promise<void> {
+  if (!modelGateEnabled) return;
+  if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+
+  let response: Response;
+  try {
+    response = await fetch('/api/model-gate', { signal });
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      throw new Error(USER_ABORT_SENTINEL);
+    }
+    throw error;
+  }
   const data = await response.json().catch(() => null) as { unlocked?: boolean; message?: string } | null;
+  if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
   if (data?.unlocked) return;
 
   throw new Error(`HTTP 418 ${data?.message || '模型访问未解锁'}`);
@@ -421,6 +463,8 @@ function HomeInner() {
     replaceBotMessage,
     updateUserMessage,
     truncateChatAfterMessage,
+    restoreSessionMessages,
+    setGeneratedSessionTitle,
     setLoading,
     setStatus,
     setDebugRaw,
@@ -429,6 +473,7 @@ function HomeInner() {
   const { images, editingIndex, selectedIndices, clearAll: clearImages, buildEditsForm, addFiles, closeEditor } = useImages();
 
   const abortRef = useRef<AbortController | null>(null);
+  const promptRunActiveRef = useRef(false);
   const sessionsRef = useRef(sessions);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 
@@ -503,17 +548,32 @@ function HomeInner() {
     prompt: string,
     runOptions: PromptRunOptions = {},
   ) => {
+    if (!prompt.trim() || promptRunActiveRef.current) return;
+    promptRunActiveRef.current = true;
+
     const sessionId = activeSessionId;
     const existingUserMessageId = runOptions.existingUserMessageId;
     const targetBotMessageId = runOptions.targetBotMessageId;
-    if (!prompt) return;
-
     const currentSessionMessages = sessionsRef.current.find((session) => session.id === sessionId)?.messages ?? [];
     const sessionMessages = runOptions.historyMessages
       ?? currentSessionMessages;
+    const isFirstUserTurn = !existingUserMessageId
+      && !targetBotMessageId
+      && currentSessionMessages.filter((message) => message.role === 'user').length === 0;
+    const shouldRestoreSessionOnAbort = !!existingUserMessageId && !targetBotMessageId;
     const originalTargetMessage = targetBotMessageId
       ? currentSessionMessages.find((message) => message.id === targetBotMessageId && message.role === 'bot')
       : undefined;
+    const restoreTargetMessage = () => {
+      if (!targetBotMessageId || !originalTargetMessage) return;
+      replaceBotMessage(targetBotMessageId, {
+        prompt: originalTargetMessage.prompt,
+        images: originalTargetMessage.images,
+        text: originalTargetMessage.text,
+        code: originalTargetMessage.code,
+        extra: originalTargetMessage.extra,
+      }, sessionId);
+    };
     if (targetBotMessageId) {
       setPendingRegenerateMessageId(targetBotMessageId);
       replaceBotMessage(targetBotMessageId, {
@@ -529,70 +589,15 @@ function HomeInner() {
     const requestController = new AbortController();
     const requestSignal = requestController.signal;
     abortRef.current = requestController;
+    setLoading(true, sessionId);
+    setStatus('请求准备中...');
+    setDebugRaw('（尚未请求）');
 
-    // Save last prompt
-    if (options.persistPrompt) {
-      try { localStorage.setItem(chatSessionPromptStorageKey(sessionId), prompt); } catch { /* ignore */ }
-    }
-
-    const isSnapshotRun = !!runOptions.requestSnapshot;
-    const validSelectedIndices = [...selectedIndices].filter((index) => index >= 0 && index < images.length);
-    const selectedImagesForRun = !isSnapshotRun && config.mode !== 'chat' && validSelectedIndices.length > 0
-      ? validSelectedIndices.map((index) => images[index]).filter((image): image is ImageRef => !!image)
-      : [];
-    const requestedMode: RunMode = runOptions.requestSnapshot?.mode
-      ?? (config.mode === 'chat' ? 'chat' : selectedImagesForRun.length > 0 ? 'edits' : 'images');
-    const resolvedSize = runOptions.requestSnapshot?.size
-      ?? resolveRequestSize(config.size, selectedImagesForRun);
-    const referenceImages = runOptions.requestSnapshot?.referenceImages
-      ?? (requestedMode === 'edits'
-        ? (await Promise.all(selectedImagesForRun.map(imageRefToReferenceImage)))
-            .filter((reference): reference is ChatReferenceImage => reference !== null)
-        : []);
-    const mode: RunMode = requestedMode;
-    const turnSnapshot = runOptions.requestSnapshot
-      ?? createTurnSnapshot(config, options, mode, resolvedSize, mode === 'edits' ? referenceImages : []);
-
-    const model = turnSnapshot.model || config.model;
-    const chatModel = turnSnapshot.chatModel || config.chatModel;
-    const n = turnSnapshot.n;
-    const quality = turnSnapshot.quality;
-    const outFormat = turnSnapshot.format;
-    const background = turnSnapshot.background;
-    const moderation = turnSnapshot.moderation;
-    const compression = turnSnapshot.compression;
-    const runStreaming = turnSnapshot.streaming;
-    const runSystemPrompt = turnSnapshot.systemPrompt;
-    const runContextLimit = turnSnapshot.contextLimit;
-    const sizeForBody = parseSize(resolvedSize) ? resolvedSize : null;
-
+    const optimisticUserMessageId = existingUserMessageId
+      ?? (!targetBotMessageId ? addUserMsg(prompt, sessionId) : undefined);
     if (existingUserMessageId) {
-      updateUserMessage(existingUserMessageId, prompt, sessionId, turnSnapshot);
-      truncateChatAfterMessage(existingUserMessageId, sessionId);
-    } else if (!targetBotMessageId) {
-      addUserMsg(prompt, sessionId, turnSnapshot);
+      updateUserMessage(existingUserMessageId, prompt, sessionId, undefined, { markEdited: true });
     }
-
-    const restoreTargetMessage = () => {
-      if (!targetBotMessageId || !originalTargetMessage) return;
-      replaceBotMessage(targetBotMessageId, {
-        prompt: originalTargetMessage.prompt,
-        images: originalTargetMessage.images,
-        text: originalTargetMessage.text,
-        code: originalTargetMessage.code,
-        extra: originalTargetMessage.extra,
-      }, sessionId);
-    };
-
-    const applyExtraParams = (target: RequestBody) => {
-      if (quality && quality !== 'auto') setRequestParam(target, 'quality', quality);
-      if (background && background !== 'auto') setRequestParam(target, 'background', background);
-      setRequestParam(target, 'output_format', outFormat || 'png');
-      if ((outFormat === 'jpeg' || outFormat === 'webp') && !isNaN(compression)) {
-        setRequestParam(target, 'output_compression', compression);
-      }
-      if (moderation && moderation !== 'auto') setRequestParam(target, 'moderation', moderation);
-    };
 
     const buildErrorHint = (msg: string): string => {
       if (msg.includes('413') || /too large|请求体|超过上限|Image is too large/i.test(msg)) {
@@ -605,16 +610,6 @@ function HomeInner() {
       if (/5\d\d/.test(msg)) return '\n上游服务器错误，请稍后重试或检查服务状态';
       return '\n请检查 API Key 和 Base URL 配置';
     };
-
-    const writeBotMsg = (botImages: ImageHit[], code: string, extra: string) => {
-      if (targetBotMessageId && botImages.length === 0 && !code && !extra) return;
-      if (targetBotMessageId) {
-        replaceBotMessage(targetBotMessageId, { prompt: '', images: botImages, text: '', code, extra }, sessionId);
-      } else {
-        addBotMsg(botImages, code, extra, sessionId);
-      }
-    };
-
     const writeTextBot = (text: string, code: string) => {
       if (targetBotMessageId && !text && !code) return;
       if (targetBotMessageId) {
@@ -623,23 +618,6 @@ function HomeInner() {
         addTextBotMsg(text, code, sessionId);
       }
     };
-
-    const writeBotImages = (botImages: ImageHit[], code?: string) => {
-      if (targetBotMessageId) {
-        updateBotMsg(targetBotMessageId, botImages, code, sessionId);
-      } else {
-        updateLastBotMsg(botImages, code, sessionId);
-      }
-    };
-
-    const writeBotText = (text: string) => {
-      if (targetBotMessageId) {
-        updateBotText(targetBotMessageId, text, sessionId);
-      } else {
-        updateLastBotText(text, sessionId);
-      }
-    };
-
     const writeBotError = (error: string) => {
       if (targetBotMessageId) {
         replaceBotMessage(targetBotMessageId, { prompt: error, images: [], text: '', code: '', extra: 'error' }, sessionId);
@@ -647,8 +625,132 @@ function HomeInner() {
         addErrorMsg(error, sessionId);
       }
     };
+    try {
+      // Save last prompt
+      if (options.persistPrompt) {
+        try { localStorage.setItem(chatSessionPromptStorageKey(sessionId), prompt); } catch { /* ignore */ }
+      }
 
-    const tryWithRetry = async (
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+      throwIfAborted(requestSignal);
+
+      const isSnapshotRun = !!runOptions.requestSnapshot;
+      const validSelectedIndices = [...selectedIndices].filter((index) => index >= 0 && index < images.length);
+      const selectedImagesForRun = !isSnapshotRun && config.mode !== 'chat' && validSelectedIndices.length > 0
+        ? validSelectedIndices.map((index) => images[index]).filter((image): image is ImageRef => !!image)
+        : [];
+      const requestedMode: RunMode = runOptions.requestSnapshot?.mode
+        ?? (config.mode === 'chat' ? 'chat' : selectedImagesForRun.length > 0 ? 'edits' : 'images');
+      const resolvedSize = runOptions.requestSnapshot?.size
+        ?? resolveRequestSize(config.size, selectedImagesForRun);
+      const referenceImages = runOptions.requestSnapshot?.referenceImages
+        ?? (requestedMode === 'edits'
+          ? (await Promise.all(selectedImagesForRun.map((image) => imageRefToReferenceImage(image, requestSignal))))
+              .filter((reference): reference is ChatReferenceImage => reference !== null)
+          : []);
+      throwIfAborted(requestSignal);
+      const mode: RunMode = requestedMode;
+      const turnSnapshot = runOptions.requestSnapshot
+        ?? createTurnSnapshot(config, options, mode, resolvedSize, mode === 'edits' ? referenceImages : []);
+
+      const model = turnSnapshot.model || config.model;
+      const chatModel = turnSnapshot.chatModel || config.chatModel;
+      const titleModel = config.titleModel || 'gpt-5.4-mini';
+      const n = turnSnapshot.n;
+      const quality = turnSnapshot.quality;
+      const outFormat = turnSnapshot.format;
+      const background = turnSnapshot.background;
+      const moderation = turnSnapshot.moderation;
+      const compression = turnSnapshot.compression;
+      const runStreaming = turnSnapshot.streaming;
+      const runSystemPrompt = turnSnapshot.systemPrompt;
+      const runContextLimit = turnSnapshot.contextLimit;
+      const sizeForBody = parseSize(resolvedSize) ? resolvedSize : null;
+
+      if (existingUserMessageId) {
+        updateUserMessage(existingUserMessageId, prompt, sessionId, turnSnapshot, { markEdited: true });
+        truncateChatAfterMessage(existingUserMessageId, sessionId);
+      } else if (optimisticUserMessageId) {
+        updateUserMessage(optimisticUserMessageId, prompt, sessionId, turnSnapshot);
+      }
+
+      const applyExtraParams = (target: RequestBody) => {
+      if (quality && quality !== 'auto') setRequestParam(target, 'quality', quality);
+      if (background && background !== 'auto') setRequestParam(target, 'background', background);
+      setRequestParam(target, 'output_format', outFormat || 'png');
+      if ((outFormat === 'jpeg' || outFormat === 'webp') && !isNaN(compression)) {
+        setRequestParam(target, 'output_compression', compression);
+      }
+      if (moderation && moderation !== 'auto') setRequestParam(target, 'moderation', moderation);
+      };
+
+      const writeBotMsg = (botImages: ImageHit[], code: string, extra: string) => {
+      if (targetBotMessageId && botImages.length === 0 && !code && !extra) return;
+      if (targetBotMessageId) {
+        replaceBotMessage(targetBotMessageId, { prompt: '', images: botImages, text: '', code, extra }, sessionId);
+      } else {
+        addBotMsg(botImages, code, extra, sessionId);
+      }
+      };
+
+      const writeBotImages = (botImages: ImageHit[], code?: string) => {
+      if (targetBotMessageId) {
+        updateBotMsg(targetBotMessageId, botImages, code, sessionId);
+      } else {
+        updateLastBotMsg(botImages, code, sessionId);
+      }
+      };
+
+      const writeBotText = (text: string) => {
+      if (targetBotMessageId) {
+        updateBotText(targetBotMessageId, text, sessionId);
+      } else {
+        updateLastBotText(text, sessionId);
+      }
+      };
+
+      const scheduleTitleGeneration = (assistantText: string) => {
+      if (!isFirstUserTurn || targetBotMessageId || !assistantText.trim()) return;
+      void (async () => {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 20_000);
+        try {
+          const titleBody = {
+            model: titleModel,
+            messages: [
+              {
+                role: 'system',
+                content: 'Summarize this conversation into a concise Chinese chat title. Return only the title, no quotes, no punctuation at the end. Keep it under 12 Chinese characters or 6 English words.',
+              },
+              {
+                role: 'user',
+                content: `User: ${prompt}\nAssistant: ${assistantText.slice(0, 1200)}`,
+              },
+            ],
+            stream: false,
+          };
+          const titleConfig = { ...config, chatModel: titleModel };
+          const result = await proxyRequest('/api/chat/completions', titleConfig, titleBody, options, 'chat', controller.signal);
+          if (!result.ok) return;
+          const resp = JSON.parse(result.text);
+          const title = normalizeGeneratedTitle(resp.choices?.[0]?.message?.content || '');
+          if (title) setGeneratedSessionTitle(sessionId, title);
+        } catch {
+          // Title generation is best-effort and should never affect the chat response.
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+      })();
+      };
+
+      const scheduleImageTitleGeneration = (imageCount: number) => {
+        if (imageCount <= 0) return;
+        scheduleTitleGeneration(`生成完成 ${imageCount} 张图片`);
+      };
+
+      const tryWithRetry = async (
       endpoint: string,
       body: unknown,
       retries = 0,
@@ -680,28 +782,26 @@ function HomeInner() {
       }
 
       return result;
-    };
+      };
 
-    try {
       throwIfAborted(requestSignal);
-      await ensureModelGateAccess(modelGateEnabled);
+      await ensureModelGateAccess(modelGateEnabled, requestSignal);
       throwIfAborted(requestSignal);
 
       if (!isSnapshotRun && options.clearOnSubmit) {
         clearImages();
       }
 
-      setLoading(true, sessionId);
       setStatus('请求发送中...');
-      setDebugRaw('（尚未请求）');
 
       // ---- Image edits mode (single or multi) ----
       let requestMode = mode;
       if (requestMode === 'edits') {
         const body = isSnapshotRun
-          ? await buildEditsFormFromReferences(referenceImages, prompt, sizeForBody, model)
-          : await buildEditsForm(selectedImagesForRun, prompt, sizeForBody, model);
+          ? await buildEditsFormFromReferences(referenceImages, prompt, sizeForBody, model, requestSignal)
+          : await buildEditsForm(selectedImagesForRun, prompt, sizeForBody, model, requestSignal);
 
+        throwIfAborted(requestSignal);
         const actualImageCount = getFormImageCount(body);
         if (actualImageCount === 0) {
           requestMode = 'images';
@@ -723,6 +823,7 @@ function HomeInner() {
               if (hit) {
                 writeBotMsg([hit], JSON.stringify(resp, null, 2), '');
                 setStatus('生成完成 1 张', 'ok');
+                scheduleImageTitleGeneration(1);
                 void saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
               } else {
                 writeBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
@@ -751,6 +852,7 @@ function HomeInner() {
               if (hits.length > 0) {
                 writeBotImages(hits, JSON.stringify(hits[0], null, 2));
                 setStatus(`生成完成 ${hits.length} 张`, 'ok');
+                scheduleImageTitleGeneration(hits.length);
                 void saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
               } else if (streamError) {
                 deleteRequestParam(body, 'stream');
@@ -762,6 +864,7 @@ function HomeInner() {
                 if (hit) {
                   writeBotImages([hit], JSON.stringify(resp, null, 2));
                   setStatus('生成完成 1 张', 'ok');
+                  scheduleImageTitleGeneration(1);
                   void saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
                 } else {
                   writeBotImages([], JSON.stringify(resp, null, 2));
@@ -808,6 +911,7 @@ function HomeInner() {
                 setDebugRaw(JSON.stringify(resp, null, 2));
                 writeBotMsg(hits, JSON.stringify(resp, null, 2), '');
                 setStatus(`生成完成 ${hits.length} 张`, 'ok');
+                scheduleImageTitleGeneration(hits.length);
                 void saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
               } else {
                 writeBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片，请查看调试面板');
@@ -837,11 +941,11 @@ function HomeInner() {
             const fullText = await processChatStream(stream, (t) => writeBotText(t), requestSignal);
             setDebugRaw(fullText);
             setStatus('回复完成', 'ok');
+            scheduleTitleGeneration(fullText);
           } catch (streamErr) {
             const errMsg = (streamErr as Error)?.message || '';
             if (errMsg === USER_ABORT_SENTINEL || requestSignal.aborted) {
-              setStatus('已取消', 'warn');
-              return;
+              throw new Error(USER_ABORT_SENTINEL);
             }
             throw streamErr;
           }
@@ -853,6 +957,7 @@ function HomeInner() {
           setDebugRaw(JSON.stringify(resp, null, 2));
           writeTextBot(content, JSON.stringify(resp, null, 2));
           setStatus('回复完成', 'ok');
+          scheduleTitleGeneration(content);
         }
       }
       // ---- Text-to-image mode ----
@@ -874,6 +979,7 @@ function HomeInner() {
             if (hit) {
               writeBotMsg([hit], JSON.stringify(resp, null, 2), '');
               setStatus('生成完成 1 张', 'ok');
+              scheduleImageTitleGeneration(1);
               void saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
             } else {
               writeBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
@@ -902,6 +1008,7 @@ function HomeInner() {
             if (hits.length > 0) {
               writeBotImages(hits, JSON.stringify(hits[0], null, 2));
               setStatus(`生成完成 ${hits.length} 张`, 'ok');
+              scheduleImageTitleGeneration(hits.length);
               void saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
             } else if (streamError) {
               delete genBody.stream;
@@ -913,6 +1020,7 @@ function HomeInner() {
               if (hit) {
                 writeBotImages([hit], JSON.stringify(resp, null, 2));
                 setStatus('生成完成 1 张', 'ok');
+                scheduleImageTitleGeneration(1);
                 void saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
               } else {
                 writeBotImages([], JSON.stringify(resp, null, 2));
@@ -956,6 +1064,7 @@ function HomeInner() {
             setDebugRaw(debugResp);
             writeBotMsg(hits, debugResp, '');
             setStatus(`生成完成 ${hits.length} 张`, 'ok');
+            scheduleImageTitleGeneration(hits.length);
             void saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
           } else {
             const debugResp = errors.join('\n') || '无响应';
@@ -975,6 +1084,9 @@ function HomeInner() {
     } catch (e) {
       const msg = (e as Error).message || '请求失败';
       if (msg === USER_ABORT_SENTINEL) {
+        if (shouldRestoreSessionOnAbort) {
+          restoreSessionMessages(sessionId, currentSessionMessages);
+        }
         restoreTargetMessage();
         setStatus('已取消', 'warn');
       } else if (extractModelGateMessage(msg)) {
@@ -995,6 +1107,7 @@ function HomeInner() {
         current === targetBotMessageId ? null : current
       ));
       setLoading(false, sessionId);
+      promptRunActiveRef.current = false;
     }
   }, [
     activeSessionId,
@@ -1012,6 +1125,8 @@ function HomeInner() {
     updateBotText,
     replaceBotMessage,
     truncateChatAfterMessage,
+    restoreSessionMessages,
+    setGeneratedSessionTitle,
     addErrorMsg,
     addUserMsg,
     updateUserMessage,
@@ -1126,7 +1241,7 @@ async function saveHistoryEntry(
   hits: ImageHit[],
 ) {
   try {
-    const storedHits = (await Promise.all(hits.map(imageHitToStoredUrl)))
+    const storedHits = (await Promise.all(hits.map((hit) => imageHitToStoredUrl(hit))))
       .filter((url): url is string => !!url)
       .map((url) => ({ link: url, isData: false }));
     if (storedHits.length === 0) return;
