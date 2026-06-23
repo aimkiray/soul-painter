@@ -38,6 +38,7 @@ export interface ChatTurnSnapshot {
   mode: 'images' | 'edits' | 'chat';
   model: string;
   chatModel: string;
+  chatApiFormat?: 'openai' | 'claude';
   size: string;
   n: number;
   quality: string;
@@ -148,6 +149,8 @@ const DEFAULT_CHAT_TITLE = '新聊天';
 const LEGACY_CHAT_TITLE = '默认聊天';
 const SESSION_TITLE_MAX = 24;
 const EMPTY_MESSAGES: ChatMessage[] = [];
+const FALLBACK_SESSION_ID = '__initial_chat_session__';
+const FALLBACK_SESSION_TIME = 0;
 
 function createSessionId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -212,6 +215,18 @@ function createEmptySession(messages: ChatMessage[] = [], title?: string): ChatS
   };
 }
 
+function createFallbackChatState(): { sessions: ChatSession[]; activeSessionId: string } {
+  const session: ChatSession = {
+    id: FALLBACK_SESSION_ID,
+    title: DEFAULT_CHAT_TITLE,
+    titleSource: 'auto',
+    messages: [],
+    createdAt: FALLBACK_SESSION_TIME,
+    updatedAt: FALLBACK_SESSION_TIME,
+  };
+  return { sessions: [session], activeSessionId: session.id };
+}
+
 function normalizeStoredMessages(value: unknown): ChatMessage[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -259,6 +274,7 @@ function normalizeStoredTurnSnapshot(value: unknown): ChatTurnSnapshot | undefin
     mode,
     model: typeof raw.model === 'string' ? raw.model : '',
     chatModel: typeof raw.chatModel === 'string' ? raw.chatModel : '',
+    chatApiFormat: raw.chatApiFormat === 'claude' ? 'claude' : raw.chatApiFormat === 'openai' ? 'openai' : undefined,
     size: typeof raw.size === 'string' ? raw.size : 'auto',
     n: typeof raw.n === 'number' && Number.isFinite(raw.n) ? raw.n : 1,
     quality: typeof raw.quality === 'string' ? raw.quality : 'auto',
@@ -588,7 +604,7 @@ function isEmptyBotMessage(message: ChatMessage | undefined) {
 }
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
-  const [initialState] = useState(loadChatState);
+  const [initialState, setInitialState] = useState(createFallbackChatState);
   const [sessions, setSessions] = useState<ChatSession[]>(initialState.sessions);
   const [activeSessionId, setActiveSessionId] = useState(initialState.activeSessionId);
   const [isLoading, setIsLoading] = useState(false);
@@ -597,12 +613,25 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [statusType, setStatusType] = useState<'' | 'ok' | 'err' | 'warn'>('');
   const [debugRaw, setDebugRaw] = useState('（尚未请求）');
   const [debugVisible, setDebugVisible] = useState(false);
-  const [syncTombstones, setSyncTombstones] = useState<ChatSyncTombstone[]>(loadSyncTombstones);
+  const [syncTombstones, setSyncTombstones] = useState<ChatSyncTombstone[]>([]);
+  const [storageReady, setStorageReady] = useState(false);
   const [autoSyncRetryTick, setAutoSyncRetryTick] = useState(0);
   const applyingSyncRef = useRef(false);
   const lastAutoSyncSignatureRef = useRef('');
   const autoSyncFailureCountRef = useRef(0);
   const localMutationRevisionRef = useRef(0);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const loaded = loadChatState();
+      setInitialState(loaded);
+      setSessions(loaded.sessions);
+      setActiveSessionId(loaded.activeSessionId);
+      setSyncTombstones(loadSyncTombstones());
+      setStorageReady(true);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) || sessions[0],
@@ -965,6 +994,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!storageReady) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void (async () => {
@@ -986,17 +1016,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [sessions, activeSessionId]);
+  }, [sessions, activeSessionId, storageReady]);
 
   useEffect(() => {
+    if (!storageReady) return;
     try {
       localStorage.setItem(CHAT_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify(syncTombstones));
     } catch {
       // ignore
     }
-  }, [syncTombstones]);
+  }, [syncTombstones, storageReady]);
 
   useEffect(() => {
+    if (!storageReady) return;
     if (applyingSyncRef.current) return;
     const auth = readSessionSyncAuth();
     if (!auth) return;
@@ -1033,7 +1065,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       })();
     }, 1500);
     return () => window.clearTimeout(timer);
-  }, [sessions, activeSessionId, syncTombstones, autoSyncRetryTick, getSyncSnapshot, syncChatHistory]);
+  }, [sessions, activeSessionId, syncTombstones, autoSyncRetryTick, getSyncSnapshot, syncChatHistory, storageReady]);
 
   const clearCurrentChat = useCallback(() => {
     clearChatSession(activeSessionId);

@@ -1,16 +1,19 @@
 import { AppConfig, AppOptions } from '@/types';
+import { getChatProviderConfig } from '@/lib/chat-config';
 
 type ProxyKind = 'image' | 'chat';
 
 function getHeaders(config: AppConfig, kind: ProxyKind = 'image', isFormData = false) {
-  const apiKey = kind === 'chat' ? (config.chatApiKey || config.apiKey) : config.apiKey;
-  const baseUrl = kind === 'chat' ? (config.chatBaseUrl || config.baseUrl) : config.baseUrl;
+  const chatProvider = kind === 'chat' ? getChatProviderConfig(config) : null;
+  const apiKey = chatProvider ? chatProvider.apiKey : config.apiKey;
+  const baseUrl = chatProvider ? chatProvider.baseUrl : config.baseUrl;
   const headers: Record<string, string> = {
     'Accept': 'application/json',
   };
   if (!isFormData) headers['Content-Type'] = 'application/json';
   if (apiKey) headers['x-api-key'] = apiKey;
   if (baseUrl) headers['x-base-url'] = baseUrl;
+  if (kind === 'chat') headers['x-chat-api-format'] = chatProvider?.format || config.chatApiFormat;
   return headers;
 }
 

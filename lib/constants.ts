@@ -28,6 +28,18 @@ export const CHAT_MODEL_PRESETS = [
   { label: 'gpt-5.4-mini', value: 'gpt-5.4-mini' },
 ] as const;
 
+export const CLAUDE_MODEL_PRESETS = [
+  { label: 'claude-fable-5', value: 'claude-fable-5' },
+  { label: 'claude-sonnet-4-6', value: 'claude-sonnet-4-6' },
+  { label: 'claude-opus-4-8', value: 'claude-opus-4-8' },
+  { label: 'claude-haiku-4-5', value: 'claude-haiku-4-5' },
+] as const;
+
+export const CHAT_API_FORMAT_OPTIONS = [
+  { label: 'OpenAI Compatible', value: 'openai' },
+  { label: 'Claude Messages', value: 'claude' },
+] as const;
+
 export const REPEATER_MODEL_LABEL = 'copy-fable-5';
 
 export const LEGACY_CHAT_MODEL_VALUES = ['gpt-4o', 'gpt-4o-mini'] as const;
@@ -44,8 +56,12 @@ export const DEFAULT_CONFIG = {
   model: 'gpt-image-2',
   chatModel: 'gpt-5.5',
   titleModel: 'gpt-5.4-mini',
+  chatApiFormat: 'openai',
   customImageModels: [],
   customChatModels: [],
+  claudeModel: 'claude-sonnet-4-6',
+  claudeTitleModel: 'claude-haiku-4-5',
+  customClaudeModels: [],
   size: ORIGINAL_ASPECT_SIZE,
   n: 1,
   quality: 'high',
@@ -56,6 +72,8 @@ export const DEFAULT_CONFIG = {
   systemPrompt: '',
   chatBaseUrl: '',
   chatApiKey: '',
+  claudeBaseUrl: '',
+  claudeApiKey: '',
 } as const;
 
 export const DEFAULT_OPTIONS = {

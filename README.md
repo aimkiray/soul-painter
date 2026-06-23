@@ -46,6 +46,8 @@ npm run dev
 | `DEFAULT_BASE_URL` | Upstream API base URL (e.g. `https://api.avemujica.moe`) |
 | `DEFAULT_CHAT_API_KEY` | Optional chat-specific API key; falls back to `DEFAULT_API_KEY` |
 | `DEFAULT_CHAT_BASE_URL` | Optional chat-specific base URL; falls back to `DEFAULT_BASE_URL` |
+| `DEFAULT_CLAUDE_API_KEY` | Optional Claude-specific API key; falls back to `DEFAULT_CHAT_API_KEY` |
+| `DEFAULT_CLAUDE_BASE_URL` | Optional Claude-specific base URL; normally `https://api.anthropic.com` |
 | `MODEL_GATE_ENABLED` | Enables the header-tap gate for model access |
 | `MODEL_GATE_SECRET` | Secret used to sign the model-gate unlock cookie |
 | `CHAT_ASSET_MAX_IMAGE_BYTES` | Maximum size of a single server-stored chat image; defaults to 8 MB |
@@ -66,6 +68,8 @@ The app supports four ways to provide API credentials, in priority order:
 2. **User input** — Enter in Settings modal (saved to localStorage)
 3. **Server default** — Set in `.env.local` as `DEFAULT_API_KEY`
 4. **None** — Requests return a 401 error until configured
+
+Chat settings can save separate OpenAI-compatible and Claude Messages credentials at the same time. The selected chat model automatically chooses the matching API format. To use Claude directly, select a Claude model, set **Claude Base URL** to `https://api.anthropic.com`, and use an Anthropic API key.
 
 ## Usage
 
@@ -101,13 +105,13 @@ When 2+ reference images are added and batch mode is enabled, each image gets an
 - **Framework**: Next.js 16 (App Router) + React 19
 - **Styling**: Tailwind CSS v4, monospace terminal aesthetic
 - **State**: React Context (Config, Chat, Image)
-- **API Proxy**: 4 Next.js API routes that forward requests to an OpenAI-compatible API, injecting auth from client headers or server env
+- **API Proxy**: 4 Next.js API routes that forward requests to an OpenAI-compatible or Claude Messages API, injecting auth from client headers or server env
 
 ### API Routes
 
 | Route | Upstream Endpoint | Body Type |
 |---|---|---|
-| `/api/chat/completions` | `{baseUrl}/v1/chat/completions` | JSON |
+| `/api/chat/completions` | `{baseUrl}/v1/chat/completions` or `{baseUrl}/v1/messages` | JSON |
 | `/api/images/generations` | `{baseUrl}/v1/images/generations` | JSON |
 | `/api/images/edits` | `{baseUrl}/v1/images/edits` | multipart/form-data |
 | `/api/config` | — | Returns server-side key status |

@@ -20,8 +20,12 @@ export interface AppConfig {
   model: string;
   chatModel: string;
   titleModel: string;
+  chatApiFormat: 'openai' | 'claude';
   customImageModels: string[];
   customChatModels: string[];
+  claudeModel: string;
+  claudeTitleModel: string;
+  customClaudeModels: string[];
   size: string;
   n: number;
   quality: string;
@@ -32,6 +36,8 @@ export interface AppConfig {
   systemPrompt: string;
   chatBaseUrl: string;
   chatApiKey: string;
+  claudeBaseUrl: string;
+  claudeApiKey: string;
 }
 
 export interface AppOptions {

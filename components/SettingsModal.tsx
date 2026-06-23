@@ -6,6 +6,7 @@ import { useImages } from '@/contexts/ImageContext';
 import {
   BACKGROUND_OPTIONS,
   CHAT_MODEL_PRESETS,
+  CLAUDE_MODEL_PRESETS,
   FORMAT_OPTIONS,
   IMAGE_MODEL_PRESETS,
   MODERATION_OPTIONS,
@@ -15,6 +16,15 @@ import {
 } from '@/lib/constants';
 import { addModelToList, mergeModelOptions, removeModelFromList } from '@/lib/model-options';
 import { formatSizeDisplay } from '@/lib/size';
+import {
+  encodeChatModelChoice,
+  getActiveChatModel,
+  getAllChatModelOptions,
+  getChatFormatForModel,
+  getClaudeChatModelOptions,
+  getOpenAIChatModelOptions,
+  parseChatModelChoice,
+} from '@/lib/chat-config';
 
 interface SettingsModalProps {
   open: boolean;
@@ -26,30 +36,48 @@ const labelClass = 'block text-xs text-[#CCC] mb-0.5';
 const inputClass = 'w-full bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono';
 const selectClass = 'w-full bg-[#AAA] text-black border-2 border-[#999] text-sm py-1 px-1 cursor-pointer font-mono';
 const hintClass = 'text-xs text-[#888] mt-1';
+const providerHeadingClass = 'flex items-center justify-between gap-2 pt-2 border-t border-[#444] text-xs text-[#00aaaa]';
 const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer';
 const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
 
 export default function SettingsModal({ open, onClose }: SettingsModalProps) {
-  const { config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, chatKeySource } = useConfig();
+  const { config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, chatKeySource, claudeKeySource } = useConfig();
   const { images, selectedIndices } = useImages();
   const [showKey, setShowKey] = useState(false);
   const [showChatKey, setShowChatKey] = useState(false);
+  const [showClaudeKey, setShowClaudeKey] = useState(false);
   const [newImageModel, setNewImageModel] = useState('');
   const [newChatModel, setNewChatModel] = useState('');
+  const [newClaudeModel, setNewClaudeModel] = useState('');
   const [customSize, setCustomSize] = useState(false);
   const [confirmClearLocalData, setConfirmClearLocalData] = useState(false);
   const [clearingLocalData, setClearingLocalData] = useState(false);
 
   const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
-  const chatModelOptions = mergeModelOptions(CHAT_MODEL_PRESETS, config.customChatModels);
+  const openAIChatModelOptions = getOpenAIChatModelOptions(config);
+  const claudeModelOptions = getClaudeChatModelOptions(config);
+  const allChatModelOptions = getAllChatModelOptions(config);
   const imageModelIsOption = imageModelOptions.some(m => m.value === config.model);
-  const chatModelIsOption = chatModelOptions.some(m => m.value === config.chatModel);
-  const titleModelIsOption = chatModelOptions.some(m => m.value === config.titleModel);
+  const activeChatModel = getActiveChatModel(config);
+  const activeChatApiFormat = getChatFormatForModel(config, activeChatModel);
+  const activeChatChoice = encodeChatModelChoice(activeChatApiFormat, activeChatModel);
+  const activeChatProviderLabel = activeChatApiFormat === 'claude' ? 'Claude Messages' : 'OpenAI-compatible';
+  const chatModelIsOption = allChatModelOptions.some(m => m.format === activeChatApiFormat && m.value === activeChatModel);
+  const titleModelIsOption = openAIChatModelOptions.some(m => m.value === config.titleModel);
+  const claudeTitleModelIsOption = claudeModelOptions.some(m => m.value === config.claudeTitleModel);
   const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
   const activeImages = selectedIndices.size > 0
     ? images.filter((_, i) => selectedIndices.has(i))
     : [];
   const originalAspectLabel = formatSizeDisplay(ORIGINAL_ASPECT_SIZE, activeImages);
+
+  const selectChatModel = (value: string) => {
+    const choice = parseChatModelChoice(value);
+    if (!choice) return;
+    updateConfig('chatApiFormat', choice.format);
+    updateConfig('chatModel', choice.model);
+    if (choice.format === 'claude') updateConfig('claudeModel', choice.model);
+  };
 
   const prevOpen = useRef(open);
   useEffect(() => {
@@ -100,6 +128,18 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     none: 'text-[#ff5555]',
   }[chatKeySource];
 
+  const claudeKeySourceLabel = {
+    user: '自定义',
+    server: '服务端默认',
+    none: '未配置',
+  }[claudeKeySource];
+
+  const claudeKeySourceColor = {
+    user: 'text-[#00aaaa]',
+    server: 'text-[#00ff00]',
+    none: 'text-[#ff5555]',
+  }[claudeKeySource];
+
   const addImageModel = () => {
     const model = newImageModel.trim();
     if (!model) return;
@@ -114,12 +154,26 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const addChatModel = () => {
     const model = newChatModel.trim();
     if (!model) return;
-    const exists = chatModelOptions.some((option) => option.value === model);
+    const exists = openAIChatModelOptions.some((option) => option.value === model);
     if (!exists) {
       updateConfig('customChatModels', addModelToList(config.customChatModels, model));
     }
+    updateConfig('chatApiFormat', 'openai');
     updateConfig('chatModel', model);
     setNewChatModel('');
+  };
+
+  const addClaudeModel = () => {
+    const model = newClaudeModel.trim();
+    if (!model) return;
+    const exists = claudeModelOptions.some((option) => option.value === model);
+    if (!exists) {
+      updateConfig('customClaudeModels', addModelToList(config.customClaudeModels, model));
+    }
+    updateConfig('chatApiFormat', 'claude');
+    updateConfig('chatModel', model);
+    updateConfig('claudeModel', model);
+    setNewClaudeModel('');
   };
 
   const deleteImageModel = (model: string) => {
@@ -129,8 +183,21 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
 
   const deleteChatModel = (model: string) => {
     updateConfig('customChatModels', removeModelFromList(config.customChatModels, model));
-    if (config.chatModel === model) updateConfig('chatModel', CHAT_MODEL_PRESETS[0].value);
+    if (activeChatApiFormat === 'openai' && config.chatModel === model) {
+      updateConfig('chatApiFormat', 'openai');
+      updateConfig('chatModel', CHAT_MODEL_PRESETS[0].value);
+    }
     if (config.titleModel === model) updateConfig('titleModel', CHAT_MODEL_PRESETS[0].value);
+  };
+
+  const deleteClaudeModel = (model: string) => {
+    updateConfig('customClaudeModels', removeModelFromList(config.customClaudeModels, model));
+    if (config.claudeModel === model) updateConfig('claudeModel', CLAUDE_MODEL_PRESETS[0].value);
+    if (activeChatApiFormat === 'claude' && config.chatModel === model) {
+      updateConfig('chatApiFormat', 'claude');
+      updateConfig('chatModel', CLAUDE_MODEL_PRESETS[0].value);
+    }
+    if (config.claudeTitleModel === model) updateConfig('claudeTitleModel', CLAUDE_MODEL_PRESETS[CLAUDE_MODEL_PRESETS.length - 1].value);
   };
 
   const handleClearLocalData = () => {
@@ -189,8 +256,16 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   </div>
                 </div>
 
-                <div className="pt-2 border-t border-[#444]">
-                  <label className={labelClass} htmlFor="cfg-chat-baseurl">Chat Base URL</label>
+                <p className={`${hintClass} pt-2 border-t border-[#444]`}>
+                  聊天会按所选模型自动使用对应连接配置；两套服务商信息会分别保存。
+                </p>
+
+                <div className={providerHeadingClass}>
+                  <span>OpenAI-compatible</span>
+                </div>
+
+                <div>
+                  <label className={labelClass} htmlFor="cfg-chat-baseurl">Base URL</label>
                   <input
                     id="cfg-chat-baseurl"
                     type="text"
@@ -203,7 +278,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
 
                 <div>
                   <label className={`${labelClass} flex items-center gap-2`}>
-                    Chat API Key
+                    API Key
                     <span className={`${chatKeySourceColor} text-xs`}>● {chatKeySourceLabel}</span>
                   </label>
                   <div className="flex min-w-0">
@@ -216,6 +291,42 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                     />
                     <button onClick={() => setShowChatKey(!showChatKey)} className="btn-retro px-2 text-xs shrink-0">
                       {showChatKey ? '隐藏' : '显示'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className={providerHeadingClass}>
+                  <span>Claude Messages</span>
+                </div>
+
+                <div>
+                  <label className={labelClass} htmlFor="cfg-claude-baseurl">Base URL</label>
+                  <input
+                    id="cfg-claude-baseurl"
+                    type="text"
+                    value={config.claudeBaseUrl}
+                    onChange={(e) => updateConfig('claudeBaseUrl', e.target.value)}
+                    placeholder="留空使用服务端 Claude 默认"
+                    className={inputClass}
+                  />
+                  <p className={hintClass}>Anthropic 官方接口通常填 https://api.anthropic.com</p>
+                </div>
+
+                <div>
+                  <label className={`${labelClass} flex items-center gap-2`}>
+                    API Key
+                    <span className={`${claudeKeySourceColor} text-xs`}>● {claudeKeySourceLabel}</span>
+                  </label>
+                  <div className="flex min-w-0">
+                    <input
+                      type={showClaudeKey ? 'text' : 'password'}
+                      value={config.claudeApiKey}
+                      onChange={(e) => updateConfig('claudeApiKey', e.target.value)}
+                      placeholder="留空使用服务端 Claude 默认 Key"
+                      className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                    />
+                    <button onClick={() => setShowClaudeKey(!showClaudeKey)} className="btn-retro px-2 text-xs shrink-0">
+                      {showClaudeKey ? '隐藏' : '显示'}
                     </button>
                   </div>
                 </div>
@@ -272,24 +383,52 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   <label className={labelClass}>Chat Model</label>
                   <div className="space-y-1">
                     <select
-                      value={chatModelIsOption ? config.chatModel : '__current__'}
+                      value={activeChatChoice}
+                      onChange={(e) => selectChatModel(e.target.value)}
+                      className={selectClass}
+                    >
+                      {!chatModelIsOption && <option value={activeChatChoice}>{activeChatModel}</option>}
+                      <optgroup label="OpenAI-compatible">
+                        {openAIChatModelOptions.map(m => (
+                          <option key={`openai:${m.value}`} value={encodeChatModelChoice('openai', m.value)}>{m.label}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Claude Messages">
+                        {claudeModelOptions.map(m => (
+                          <option key={`claude:${m.value}`} value={encodeChatModelChoice('claude', m.value)}>{m.label}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                    <p className={hintClass}>当前会使用 {activeChatProviderLabel} 连接配置</p>
+                  </div>
+                </div>
+
+                <div>
+                  <div className={providerHeadingClass}>
+                    <span>OpenAI-compatible</span>
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClass}>Title Model</label>
+                    <select
+                      value={titleModelIsOption ? config.titleModel : '__current__'}
                       onChange={(e) => {
-                        if (e.target.value !== '__current__') updateConfig('chatModel', e.target.value);
+                        if (e.target.value !== '__current__') updateConfig('titleModel', e.target.value);
                       }}
                       className={selectClass}
                     >
-                      {!chatModelIsOption && <option value="__current__">{config.chatModel}</option>}
-                      {chatModelOptions.map(m => (
+                      {!titleModelIsOption && <option value="__current__">{config.titleModel}</option>}
+                      {openAIChatModelOptions.map(m => (
                         <option key={m.value} value={m.value}>{m.label}</option>
                       ))}
                     </select>
+                    <p className={hintClass}>用于第一轮回复后自动总结聊天标题</p>
                     <div className="flex min-w-0">
                       <input
                         type="text"
                         value={newChatModel}
                         onChange={(e) => setNewChatModel(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChatModel(); } }}
-                        placeholder="添加聊天模型"
+                        placeholder="添加 OpenAI-compatible 模型"
                         className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                       />
                       <button onClick={addChatModel} className="btn-retro px-2 text-xs shrink-0">
@@ -312,21 +451,49 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                 </div>
 
                 <div>
-                  <label className={labelClass}>Title Model</label>
+                  <div className={providerHeadingClass}>
+                    <span>Claude Messages</span>
+                  </div>
                   <div className="space-y-1">
+                    <label className={labelClass}>Title Model</label>
                     <select
-                      value={titleModelIsOption ? config.titleModel : '__current__'}
+                      value={claudeTitleModelIsOption ? config.claudeTitleModel : '__current__'}
                       onChange={(e) => {
-                        if (e.target.value !== '__current__') updateConfig('titleModel', e.target.value);
+                        if (e.target.value !== '__current__') updateConfig('claudeTitleModel', e.target.value);
                       }}
                       className={selectClass}
                     >
-                      {!titleModelIsOption && <option value="__current__">{config.titleModel}</option>}
-                      {chatModelOptions.map(m => (
+                      {!claudeTitleModelIsOption && <option value="__current__">{config.claudeTitleModel}</option>}
+                      {claudeModelOptions.map(m => (
                         <option key={m.value} value={m.value}>{m.label}</option>
                       ))}
                     </select>
-                    <p className={hintClass}>用于第一轮回复后自动总结聊天标题</p>
+                    <p className={hintClass}>Claude 格式下用于第一轮回复后自动总结聊天标题</p>
+                    <div className="flex min-w-0">
+                      <input
+                        type="text"
+                        value={newClaudeModel}
+                        onChange={(e) => setNewClaudeModel(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addClaudeModel(); } }}
+                        placeholder="添加 Claude 模型"
+                        className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                      />
+                      <button onClick={addClaudeModel} className="btn-retro px-2 text-xs shrink-0">
+                        添加
+                      </button>
+                    </div>
+                    {config.customClaudeModels.length > 0 && (
+                      <div className="space-y-1">
+                        {config.customClaudeModels.map((model) => (
+                          <div key={model} className="flex min-w-0 items-center gap-2 border-2 border-[#444] bg-black px-2 py-1">
+                            <span className="min-w-0 flex-1 truncate text-xs text-[#CCC]">{model}</span>
+                            <button onClick={() => deleteClaudeModel(model)} className="text-xs text-[#ff5555] hover:text-white cursor-pointer">
+                              删除
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
 

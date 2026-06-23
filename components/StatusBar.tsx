@@ -4,13 +4,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
 import { REPEATER_MODEL_LABEL } from '@/lib/constants';
+import { getActiveChatModel } from '@/lib/chat-config';
 
 const MODEL_GATE_UNLOCK_TAPS = 3;
 
 export default function StatusBar() {
   const { config, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked } = useConfig();
   const { setStatus } = useChat();
-  const activeModel = config.mode === 'chat' ? config.chatModel : config.model;
+  const activeModel = config.mode === 'chat' ? getActiveChatModel(config) : config.model;
   const [tapping, setTapping] = useState(false);
   const [locallyUnlocked, setLocallyUnlocked] = useState(false);
   const localTapsRef = useRef(0);

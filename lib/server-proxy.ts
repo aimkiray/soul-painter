@@ -14,9 +14,18 @@ export interface ValidatedRequest {
   baseUrl: string;
 }
 
+type UpstreamAuthMode = 'bearer' | 'anthropic';
+
+interface UpstreamProxyOptions {
+  authMode?: UpstreamAuthMode;
+  contentType?: string;
+}
+
+type RequestKind = 'image' | 'chat' | 'claude';
+
 /** Validate API key, base URL, and body size. Returns validated values or an error Response.
- *  When kind is 'chat', falls back to DEFAULT_CHAT_* env vars first, then DEFAULT_* shared envs. */
-export async function validateRequest(request: NextRequest, kind: 'image' | 'chat' = 'image'): Promise<ValidatedRequest | NextResponse> {
+ *  Chat requests can use OpenAI-compatible or Claude-specific defaults. */
+export async function validateRequest(request: NextRequest, kind: RequestKind = 'image'): Promise<ValidatedRequest | NextResponse> {
   const modelGateUnlocked = await verifyModelGateUnlockToken(request.cookies.get(MODEL_GATE_UNLOCKED_COOKIE)?.value);
   if (isModelGateEnabled() && !modelGateUnlocked) {
     return NextResponse.json(
@@ -25,16 +34,24 @@ export async function validateRequest(request: NextRequest, kind: 'image' | 'cha
     );
   }
 
-  const keyEnv = kind === 'chat'
-    ? (process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY)
-    : process.env.DEFAULT_API_KEY;
-  const urlEnv = kind === 'chat'
-    ? (process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL)
-    : process.env.DEFAULT_BASE_URL;
+  const keyEnv = kind === 'claude'
+    ? (process.env.DEFAULT_CLAUDE_API_KEY || process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY)
+    : kind === 'chat'
+      ? (process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY)
+      : process.env.DEFAULT_API_KEY;
+  const urlEnv = kind === 'claude'
+    ? (process.env.DEFAULT_CLAUDE_BASE_URL || process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL)
+    : kind === 'chat'
+      ? (process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL)
+      : process.env.DEFAULT_BASE_URL;
 
   const apiKey = request.headers.get('x-api-key') || keyEnv;
   if (!apiKey) {
-    const envName = kind === 'chat' ? 'DEFAULT_CHAT_API_KEY 或 DEFAULT_API_KEY' : 'DEFAULT_API_KEY';
+    const envName = kind === 'claude'
+      ? 'DEFAULT_CLAUDE_API_KEY、DEFAULT_CHAT_API_KEY 或 DEFAULT_API_KEY'
+      : kind === 'chat'
+        ? 'DEFAULT_CHAT_API_KEY 或 DEFAULT_API_KEY'
+        : 'DEFAULT_API_KEY';
     return NextResponse.json(
       { error: { message: `未配置 API Key。请在设置中填写，或在服务端 .env 中设置 ${envName}。` } },
       { status: 401 }
@@ -67,7 +84,7 @@ async function proxyUpstreamBodyStream(
   body: BodyInit,
   origin: string,
   requestSignal?: AbortSignal,
-  contentType?: string,
+  options: UpstreamProxyOptions = {},
 ): Promise<Response> {
   const url = `${baseUrl}${path}`;
   console.log(`[proxy-stream] POST ${url}`);
@@ -89,10 +106,15 @@ async function proxyUpstreamBodyStream(
       try { ctrl.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
 
       try {
-        const headers: HeadersInit = {
-          'Authorization': `Bearer ${apiKey}`,
-        };
-        if (contentType) headers['Content-Type'] = contentType;
+        const headers: HeadersInit = options.authMode === 'anthropic'
+          ? {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+            }
+          : {
+              'Authorization': `Bearer ${apiKey}`,
+            };
+        if (options.contentType) headers['Content-Type'] = options.contentType;
 
         if (requestSignal?.aborted) {
           ctrl.close();
@@ -173,6 +195,7 @@ export async function proxyUpstreamStream(
   body: string,
   origin: string,
   requestSignal?: AbortSignal,
+  options: Omit<UpstreamProxyOptions, 'contentType'> = {},
 ): Promise<Response> {
   return proxyUpstreamBodyStream(
     baseUrl,
@@ -181,7 +204,10 @@ export async function proxyUpstreamStream(
     body,
     origin,
     requestSignal,
-    'application/json',
+    {
+      ...options,
+      contentType: 'application/json',
+    },
   );
 }
 

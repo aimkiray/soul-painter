@@ -31,6 +31,7 @@ import {
 import { imageHitToStoredUrl, uploadChatImage } from '@/lib/chat-asset-client';
 import { blobToEditBlob } from '@/lib/image-edit';
 import { parseSize, resolveRequestSize } from '@/lib/size';
+import { ChatApiFormat, getActiveChatModel, getChatProviderConfig } from '@/lib/chat-config';
 
 // ── Pure helpers used by handleSend ──
 
@@ -68,7 +69,6 @@ function buildRepeaterReply(prompt: string): string {
 type RequestBody = Record<string, unknown> | FormData;
 
 type RunMode = ChatTurnSnapshot['mode'];
-
 interface PromptRunOptions {
   existingUserMessageId?: string;
   targetBotMessageId?: string;
@@ -312,10 +312,12 @@ function createTurnSnapshot(
   resolvedSize: string,
   referenceImages: ChatReferenceImage[],
 ): ChatTurnSnapshot {
+  const chatProvider = getChatProviderConfig(config, getActiveChatModel(config));
   return {
     mode,
     model: config.model,
-    chatModel: config.chatModel,
+    chatModel: chatProvider.model,
+    chatApiFormat: chatProvider.format,
     size: resolvedSize,
     n: config.n,
     quality: config.quality,
@@ -333,6 +335,7 @@ function createTurnSnapshot(
 async function processChatStream(
   stream: ReadableStream<Uint8Array>,
   onDelta: (text: string) => void,
+  format: ChatApiFormat = 'openai',
   signal?: AbortSignal,
 ): Promise<string> {
   const reader = stream.getReader();
@@ -344,6 +347,42 @@ async function processChatStream(
     void reader.cancel().catch(() => {});
   };
   signal?.addEventListener('abort', cancelReader, { once: true });
+
+  const processBlock = (block: string): boolean => {
+    let eventType = 'message';
+    const dataLines: string[] = [];
+
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event:')) {
+        eventType = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+
+    const data = dataLines.join('\n');
+    if (data === '[DONE]' || eventType === 'message_stop') return true;
+    if (!data) return false;
+
+    try {
+      const evt = JSON.parse(data);
+      const eventError = getStreamEventError(evt, eventType);
+      if (eventError) throw new Error(eventError);
+
+      const delta = format === 'claude'
+        ? extractClaudeStreamDelta(evt)
+        : extractOpenAIStreamDelta(evt);
+      if (delta) {
+        fullText += delta;
+        onDelta(fullText);
+      }
+    } catch (e) {
+      if (e instanceof SyntaxError) return false;
+      if (e instanceof Error && e.message) throw e;
+    }
+
+    return false;
+  };
 
   try {
     while (true) {
@@ -360,30 +399,85 @@ async function processChatStream(
       buffer = blocks.pop() || '';
 
       for (const block of blocks) {
-        for (const line of block.split('\n')) {
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim();
-          if (data === '[DONE]') return fullText;
-          if (!data) continue;
-          try {
-            const evt = JSON.parse(data);
-            if (evt.error) throw new Error(evt.message || `HTTP ${evt.status}`);
-            const delta = evt.choices?.[0]?.delta?.content;
-            if (delta) {
-              fullText += delta;
-              onDelta(fullText);
-            }
-          } catch (e) {
-            if (e instanceof SyntaxError) continue;
-            if (e instanceof Error && e.message) throw e;
-          }
-        }
+        if (processBlock(block)) return fullText;
       }
     }
+
+    const tail = decoder.decode();
+    if (tail) buffer += tail;
+    if (buffer.trim() && processBlock(buffer)) return fullText;
   } finally {
     signal?.removeEventListener('abort', cancelReader);
   }
   return fullText;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object';
+}
+
+function stringifyTextContent(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return value == null ? '' : String(value);
+
+  return value
+    .map((part) => {
+      if (typeof part === 'string') return part;
+      if (isRecord(part) && typeof part.text === 'string') return part.text;
+      return '';
+    })
+    .join('');
+}
+
+function getStreamEventError(evt: unknown, eventType: string): string | null {
+  if (!isRecord(evt)) return eventType === 'error' ? '流式响应返回错误事件' : null;
+  if (!evt.error && eventType !== 'error') return null;
+
+  if (typeof evt.message === 'string' && evt.message.trim()) return evt.message;
+  if (typeof evt.error === 'string' && evt.error.trim()) return evt.error;
+  if (isRecord(evt.error)) {
+    const message = typeof evt.error.message === 'string' ? evt.error.message : '';
+    const type = typeof evt.error.type === 'string' ? evt.error.type : '';
+    return message || type || '流式响应返回错误事件';
+  }
+  if (typeof evt.status === 'number') return `HTTP ${evt.status}`;
+  return '流式响应返回错误事件';
+}
+
+function extractOpenAIStreamDelta(evt: unknown): string {
+  if (!isRecord(evt) || !Array.isArray(evt.choices)) return '';
+  const choice = evt.choices[0];
+  if (!isRecord(choice) || !isRecord(choice.delta)) return '';
+  return stringifyTextContent(choice.delta.content);
+}
+
+function extractClaudeStreamDelta(evt: unknown): string {
+  if (!isRecord(evt) || evt.type !== 'content_block_delta' || !isRecord(evt.delta)) return '';
+  if (evt.delta.type !== 'text_delta') return '';
+  return typeof evt.delta.text === 'string' ? evt.delta.text : '';
+}
+
+function extractChatResponseText(response: unknown, format: ChatApiFormat): string {
+  if (!isRecord(response)) return '';
+
+  if (format === 'claude') {
+    if (typeof response.content === 'string') return response.content;
+    if (!Array.isArray(response.content)) return '';
+    return response.content
+      .map((block) => {
+        if (typeof block === 'string') return block;
+        if (isRecord(block) && (block.type === 'text' || typeof block.text === 'string')) {
+          return typeof block.text === 'string' ? block.text : '';
+        }
+        return '';
+      })
+      .join('');
+  }
+
+  if (!Array.isArray(response.choices)) return '';
+  const choice = response.choices[0];
+  if (!isRecord(choice) || !isRecord(choice.message)) return '';
+  return stringifyTextContent(choice.message.content);
 }
 
 const CHAT_HISTORY_BUDGET = 32 * 1024;
@@ -562,6 +656,60 @@ function abortableDelay(ms: number, signal: AbortSignal) {
   });
 }
 
+const REQUEST_MAX_ATTEMPTS = 3;
+const REQUEST_RETRY_DELAYS_MS = [4000, 8000] as const;
+
+interface RequestFailureResult {
+  status: number;
+  statusText: string;
+  text: string;
+}
+
+class RequestStatusError extends Error {
+  status: number;
+
+  constructor(result: RequestFailureResult) {
+    const detail = parseErrorDetail(result.text) || result.statusText || '请求失败';
+    super(result.status ? `HTTP ${result.status} ${detail}` : detail);
+    this.name = 'RequestStatusError';
+    this.status = result.status;
+  }
+}
+
+class RequestAttemptsExhaustedError extends Error {
+  constructor(error: unknown) {
+    super(buildFinalFailureMessage(errorMessage(error)));
+    this.name = 'RequestAttemptsExhaustedError';
+  }
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || '请求失败');
+}
+
+function errorStatus(error: unknown) {
+  if (error instanceof RequestStatusError) return error.status;
+  const match = /^HTTP\s+(\d+)/i.exec(errorMessage(error));
+  return match ? Number(match[1]) : null;
+}
+
+function isRetryableRequestError(error: unknown) {
+  const message = errorMessage(error);
+  if (message === USER_ABORT_SENTINEL) return true;
+  if (/no available channel for model/i.test(message)) return false;
+
+  const status = errorStatus(error);
+  if (status !== null) {
+    return status === 0 || status === 408 || status === 429 || (status >= 500 && status < 600);
+  }
+
+  return /timeout|timed out|network|fetch|failed|超时|响应中未找到图片|响应为空|无响应/i.test(message);
+}
+
+function buildFinalFailureMessage(message: string) {
+  return `请求失败，已自动重试 ${REQUEST_MAX_ATTEMPTS - 1} 次仍未成功。\n${message || '上游未返回有效结果'}`;
+}
+
 function readSyncUsername() {
   try {
     const parsed = JSON.parse(localStorage.getItem(CHAT_SYNC_AUTH_STORAGE_KEY) || 'null');
@@ -577,16 +725,25 @@ function HomeInner() {
   const [activeTab, setActiveTab] = useState<'generate' | 'decode'>('generate');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
-  const [syncUsername, setSyncUsername] = useState(readSyncUsername);
+  const [syncUsername, setSyncUsername] = useState('');
   const [pendingRegenerateMessageId, setPendingRegenerateMessageId] = useState<string | null>(null);
-  const [chatSidebarCollapsed, setChatSidebarCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
+  const [chatSidebarCollapsed, setChatSidebarCollapsed] = useState(false);
+  const [chatSidebarCollapsedReady, setChatSidebarCollapsedReady] = useState(false);
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setSyncUsername(readSyncUsername());
+      try {
+        setChatSidebarCollapsed(localStorage.getItem(CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY) === '1');
+      } catch {
+        // ignore
+      } finally {
+        setChatSidebarCollapsedReady(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
 
   const { config, options, modelGateEnabled, defaultBaseUrl } = useConfig();
   const {
@@ -597,7 +754,6 @@ function HomeInner() {
     addUserMsg,
     addTextBotMsg,
     updateLastBotMsg,
-    updateLastBotText,
     updateBotMsg,
     updateBotText,
     replaceBotMessage,
@@ -618,12 +774,13 @@ function HomeInner() {
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 
   useEffect(() => {
+    if (!chatSidebarCollapsedReady) return;
     try {
       localStorage.setItem(CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY, chatSidebarCollapsed ? '1' : '0');
     } catch {
       // ignore
     }
-  }, [chatSidebarCollapsed]);
+  }, [chatSidebarCollapsed, chatSidebarCollapsedReady]);
 
   useEffect(() => {
     const media = window.matchMedia('(min-width: 1024px)');
@@ -743,6 +900,9 @@ function HomeInner() {
       if (msg.includes('413') || /too large|请求体|超过上限|Image is too large/i.test(msg)) {
         return '\n参考图总大小过大，请删除不必要的参考图或换用更小的图片后重试';
       }
+      if (/no available channel for model/i.test(msg)) {
+        return '\n当前 API 渠道没有这个模型的可用通道。请在设置中切换对应的 Base URL/API Key，或更换可用模型。';
+      }
       if (msg.includes('401')) return '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
       if (msg.includes('400')) return '\n请求参数有误，请检查 Base URL 格式';
       if (msg.includes('418')) return '';
@@ -763,6 +923,34 @@ function HomeInner() {
         replaceBotMessage(targetBotMessageId, { prompt: error, images: [], text: '', code: '', extra: 'error' }, sessionId);
       } else {
         addErrorMsg(error, sessionId);
+      }
+    };
+    const botPlaceholderIdRef = { current: targetBotMessageId || '' };
+    const ensureBotPlaceholder = () => {
+      if (botPlaceholderIdRef.current) {
+        replaceBotMessage(botPlaceholderIdRef.current, { prompt: '', images: [], text: '', code: '', extra: '' }, sessionId);
+        return;
+      }
+      botPlaceholderIdRef.current = addBotMsg([], '', '', sessionId);
+    };
+    const writePlaceholderImages = (botImages: ImageHit[], code?: string) => {
+      ensureBotPlaceholder();
+      if (botPlaceholderIdRef.current) {
+        updateBotMsg(botPlaceholderIdRef.current, botImages, code, sessionId);
+      }
+    };
+    const writePlaceholderText = (text: string) => {
+      ensureBotPlaceholder();
+      if (botPlaceholderIdRef.current) {
+        updateBotText(botPlaceholderIdRef.current, text, sessionId);
+      }
+    };
+    const writeCancelMessage = () => {
+      const message = '用户已取消本次请求。';
+      if (botPlaceholderIdRef.current) {
+        replaceBotMessage(botPlaceholderIdRef.current, { prompt: message, images: [], text: '', code: '', extra: 'error' }, sessionId);
+      } else if (!targetBotMessageId) {
+        addErrorMsg(message, sessionId);
       }
     };
     try {
@@ -796,8 +984,13 @@ function HomeInner() {
         ?? createTurnSnapshot(config, options, mode, resolvedSize, mode === 'edits' ? referenceImages : []);
 
       const model = turnSnapshot.model || config.model;
-      const chatModel = turnSnapshot.chatModel || config.chatModel;
-      const titleModel = config.titleModel || 'gpt-5.4-mini';
+      const fallbackChatProvider = turnSnapshot.chatApiFormat
+        ? getChatProviderConfig(config, turnSnapshot.chatApiFormat)
+        : getChatProviderConfig(config);
+      const chatModel = turnSnapshot.chatModel || fallbackChatProvider.model;
+      const chatProvider = getChatProviderConfig(config, chatModel, turnSnapshot.chatApiFormat);
+      const chatApiFormat = chatProvider.format;
+      const titleModel = chatProvider.titleModel || chatModel;
       const n = turnSnapshot.n;
       const quality = turnSnapshot.quality;
       const outFormat = turnSnapshot.format;
@@ -843,14 +1036,6 @@ function HomeInner() {
       }
       };
 
-      const writeBotText = (text: string) => {
-      if (targetBotMessageId) {
-        updateBotText(targetBotMessageId, text, sessionId);
-      } else {
-        updateLastBotText(text, sessionId);
-      }
-      };
-
       const scheduleTitleGeneration = (assistantText: string) => {
       if (!isFirstUserTurn || targetBotMessageId || !assistantText.trim()) return;
       void (async () => {
@@ -871,11 +1056,11 @@ function HomeInner() {
             ],
             stream: false,
           };
-          const titleConfig = { ...config, chatModel: titleModel };
+          const titleConfig = { ...config, chatModel: titleModel, chatApiFormat };
           const result = await proxyRequest('/api/chat/completions', titleConfig, titleBody, options, 'chat', controller.signal);
           if (!result.ok) return;
           const resp = JSON.parse(result.text);
-          const title = normalizeGeneratedTitle(resp.choices?.[0]?.message?.content || '');
+          const title = normalizeGeneratedTitle(extractChatResponseText(resp, chatApiFormat));
           if (title) setGeneratedSessionTitle(sessionId, title);
         } catch {
           // Title generation is best-effort and should never affect the chat response.
@@ -890,52 +1075,180 @@ function HomeInner() {
         scheduleTitleGeneration(`生成完成 ${imageCount} 张图片`);
       };
 
-      const tryWithRetry = async (
-      endpoint: string,
-      body: unknown,
-      retries = 0,
-      kind: 'image' | 'chat' = 'image',
-    ) => {
-      throwIfAborted(requestSignal);
-      let result = await proxyRequest(endpoint, config, body, options, kind, requestSignal)
-        .catch((e) => ({
-          ok: false as const,
-          status: 0,
-          statusText: e.message,
-          text: '',
-        }));
-      throwIfAborted(requestSignal);
-
-      if (!result.ok && [0, 429, 502, 503, 504].includes(result.status) && retries < 2) {
-        const delay = retries === 0 ? 4000 : 8000;
-        setStatus(`上游限流，${delay / 1000}s 后重试 (${retries + 1}/2)...`);
-        await abortableDelay(delay, requestSignal);
-        result = await proxyRequest(endpoint, config, body, options, kind, requestSignal)
-          .catch((e) => ({
-            ok: false as const,
-            status: 0,
-            statusText: e.message,
-            text: '',
-          }));
-        throwIfAborted(requestSignal);
-        return result;
-      }
-
-      return result;
+      const describeRetryFailure = (error: unknown) => {
+        const status = errorStatus(error);
+        if (status === 429) return '上游限流';
+        if (status && status >= 500) return '上游服务器错误';
+        if (status === 408 || /timeout|timed out|超时/i.test(errorMessage(error))) return '请求超时';
+        return '请求失败';
       };
+
+      const retryable = async <T,>(
+        label: string,
+        operation: () => Promise<T>,
+        shouldRetry: (error: unknown) => boolean = isRetryableRequestError,
+      ): Promise<T> => {
+        let lastError: unknown;
+
+        for (let attempt = 1; attempt <= REQUEST_MAX_ATTEMPTS; attempt += 1) {
+          throwIfAborted(requestSignal);
+          try {
+            if (attempt > 1) {
+              setStatus(`${label}重试中 (${attempt}/${REQUEST_MAX_ATTEMPTS})...`, 'warn');
+            }
+            return await operation();
+          } catch (error) {
+            if (errorMessage(error) === USER_ABORT_SENTINEL || requestSignal.aborted) {
+              throw new Error(USER_ABORT_SENTINEL);
+            }
+
+            lastError = error;
+            const retryableError = shouldRetry(error);
+            const canRetry = attempt < REQUEST_MAX_ATTEMPTS && retryableError;
+            if (!canRetry) {
+              if (retryableError && attempt >= REQUEST_MAX_ATTEMPTS) {
+                throw new RequestAttemptsExhaustedError(error);
+              }
+              throw error;
+            }
+
+            const delay = REQUEST_RETRY_DELAYS_MS[attempt - 1] ?? REQUEST_RETRY_DELAYS_MS[REQUEST_RETRY_DELAYS_MS.length - 1];
+            setStatus(`${describeRetryFailure(error)}，${Math.round(delay / 1000)}s 后重试 (${attempt}/${REQUEST_MAX_ATTEMPTS - 1})...`, 'warn');
+            await abortableDelay(delay, requestSignal);
+          }
+        }
+
+        throw new RequestAttemptsExhaustedError(lastError);
+      };
+
+      const requestWithoutRetry = async (
+        endpoint: string,
+        body: unknown,
+        kind: 'image' | 'chat' = 'image',
+      ) => {
+        const result = await proxyRequest(endpoint, config, body, options, kind, requestSignal);
+        throwIfAborted(requestSignal);
+        if (!result.ok) throw new RequestStatusError(result);
+        return result;
+      };
+
+      const imageStreamAttemptWithRetry = async (
+        endpoint: string,
+        body: RequestBody,
+      ) => retryable('流式图片请求', async () => {
+        setRequestParam(body, 'stream', true);
+        setRequestParam(body, 'partial_images', 2);
+
+        const attempt = createImageStreamAttempt(requestSignal);
+        const previewHits: ImageHit[] = [];
+        const finalHits: ImageHit[] = [];
+        let rawText = '';
+        let streamError: Error | null = null;
+
+        writePlaceholderImages([], undefined);
+
+        try {
+          const result = await proxyRequestStream(endpoint, config, body, options, attempt.signal);
+          throwIfAborted(requestSignal);
+          if (!result.ok || !result.stream) {
+            throw new RequestStatusError({
+              status: result.status,
+              statusText: '',
+              text: result.text || '流式请求失败',
+            });
+          }
+          rawText = await processSSEStream(
+            result.stream,
+            (partial) => {
+              previewHits[previewHits.length] = partial;
+              writePlaceholderImages([...previewHits], undefined);
+            },
+            (final) => {
+              finalHits[finalHits.length > 0 ? finalHits.length - 1 : 0] = final;
+              previewHits[previewHits.length > 0 ? previewHits.length - 1 : 0] = final;
+              writePlaceholderImages([...finalHits], undefined);
+            },
+            attempt.signal,
+            (type) => {
+              if (type === 'complete') attempt.markComplete();
+              else attempt.markPartial();
+            },
+          );
+        } catch (error) {
+          streamError = error as Error;
+        } finally {
+          attempt.cleanup();
+          deleteRequestParam(body, 'stream');
+          deleteRequestParam(body, 'partial_images');
+        }
+
+        if (requestSignal.aborted) throw new Error(USER_ABORT_SENTINEL);
+        if (streamError?.message === USER_ABORT_SENTINEL && !attempt.didTimeout()) {
+          throw new Error(USER_ABORT_SENTINEL);
+        }
+        if (streamError?.message === USER_ABORT_SENTINEL && attempt.didTimeout()) {
+          throw new Error('流式请求超时');
+        }
+        if (streamError) throw streamError;
+        if (finalHits.length > 0) {
+          return {
+            finalHits,
+            rawText,
+          };
+        }
+
+        const resp = parseStreamResponseBody(rawText);
+        const hit = extractImage(resp);
+        if (hit) {
+          return {
+            finalHits: [hit],
+            rawText: typeof resp === 'string' ? resp : JSON.stringify(resp, null, 2),
+          };
+        }
+
+        throw new Error('响应中未找到图片');
+      });
 
       const formatDebugBody = (value: unknown) => (
         typeof value === 'string' ? value : JSON.stringify(value, null, 2)
       );
 
       const requestSingleImage = async (endpoint: string, body: RequestBody) => {
-        const result = await tryWithRetry(endpoint, body);
-        if (!result.ok) throw new Error(`HTTP ${result.status} ${parseErrorDetail(result.text)}`);
+        return retryable('图片请求', async () => {
+          const result = await requestWithoutRetry(endpoint, body, 'image');
+          const resp = parseResponseBody(result.text);
+          const hit = extractImage(resp);
+          if (!hit) throw new Error('响应中未找到图片');
+          return {
+            hit,
+            debugText: formatDebugBody(resp),
+          };
+        });
+      };
+
+      const requestSingleImageOnce = async (endpoint: string, body: RequestBody) => {
+        const result = await requestWithoutRetry(endpoint, body, 'image');
         const resp = parseResponseBody(result.text);
+        const hit = extractImage(resp);
+        if (!hit) throw new Error('响应中未找到图片');
         return {
-          hit: extractImage(resp),
+          hit,
           debugText: formatDebugBody(resp),
         };
+      };
+
+      const requestSingleEditImage = async (body: RequestBody) => {
+        return retryable('图片编辑请求', async () => {
+          const result = await requestWithoutRetry('/api/images/edits', body, 'image');
+          const resp = parseResponseBody(result.text);
+          const hit = extractImage(resp);
+          if (!hit) throw new Error('响应中未找到图片');
+          return {
+            hit,
+            debugText: formatDebugBody(resp),
+            resp,
+          };
+        });
       };
 
       const requestImageWithAutoFallback = async (
@@ -952,75 +1265,31 @@ function HomeInner() {
           };
         }
 
-        setRequestParam(body, 'stream', true);
-        setRequestParam(body, 'partial_images', 2);
-
-        const attempt = createImageStreamAttempt(requestSignal);
-        const previewHits: ImageHit[] = [];
-        const finalHits: ImageHit[] = [];
-        let rawText = '';
         let streamError: Error | null = null;
         let usedPlaceholder = false;
 
         try {
-          const { ok, stream, text } = await proxyRequestStream(endpoint, config, body, options, attempt.signal);
-          if (!ok || !stream) {
-            streamError = new Error(parseErrorDetail(text) || '流式请求失败');
-          } else {
-            usedPlaceholder = true;
-            writeBotMsg([], '', '');
-            rawText = await processSSEStream(
-              stream,
-              (partial) => { previewHits[previewHits.length] = partial; writeBotImages([...previewHits], undefined); },
-              (final) => {
-                finalHits[finalHits.length > 0 ? finalHits.length - 1 : 0] = final;
-                previewHits[previewHits.length > 0 ? previewHits.length - 1 : 0] = final;
-                writeBotImages([...finalHits], undefined);
-              },
-              attempt.signal,
-              (type) => {
-                if (type === 'complete') attempt.markComplete();
-                else attempt.markPartial();
-              },
-            );
-          }
+          usedPlaceholder = true;
+          ensureBotPlaceholder();
+          const streamed = await imageStreamAttemptWithRetry(endpoint, body);
+          setImageStreamCapability(capabilityKey, 'supported');
+          return {
+            hits: streamed.finalHits,
+            debugText: streamed.rawText || JSON.stringify(streamed.finalHits[0], null, 2),
+            usedPlaceholder,
+          };
         } catch (e) {
           streamError = e as Error;
-        } finally {
-          attempt.cleanup();
-          deleteRequestParam(body, 'stream');
-          deleteRequestParam(body, 'partial_images');
         }
 
         if (requestSignal.aborted) throw new Error(USER_ABORT_SENTINEL);
 
-        if (finalHits.length > 0) {
-          setImageStreamCapability(capabilityKey, 'supported');
-          return {
-            hits: finalHits,
-            debugText: JSON.stringify(finalHits[0], null, 2),
-            usedPlaceholder,
-          };
-        }
-
-        if (!streamError) {
-          const resp = parseStreamResponseBody(rawText);
-          const hit = extractImage(resp);
-          if (hit) {
-            setImageStreamCapability(capabilityKey, 'unsupported');
-            return {
-              hits: [hit],
-              debugText: formatDebugBody(resp),
-              usedPlaceholder,
-            };
-          }
-        }
-
-        if (streamError?.message === USER_ABORT_SENTINEL && !attempt.didTimeout()) {
+        if (streamError?.message === USER_ABORT_SENTINEL) {
           throw new Error(USER_ABORT_SENTINEL);
         }
 
-        const fallback = await requestSingleImage(endpoint, body);
+        writePlaceholderImages([], undefined);
+        const fallback = await requestSingleImageOnce(endpoint, body);
         if (fallback.hit) setImageStreamCapability(capabilityKey, 'unsupported');
         return {
           hits: fallback.hit ? [fallback.hit] : [],
@@ -1076,54 +1345,41 @@ function HomeInner() {
               setStatus('未识别到图片内容', 'err');
             }
           } else {
-            const probe = await tryWithRetry('/api/images/edits', body);
+            {
+              const { resp, hit } = await requestSingleEditImage(body);
+              const hits: ImageHit[] = [hit];
 
-            if (!probe.ok) {
-              throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
-            } else {
-              const resp = parseResponseBody(probe.text);
-              const hit = extractImage(resp);
-              if (hit) {
-                const hits: ImageHit[] = [hit];
-
-                if (n > 1) {
-                  const limit = Math.min(5, n - 1);
-                  let cursor = 0;
-                  const worker = async () => {
-                    while (cursor < n - 1) {
-                      const i = cursor++;
-                      if (i > 0) await abortableDelay(200, requestSignal);
-                      throwIfAborted(requestSignal);
-                      try {
-                        const er = await tryWithRetry('/api/images/edits', body);
-                        if (er.ok) {
-                          const eh = extractImage(JSON.parse(er.text));
-                          if (eh) hits.push(eh);
-                        }
-                      } catch (e) {
-                        if ((e as Error).message === USER_ABORT_SENTINEL || requestSignal.aborted) throw e;
-                      }
+              if (n > 1) {
+                const limit = Math.min(5, n - 1);
+                let cursor = 0;
+                const worker = async () => {
+                  while (cursor < n - 1) {
+                    const i = cursor++;
+                    if (i > 0) await abortableDelay(200, requestSignal);
+                    throwIfAborted(requestSignal);
+                    try {
+                      const result = await requestSingleEditImage(body);
+                      hits.push(result.hit);
+                    } catch (e) {
+                      if ((e as Error).message === USER_ABORT_SENTINEL || requestSignal.aborted) throw e;
                     }
-                  };
-                  await Promise.all(Array.from({ length: limit }, worker));
-                }
-
-                setDebugRaw(JSON.stringify(resp, null, 2));
-                writeBotMsg(hits, JSON.stringify(resp, null, 2), '');
-                setStatus(`生成完成 ${hits.length} 张`, 'ok');
-                scheduleImageTitleGeneration(hits.length);
-                void saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
-              } else {
-                writeBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片，请查看调试面板');
-                setStatus('未识别到图片内容', 'err');
-                setDebugRaw(JSON.stringify(resp, null, 2));
+                  }
+                };
+                await Promise.all(Array.from({ length: limit }, worker));
               }
+
+              setDebugRaw(JSON.stringify(resp, null, 2));
+              writeBotMsg(hits, JSON.stringify(resp, null, 2), '');
+              setStatus(`生成完成 ${hits.length} 张`, 'ok');
+              scheduleImageTitleGeneration(hits.length);
+              void saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
             }
           }
         }
       }
       // ---- Chat completions mode (explicit chat mode, no images) ----
       if (requestMode === 'chat') {
+          const chatRequestConfig = { ...config, chatModel, chatApiFormat };
           const chatBody = {
             model: chatModel,
             messages: buildChatMessages(sessionMessages, prompt, runSystemPrompt || '', runContextLimit),
@@ -1131,29 +1387,34 @@ function HomeInner() {
           };
 
         if (runStreaming) {
-          const { ok, stream, text } = await proxyRequestStream('/api/chat/completions', config, chatBody, options, requestSignal, 'chat');
-          if (!ok || !stream) {
-            const errText = text || '';
-            throw new Error(parseErrorDetail(errText) || `HTTP error`);
-          }
-          writeTextBot('', '');
-          try {
-            const fullText = await processChatStream(stream, (t) => writeBotText(t), requestSignal);
-            setDebugRaw(fullText);
-            setStatus('回复完成', 'ok');
-            scheduleTitleGeneration(fullText);
-          } catch (streamErr) {
-            const errMsg = (streamErr as Error)?.message || '';
-            if (errMsg === USER_ABORT_SENTINEL || requestSignal.aborted) {
-              throw new Error(USER_ABORT_SENTINEL);
+          const fullText = await retryable('聊天请求', async () => {
+            writePlaceholderText('');
+            const result = await proxyRequestStream('/api/chat/completions', chatRequestConfig, chatBody, options, requestSignal, 'chat');
+            throwIfAborted(requestSignal);
+            if (!result.ok || !result.stream) {
+              throw new RequestStatusError({
+                status: result.status,
+                statusText: '',
+                text: result.text || '流式请求失败',
+              });
             }
-            throw streamErr;
-          }
+            const fullText = await processChatStream(result.stream, (t) => writePlaceholderText(t), chatApiFormat, requestSignal);
+            if (!fullText.trim()) throw new Error('响应为空');
+            return fullText;
+          });
+          setDebugRaw(fullText);
+          setStatus('回复完成', 'ok');
+          scheduleTitleGeneration(fullText);
         } else {
-          const result = await proxyRequest('/api/chat/completions', config, chatBody, options, 'chat', requestSignal);
-          if (!result.ok) throw new Error(`HTTP ${result.status} ${parseErrorDetail(result.text)}`);
+          const result = await retryable('聊天请求', async () => {
+            const response = await proxyRequest('/api/chat/completions', chatRequestConfig, chatBody, options, 'chat', requestSignal);
+            throwIfAborted(requestSignal);
+            if (!response.ok) throw new RequestStatusError(response);
+            return response;
+          });
           const resp = JSON.parse(result.text);
-          const content = resp.choices?.[0]?.message?.content || '';
+          const content = extractChatResponseText(resp, chatApiFormat);
+          if (!content.trim()) throw new Error('响应为空');
           setDebugRaw(JSON.stringify(resp, null, 2));
           writeTextBot(content, JSON.stringify(resp, null, 2));
           setStatus('回复完成', 'ok');
@@ -1199,14 +1460,9 @@ function HomeInner() {
               if (i > 0) await abortableDelay(200, requestSignal);
               throwIfAborted(requestSignal);
               try {
-                const req = await tryWithRetry('/api/images/generations', genBody);
-                if (req.ok) {
-                  const r = JSON.parse(req.text);
-                  const hit = extractImage(r);
-                  if (hit) hits.push(hit);
-                } else {
-                  errors.push(`HTTP ${req.status}: ${parseErrorDetail(req.text)}`);
-                }
+                const result = await requestSingleImage('/api/images/generations', genBody);
+                const hit = result.hit;
+                if (hit) hits.push(hit);
               } catch (e) {
                 if ((e as Error).message === USER_ABORT_SENTINEL || requestSignal.aborted) throw e;
                 errors.push((e as Error).message);
@@ -1242,8 +1498,10 @@ function HomeInner() {
       if (msg === USER_ABORT_SENTINEL) {
         if (shouldRestoreSessionOnAbort) {
           restoreSessionMessages(sessionId, currentSessionMessages);
+        } else {
+          restoreTargetMessage();
+          writeCancelMessage();
         }
-        restoreTargetMessage();
         setStatus('已取消', 'warn');
       } else if (extractModelGateMessage(msg)) {
         setDebugRaw(buildRepeaterReply(prompt));
@@ -1277,7 +1535,6 @@ function HomeInner() {
     addBotMsg,
     addTextBotMsg,
     updateLastBotMsg,
-    updateLastBotText,
     updateBotMsg,
     updateBotText,
     replaceBotMessage,

@@ -4,10 +4,19 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
 import { useImages } from '@/contexts/ImageContext';
-import { IMAGE_MODEL_PRESETS, CHAT_MODEL_PRESETS, chatSessionPromptStorageKey, ORIGINAL_ASPECT_SIZE, REPEATER_MODEL_LABEL, SIZE_PRESETS } from '@/lib/constants';
+import { IMAGE_MODEL_PRESETS, chatSessionPromptStorageKey, ORIGINAL_ASPECT_SIZE, REPEATER_MODEL_LABEL, SIZE_PRESETS } from '@/lib/constants';
 import { COMPOSER_FRAME_CLASS } from '@/lib/layout';
 import { mergeModelOptions } from '@/lib/model-options';
 import { formatSizeDisplay } from '@/lib/size';
+import {
+  encodeChatModelChoice,
+  getActiveChatModel,
+  getAllChatModelOptions,
+  getChatFormatForModel,
+  getClaudeChatModelOptions,
+  getOpenAIChatModelOptions,
+  parseChatModelChoice,
+} from '@/lib/chat-config';
 
 interface ChatInputProps {
   onSend: (prompt: string) => void;
@@ -34,14 +43,25 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
   const [customSize, setCustomSize] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const submitLockRef = useRef(false);
-  const prompt = promptDrafts[activeSessionId] ?? readStoredPrompt(activeSessionId);
+  const prompt = promptDrafts[activeSessionId] ?? '';
   const setPrompt = (nextPrompt: string) => {
     setPromptDrafts((prev) => (
       prev[activeSessionId] === nextPrompt
         ? prev
-        : { ...prev, [activeSessionId]: nextPrompt }
+      : { ...prev, [activeSessionId]: nextPrompt }
     ));
   };
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setPromptDrafts((prev) => {
+        if (prev[activeSessionId] !== undefined) return prev;
+        const storedPrompt = readStoredPrompt(activeSessionId);
+        return storedPrompt ? { ...prev, [activeSessionId]: storedPrompt } : prev;
+      });
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeSessionId]);
 
   // Auto-save prompt while typing (debounced, only if persistPrompt enabled)
   useEffect(() => {
@@ -70,14 +90,26 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
   const imageModeActive = config.mode === 'image';
   const lockedRepeaterMode = modelGateEnabled && !modelGateUnlocked;
   const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
-  const chatModelOptions = mergeModelOptions(CHAT_MODEL_PRESETS, config.customChatModels);
+  const openAIChatModelOptions = getOpenAIChatModelOptions(config);
+  const claudeChatModelOptions = getClaudeChatModelOptions(config);
+  const allChatModelOptions = getAllChatModelOptions(config);
   const imageModelIsOption = imageModelOptions.some(m => m.value === config.model);
-  const chatModelIsOption = chatModelOptions.some(m => m.value === config.chatModel);
+  const activeChatModel = getActiveChatModel(config);
+  const activeChatFormat = getChatFormatForModel(config, activeChatModel);
+  const activeChatChoice = encodeChatModelChoice(activeChatFormat, activeChatModel);
+  const chatModelIsOption = allChatModelOptions.some(m => m.format === activeChatFormat && m.value === activeChatModel);
   const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
   const activeImages = selectedIndices.size > 0
     ? images.filter((_, i) => selectedIndices.has(i))
     : [];
   const originalAspectLabel = formatSizeDisplay(ORIGINAL_ASPECT_SIZE, activeImages);
+  const selectChatModel = (value: string) => {
+    const choice = parseChatModelChoice(value);
+    if (!choice) return;
+    updateConfig('chatApiFormat', choice.format);
+    updateConfig('chatModel', choice.model);
+    if (choice.format === 'claude') updateConfig('claudeModel', choice.model);
+  };
 
   return (
     <div className={`${COMPOSER_FRAME_CLASS} shrink min-h-0 flex flex-col pb-3 border-t md:border-t-0 border-[#AAA]`}>
@@ -137,11 +169,25 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
               </>
             ) : (
               <>
-                <select value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : config.chatModel} disabled={lockedRepeaterMode} onChange={e=>updateConfig('chatModel',e.target.value)} className={`${composerSelectClass} min-w-[12rem] flex-1`}>
+                <select
+                  value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : activeChatChoice}
+                  disabled={lockedRepeaterMode}
+                  onChange={e=>selectChatModel(e.target.value)}
+                  className={`${composerSelectClass} min-w-[12rem] flex-1`}
+                >
                   {lockedRepeaterMode ? <option value={REPEATER_MODEL_LABEL}>{REPEATER_MODEL_LABEL}</option> : (
                     <>
-                      {!chatModelIsOption && <option value={config.chatModel}>{config.chatModel}</option>}
-                      {chatModelOptions.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}
+                      {!chatModelIsOption && <option value={activeChatChoice}>{activeChatModel}</option>}
+                      <optgroup label="OpenAI-compatible">
+                        {openAIChatModelOptions.map(m=>(
+                          <option key={`openai:${m.value}`} value={encodeChatModelChoice('openai', m.value)}>{m.label}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Claude Messages">
+                        {claudeChatModelOptions.map(m=>(
+                          <option key={`claude:${m.value}`} value={encodeChatModelChoice('claude', m.value)}>{m.label}</option>
+                        ))}
+                      </optgroup>
                     </>
                   )}
                 </select>

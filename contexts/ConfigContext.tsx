@@ -1,9 +1,11 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useSyncExternalStore } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
 import { AppConfig, AppOptions } from '@/types';
 import {
+  CHAT_API_FORMAT_OPTIONS,
   CHAT_MODEL_PRESETS,
+  CLAUDE_MODEL_PRESETS,
   DEFAULT_CONFIG,
   DEFAULT_OPTIONS,
   IMAGE_MODEL_PRESETS,
@@ -26,6 +28,8 @@ interface ConfigContextValue {
   defaultBaseUrl: string;
   chatKeySource: 'user' | 'server' | 'inherit' | 'none';
   hasDefaultChatKey: boolean;
+  claudeKeySource: 'user' | 'server' | 'none';
+  hasDefaultClaudeKey: boolean;
   modelGateEnabled: boolean;
   modelGateUnlocked: boolean;
   setModelGateUnlocked: (unlocked: boolean) => void;
@@ -33,9 +37,11 @@ interface ConfigContextValue {
 
 const ConfigContext = createContext<ConfigContextValue | undefined>(undefined);
 
-const subscribeClientReady = () => () => {};
-const getClientSnapshot = () => true;
-const getServerSnapshot = () => false;
+function normalizeChatApiFormat(value: unknown): AppConfig['chatApiFormat'] {
+  return CHAT_API_FORMAT_OPTIONS.some((option) => option.value === value)
+    ? value as AppConfig['chatApiFormat']
+    : DEFAULT_CONFIG.chatApiFormat;
+}
 
 function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKey: boolean } {
   const urlConfig: Partial<AppConfig> = {};
@@ -51,6 +57,15 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
       if (sp.get('chatmodel')) urlConfig.chatModel = sp.get('chatmodel')!;
       if (sp.get('titleModel')) urlConfig.titleModel = sp.get('titleModel')!;
       if (sp.get('titlemodel')) urlConfig.titleModel = sp.get('titlemodel')!;
+      if (sp.get('chatApiFormat')) urlConfig.chatApiFormat = normalizeChatApiFormat(sp.get('chatApiFormat'));
+      if (sp.get('chatformat')) urlConfig.chatApiFormat = normalizeChatApiFormat(sp.get('chatformat'));
+      if (sp.get('claudeBaseUrl')) urlConfig.claudeBaseUrl = sp.get('claudeBaseUrl')!;
+      if (sp.get('claudebaseurl')) urlConfig.claudeBaseUrl = sp.get('claudebaseurl')!;
+      if (sp.get('claudeApiKey')) urlConfig.claudeApiKey = sp.get('claudeApiKey')!;
+      if (sp.get('claudeModel')) urlConfig.claudeModel = sp.get('claudeModel')!;
+      if (sp.get('claudemodel')) urlConfig.claudeModel = sp.get('claudemodel')!;
+      if (sp.get('claudeTitleModel')) urlConfig.claudeTitleModel = sp.get('claudeTitleModel')!;
+      if (sp.get('claudetitlemodel')) urlConfig.claudeTitleModel = sp.get('claudetitlemodel')!;
       if (sp.get('size')) urlConfig.size = sp.get('size')!;
       if (sp.get('n')) urlConfig.n = parseInt(sp.get('n')!, 10) || 1;
       if (sp.get('quality')) urlConfig.quality = sp.get('quality')!;
@@ -77,21 +92,54 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
     ...urlConfig,
     customImageModels: normalizeModelList(storedConfig.customImageModels),
     customChatModels: normalizeModelList(storedConfig.customChatModels),
+    chatApiFormat: normalizeChatApiFormat(urlConfig.chatApiFormat ?? storedConfig.chatApiFormat),
+    claudeBaseUrl: urlConfig.claudeBaseUrl ?? storedConfig.claudeBaseUrl ?? (
+      storedConfig.chatApiFormat === 'claude' ? storedConfig.chatBaseUrl || '' : DEFAULT_CONFIG.claudeBaseUrl
+    ),
+    claudeApiKey: urlConfig.claudeApiKey ?? storedConfig.claudeApiKey ?? (
+      storedConfig.chatApiFormat === 'claude' ? storedConfig.chatApiKey || '' : DEFAULT_CONFIG.claudeApiKey
+    ),
+    claudeModel: urlConfig.claudeModel ?? storedConfig.claudeModel ?? (
+      storedConfig.chatApiFormat === 'claude' && storedConfig.chatModel ? storedConfig.chatModel : DEFAULT_CONFIG.claudeModel
+    ),
+    claudeTitleModel: urlConfig.claudeTitleModel ?? storedConfig.claudeTitleModel ?? (
+      storedConfig.chatApiFormat === 'claude' && storedConfig.titleModel ? storedConfig.titleModel : DEFAULT_CONFIG.claudeTitleModel
+    ),
+    customClaudeModels: normalizeModelList(storedConfig.customClaudeModels),
     n: urlConfig.n ?? storedConfig.n ?? (DEFAULT_CONFIG.n as number),
     compression: urlConfig.compression ?? storedConfig.compression ?? (DEFAULT_CONFIG.compression as number),
   };
 
   const hasExplicitChatModel = !!urlConfig.chatModel || !!storedConfig.chatModel;
+  const hasExplicitClaudeModel = !!urlConfig.claudeModel || !!storedConfig.claudeModel;
+  if (config.chatApiFormat === 'claude') {
+    const activeClaudeModel = urlConfig.chatModel
+      ? config.chatModel
+      : config.claudeModel || config.chatModel;
+    if (activeClaudeModel) config.chatModel = activeClaudeModel;
+    if (!hasExplicitClaudeModel && config.chatModel) config.claudeModel = config.chatModel;
+  }
+
   const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
   const chatModelOptions = mergeModelOptions(CHAT_MODEL_PRESETS, config.customChatModels);
+  const claudeModelOptions = mergeModelOptions(CLAUDE_MODEL_PRESETS, config.customClaudeModels);
   const modelIsImageOption = imageModelOptions.some((m) => m.value === config.model);
+  const modelIsKnownClaudeModel = claudeModelOptions.some((m) => m.value === config.model);
   const modelIsKnownChatModel =
     chatModelOptions.some((m) => m.value === config.model) ||
+    modelIsKnownClaudeModel ||
     LEGACY_CHAT_MODEL_VALUES.some((value) => value === config.model);
   if (!modelIsImageOption && config.model.trim() && config.mode === 'image' && !modelIsKnownChatModel) {
     config.customImageModels = normalizeModelList([...config.customImageModels, config.model]);
   } else if (!modelIsImageOption && (modelIsKnownChatModel || config.mode === 'chat')) {
-    if (!hasExplicitChatModel) config.chatModel = config.model;
+    if (config.chatApiFormat === 'claude' || modelIsKnownClaudeModel) {
+      if (!hasExplicitClaudeModel) config.claudeModel = config.model;
+      if (!hasExplicitChatModel || modelIsKnownClaudeModel || config.chatApiFormat === 'claude') config.chatModel = config.model;
+      config.chatApiFormat = 'claude';
+    } else if (!hasExplicitChatModel) {
+      config.chatModel = config.model;
+      config.chatApiFormat = 'openai';
+    }
     config.model = IMAGE_MODEL_PRESETS[0].value;
   }
 
@@ -104,16 +152,44 @@ function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKe
   return { config, options, hasUrlKey };
 }
 
+function createFallbackInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKey: boolean } {
+  return {
+    config: {
+      ...DEFAULT_CONFIG,
+      customImageModels: [],
+      customChatModels: [],
+      customClaudeModels: [],
+      n: DEFAULT_CONFIG.n as number,
+      compression: DEFAULT_CONFIG.compression as number,
+    },
+    options: {
+      ...DEFAULT_OPTIONS,
+      contextLimit: DEFAULT_OPTIONS.contextLimit as number,
+    },
+    hasUrlKey: false,
+  };
+}
+
 export function ConfigProvider({ children }: { children: React.ReactNode }) {
-  const mounted = useSyncExternalStore(subscribeClientReady, getClientSnapshot, getServerSnapshot);
-  const [initial] = useState(() => loadInitialConfig());
+  const [initial, setInitial] = useState(createFallbackInitialConfig);
   const [config, setConfig] = useState<AppConfig>(initial.config);
   const [options, setOptions] = useState<AppOptions>(initial.options);
   const [hasDefaultKey, setHasDefaultKey] = useState(false);
   const [defaultBaseUrl, setDefaultBaseUrl] = useState('');
   const [hasDefaultChatKey, setHasDefaultChatKey] = useState(false);
+  const [hasDefaultClaudeKey, setHasDefaultClaudeKey] = useState(false);
   const [modelGateEnabled, setModelGateEnabled] = useState(false);
   const [modelGateUnlocked, setModelGateUnlocked] = useState(false);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const loaded = loadInitialConfig();
+      setInitial(loaded);
+      setConfig(loaded.config);
+      setOptions(loaded.options);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
 
   useEffect(() => {
     fetch('/api/config')
@@ -122,6 +198,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         setHasDefaultKey(!!d.hasDefaultKey);
         setDefaultBaseUrl(typeof d.defaultBaseUrl === 'string' ? d.defaultBaseUrl : '');
         setHasDefaultChatKey(!!d.hasDefaultChatKey);
+        setHasDefaultClaudeKey(!!d.hasDefaultClaudeKey);
         setModelGateEnabled(!!d.modelGateEnabled);
       })
       .catch(() => { /* ignore */ });
@@ -194,10 +271,16 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return 'none';
   }, [config.chatApiKey, config.apiKey, hasDefaultChatKey, hasDefaultKey]);
 
+  const claudeKeySource = useMemo<'user' | 'server' | 'none'>(() => {
+    if (config.claudeApiKey) return 'user';
+    if (hasDefaultClaudeKey) return 'server';
+    return 'none';
+  }, [config.claudeApiKey, hasDefaultClaudeKey]);
+
   const value = useMemo(() => ({
     config, options, updateConfig, updateOption,
-    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked,
-  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, modelGateEnabled, modelGateUnlocked]);
+    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked,
+  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, modelGateEnabled, modelGateUnlocked]);
 
   // Auto-persist config & options on change (debounced)
   useEffect(() => {
@@ -218,7 +301,6 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('beforeunload', handleUnload);
   }, [config, options]);
 
-  if (!mounted) return <div className="min-h-screen bg-black" />;
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
 }
 
