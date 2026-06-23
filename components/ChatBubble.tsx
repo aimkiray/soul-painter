@@ -13,6 +13,8 @@ interface ChatBubbleProps {
     prompt: string;
     images: ImageHit[];
     text: string;
+    thinking?: string;
+    thinkingDone?: boolean;
     code: string;
     extra: string;
     updatedAt?: number;
@@ -112,6 +114,24 @@ function CopyIcon() {
   );
 }
 
+function CopiedIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true">
+      <path d="M0 0h22v22H0z" fill="none" />
+      <path fill="currentColor" d="M4 11h2v1h1v1h1v1h2v-1h1v-1h1v-1h1v-1h1V9h1V8h1V7h1V6h2v2h-1v1h-1v1h-1v1h-1v1h-1v1h-1v1h-1v1h-1v1h-1v1H8v-1H7v-1H6v-1H5v-1H4z" />
+    </svg>
+  );
+}
+
+function CopyFailedIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true">
+      <path d="M0 0h22v22H0z" fill="none" />
+      <path fill="currentColor" d="M16 17h-1v-1h-1v-1h-1v-1h-1v-1h-2v1H9v1H8v1H7v1H6v-1H5v-1h1v-1h1v-1h1v-1h1v-2H8V9H7V8H6V7H5V6h1V5h1v1h1v1h1v1h1v1h2V8h1V7h1V6h1V5h1v1h1v1h-1v1h-1v1h-1v1h-1v2h1v1h1v1h1v1h1v1h-1Z" />
+    </svg>
+  );
+}
+
 export default function ChatBubble({
   message,
   isPending = false,
@@ -132,7 +152,10 @@ export default function ChatBubble({
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(prompt);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [copyTextStatus, setCopyTextStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [thinkingOpen, setThinkingOpen] = useState(!message.thinkingDone);
   const copyFeedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyTextFeedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const deleteTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   React.useEffect(() => {
@@ -145,9 +168,18 @@ export default function ChatBubble({
   React.useEffect(() => {
     return () => {
       if (copyFeedbackTimerRef.current) clearTimeout(copyFeedbackTimerRef.current);
+      if (copyTextFeedbackTimerRef.current) clearTimeout(copyTextFeedbackTimerRef.current);
       if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!message.thinking) return;
+    const timeoutId = setTimeout(() => {
+      setThinkingOpen(!message.thinkingDone);
+    }, 0);
+    return () => clearTimeout(timeoutId);
+  }, [message.thinking, message.thinkingDone]);
 
   const handleDownload = (hit: ImageHit, i: number, timestamp: number) => {
     const link = hit.dataUrl || hit.url || '';
@@ -176,9 +208,14 @@ export default function ChatBubble({
   };
 
   const handleCopyText = async () => {
-    const text = role === 'user' ? prompt : message.text || message.prompt || message.extra || '';
-    if (!text) return;
-    await writeClipboardText(text);
+    const text = role === 'user' ? prompt : message.text;
+    if (!text.trim()) return;
+    const ok = await writeClipboardText(text);
+    if (copyTextFeedbackTimerRef.current) clearTimeout(copyTextFeedbackTimerRef.current);
+    setCopyTextStatus(ok ? 'copied' : 'failed');
+    copyTextFeedbackTimerRef.current = setTimeout(() => {
+      setCopyTextStatus('idle');
+    }, 1600);
   };
 
   const requestDelete = () => {
@@ -201,6 +238,12 @@ export default function ChatBubble({
   };
 
   const actionButtonClass = 'flex h-7 w-7 items-center justify-center border-2 border-[#555] bg-black text-base leading-none text-[#AAA] cursor-pointer hover:border-[#00aaaa] hover:text-[#00aaaa] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-[#555] disabled:hover:text-[#AAA]';
+  const copyButtonClass = `${actionButtonClass} ${copyTextStatus === 'copied' ? '!border-[#00aaaa] !text-[#00aaaa] hover:!border-[#00aaaa] hover:!text-[#00aaaa]' : copyTextStatus === 'failed' ? '!border-[#ff5555] !text-[#ff5555] hover:!border-[#ff5555] hover:!text-[#ff5555]' : ''}`;
+  const copyButtonContent = copyTextStatus === 'idle'
+    ? <CopyIcon />
+    : copyTextStatus === 'copied'
+      ? <CopiedIcon />
+      : <CopyFailedIcon />;
   const showEdited = !!message.editedAt && message.editedAt > 0;
 
   return (
@@ -269,8 +312,22 @@ export default function ChatBubble({
               )}
               {role === 'bot' && (
                 <div>
-                  {isPending && !message.text && visibleImages.length === 0 && !message.code && !message.extra && (
+                  {isPending && !message.text && !message.thinking && visibleImages.length === 0 && !message.code && !message.extra && (
                     <span className="animate-pulse text-sm">{isRegenerating ? '重新生成中...' : '生成中...'}</span>
+                  )}
+                  {message.thinking && (
+                    <details
+                      className="mb-2 border border-[#444] bg-black/40"
+                      open={thinkingOpen}
+                      onToggle={(event) => setThinkingOpen(event.currentTarget.open)}
+                    >
+                      <summary className="cursor-pointer select-none px-2 py-1 text-xs text-[#888] hover:text-[#00aaaa]">
+                        {message.thinkingDone ? '[ 思考过程 ]' : '[ 思考中... ]'}
+                      </summary>
+                      <div className="border-t border-[#333] px-2 py-2 text-xs text-[#999] whitespace-pre-wrap break-words leading-relaxed">
+                        {message.thinking}
+                      </div>
+                    </details>
                   )}
                   {message.text && (
                     <div className="text-sm break-words mb-2">
@@ -385,11 +442,11 @@ export default function ChatBubble({
                   type="button"
                   onClick={() => { void handleCopyText(); }}
                   disabled={disabled || !prompt.trim()}
-                  className={actionButtonClass}
-                  aria-label="复制消息"
-                  title="复制"
+                  className={copyButtonClass}
+                  aria-label={copyTextStatus === 'copied' ? '已复制消息' : copyTextStatus === 'failed' ? '复制失败' : '复制消息'}
+                  title={copyTextStatus === 'copied' ? '已复制' : copyTextStatus === 'failed' ? '复制失败' : '复制'}
                 >
-                  <CopyIcon />
+                  {copyButtonContent}
                 </button>
                 <button
                   type="button"
@@ -417,12 +474,12 @@ export default function ChatBubble({
                 <button
                   type="button"
                   onClick={() => { void handleCopyText(); }}
-                  disabled={disabled || !(message.text || message.prompt || message.extra)}
-                  className={actionButtonClass}
-                  aria-label="复制消息"
-                  title="复制"
+                  disabled={disabled || !message.text.trim()}
+                  className={copyButtonClass}
+                  aria-label={copyTextStatus === 'copied' ? '已复制消息' : copyTextStatus === 'failed' ? '复制失败' : '复制消息'}
+                  title={copyTextStatus === 'copied' ? '已复制' : copyTextStatus === 'failed' ? '复制失败' : '复制'}
                 >
-                  <CopyIcon />
+                  {copyButtonContent}
                 </button>
                 <button
                   type="button"

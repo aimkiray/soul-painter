@@ -32,6 +32,8 @@ import { imageHitToStoredUrl, uploadChatImage } from '@/lib/chat-asset-client';
 import { blobToEditBlob } from '@/lib/image-edit';
 import { parseSize, resolveRequestSize } from '@/lib/size';
 import { ChatApiFormat, getActiveChatModel, getChatProviderConfig } from '@/lib/chat-config';
+import { normalizeChatTitle } from '@/lib/title';
+import { ChatContentParts, composeChatContentParts } from '@/lib/chat-thinking';
 
 // ── Pure helpers used by handleSend ──
 
@@ -334,14 +336,17 @@ function createTurnSnapshot(
 
 async function processChatStream(
   stream: ReadableStream<Uint8Array>,
-  onDelta: (text: string) => void,
+  onDelta: (parts: ChatContentParts) => void,
   format: ChatApiFormat = 'openai',
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<ChatContentParts> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let fullText = '';
+  let thinkingText = '';
+  let hasStructuredThinking = false;
+  let structuredThinkingDone = true;
 
   const cancelReader = () => {
     void reader.cancel().catch(() => {});
@@ -372,9 +377,17 @@ async function processChatStream(
       const delta = format === 'claude'
         ? extractClaudeStreamDelta(evt)
         : extractOpenAIStreamDelta(evt);
-      if (delta) {
-        fullText += delta;
-        onDelta(fullText);
+      if (delta.thinking) {
+        hasStructuredThinking = true;
+        structuredThinkingDone = false;
+        thinkingText += delta.thinking;
+      }
+      if (delta.text) {
+        if (hasStructuredThinking) structuredThinkingDone = true;
+        fullText += delta.text;
+      }
+      if (delta.text || delta.thinking) {
+        onDelta(composeChatContentParts(fullText, thinkingText, structuredThinkingDone));
       }
     } catch (e) {
       if (e instanceof SyntaxError) return false;
@@ -399,17 +412,17 @@ async function processChatStream(
       buffer = blocks.pop() || '';
 
       for (const block of blocks) {
-        if (processBlock(block)) return fullText;
+        if (processBlock(block)) return composeChatContentParts(fullText, thinkingText, true);
       }
     }
 
     const tail = decoder.decode();
     if (tail) buffer += tail;
-    if (buffer.trim() && processBlock(buffer)) return fullText;
+    if (buffer.trim() && processBlock(buffer)) return composeChatContentParts(fullText, thinkingText, true);
   } finally {
     signal?.removeEventListener('abort', cancelReader);
   }
-  return fullText;
+  return composeChatContentParts(fullText, thinkingText, true);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -444,40 +457,82 @@ function getStreamEventError(evt: unknown, eventType: string): string | null {
   return '流式响应返回错误事件';
 }
 
-function extractOpenAIStreamDelta(evt: unknown): string {
-  if (!isRecord(evt) || !Array.isArray(evt.choices)) return '';
+interface ChatStreamDelta {
+  text: string;
+  thinking: string;
+}
+
+function extractOpenAIStreamDelta(evt: unknown): ChatStreamDelta {
+  if (!isRecord(evt) || !Array.isArray(evt.choices)) return { text: '', thinking: '' };
   const choice = evt.choices[0];
-  if (!isRecord(choice) || !isRecord(choice.delta)) return '';
-  return stringifyTextContent(choice.delta.content);
+  if (!isRecord(choice) || !isRecord(choice.delta)) return { text: '', thinking: '' };
+  return {
+    text: stringifyTextContent(choice.delta.content),
+    thinking: stringifyTextContent(
+      choice.delta.reasoning_content
+      ?? choice.delta.reasoning
+      ?? choice.delta.thinking
+      ?? choice.delta.thoughts,
+    ),
+  };
 }
 
-function extractClaudeStreamDelta(evt: unknown): string {
-  if (!isRecord(evt) || evt.type !== 'content_block_delta' || !isRecord(evt.delta)) return '';
-  if (evt.delta.type !== 'text_delta') return '';
-  return typeof evt.delta.text === 'string' ? evt.delta.text : '';
+function extractClaudeStreamDelta(evt: unknown): ChatStreamDelta {
+  if (!isRecord(evt) || evt.type !== 'content_block_delta' || !isRecord(evt.delta)) {
+    return { text: '', thinking: '' };
+  }
+  if (evt.delta.type === 'text_delta') {
+    return { text: typeof evt.delta.text === 'string' ? evt.delta.text : '', thinking: '' };
+  }
+  if (evt.delta.type === 'thinking_delta') {
+    return { text: '', thinking: typeof evt.delta.thinking === 'string' ? evt.delta.thinking : '' };
+  }
+  return { text: '', thinking: '' };
 }
 
-function extractChatResponseText(response: unknown, format: ChatApiFormat): string {
-  if (!isRecord(response)) return '';
+function extractChatResponseParts(response: unknown, format: ChatApiFormat): ChatContentParts {
+  if (!isRecord(response)) return composeChatContentParts('');
 
   if (format === 'claude') {
-    if (typeof response.content === 'string') return response.content;
-    if (!Array.isArray(response.content)) return '';
-    return response.content
+    if (typeof response.content === 'string') return composeChatContentParts(response.content);
+    if (!Array.isArray(response.content)) return composeChatContentParts('');
+    const text = response.content
       .map((block) => {
         if (typeof block === 'string') return block;
-        if (isRecord(block) && (block.type === 'text' || typeof block.text === 'string')) {
+        if (isRecord(block) && (block.type === 'text' || (!block.type && typeof block.text === 'string'))) {
           return typeof block.text === 'string' ? block.text : '';
         }
         return '';
       })
       .join('');
+    const thinking = response.content
+      .map((block) => {
+        if (!isRecord(block)) return '';
+        if (typeof block.thinking === 'string') return block.thinking;
+        if ((block.type === 'thinking' || block.type === 'reasoning') && typeof block.text === 'string') return block.text;
+        return '';
+      })
+      .join('');
+    return composeChatContentParts(text, thinking, true);
   }
 
-  if (!Array.isArray(response.choices)) return '';
+  if (!Array.isArray(response.choices)) return composeChatContentParts('');
   const choice = response.choices[0];
-  if (!isRecord(choice) || !isRecord(choice.message)) return '';
-  return stringifyTextContent(choice.message.content);
+  if (!isRecord(choice) || !isRecord(choice.message)) return composeChatContentParts('');
+  return composeChatContentParts(
+    stringifyTextContent(choice.message.content),
+    stringifyTextContent(
+      choice.message.reasoning_content
+      ?? choice.message.reasoning
+      ?? choice.message.thinking
+      ?? choice.message.thoughts,
+    ),
+    true,
+  );
+}
+
+function extractChatResponseText(response: unknown, format: ChatApiFormat): string {
+  return extractChatResponseParts(response, format).text;
 }
 
 const CHAT_HISTORY_BUDGET = 32 * 1024;
@@ -520,11 +575,7 @@ function buildChatMessages(
 }
 
 function normalizeGeneratedTitle(value: string): string {
-  return value
-    .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 24);
+  return normalizeChatTitle(value, { maxLength: 24 });
 }
 
 async function ensureModelGateAccess(modelGateEnabled: boolean, signal?: AbortSignal): Promise<void> {
@@ -910,12 +961,12 @@ function HomeInner() {
       if (/5\d\d/.test(msg)) return '\n上游服务器错误，请稍后重试或检查服务状态';
       return '\n请检查 API Key 和 Base URL 配置';
     };
-    const writeTextBot = (text: string, code: string) => {
-      if (targetBotMessageId && !text && !code) return;
+    const writeTextBot = (text: string, code: string, thinking?: string, thinkingDone?: boolean) => {
+      if (targetBotMessageId && !text && !code && !thinking) return;
       if (targetBotMessageId) {
-        replaceBotMessage(targetBotMessageId, { prompt: '', images: [], text, code, extra: '' }, sessionId);
+        replaceBotMessage(targetBotMessageId, { prompt: '', images: [], text, thinking, thinkingDone, code, extra: '' }, sessionId);
       } else {
-        addTextBotMsg(text, code, sessionId);
+        addTextBotMsg(text, code, sessionId, thinking, thinkingDone);
       }
     };
     const writeBotError = (error: string) => {
@@ -939,10 +990,10 @@ function HomeInner() {
         updateBotMsg(botPlaceholderIdRef.current, botImages, code, sessionId);
       }
     };
-    const writePlaceholderText = (text: string) => {
+    const writePlaceholderText = (parts: ChatContentParts) => {
       ensureBotPlaceholder();
       if (botPlaceholderIdRef.current) {
-        updateBotText(botPlaceholderIdRef.current, text, sessionId);
+        updateBotText(botPlaceholderIdRef.current, parts.text, sessionId, parts.thinking, parts.thinkingDone);
       }
     };
     const writeCancelMessage = () => {
@@ -1047,7 +1098,7 @@ function HomeInner() {
             messages: [
               {
                 role: 'system',
-                content: 'Summarize this conversation into a concise Chinese chat title. Return only the title, no quotes, no punctuation at the end. Keep it under 12 Chinese characters or 6 English words.',
+                content: 'Summarize this conversation into a concise Chinese chat title. Return only the final title text. Do not include quotes, punctuation at the end, explanations, markdown, XML tags, or thinking/reasoning content. Keep it under 12 Chinese characters or 6 English words.',
               },
               {
                 role: 'user',
@@ -1387,8 +1438,8 @@ function HomeInner() {
           };
 
         if (runStreaming) {
-          const fullText = await retryable('聊天请求', async () => {
-            writePlaceholderText('');
+          const responseParts = await retryable('聊天请求', async () => {
+            writePlaceholderText({ text: '', thinking: '', thinkingDone: true });
             const result = await proxyRequestStream('/api/chat/completions', chatRequestConfig, chatBody, options, requestSignal, 'chat');
             throwIfAborted(requestSignal);
             if (!result.ok || !result.stream) {
@@ -1398,13 +1449,13 @@ function HomeInner() {
                 text: result.text || '流式请求失败',
               });
             }
-            const fullText = await processChatStream(result.stream, (t) => writePlaceholderText(t), chatApiFormat, requestSignal);
-            if (!fullText.trim()) throw new Error('响应为空');
-            return fullText;
+            const parts = await processChatStream(result.stream, (nextParts) => writePlaceholderText(nextParts), chatApiFormat, requestSignal);
+            if (!parts.text.trim() && !parts.thinking.trim()) throw new Error('响应为空');
+            writePlaceholderText({ ...parts, thinkingDone: true });
+            return { ...parts, thinkingDone: true };
           });
-          setDebugRaw(fullText);
           setStatus('回复完成', 'ok');
-          scheduleTitleGeneration(fullText);
+          scheduleTitleGeneration(responseParts.text || responseParts.thinking);
         } else {
           const result = await retryable('聊天请求', async () => {
             const response = await proxyRequest('/api/chat/completions', chatRequestConfig, chatBody, options, 'chat', requestSignal);
@@ -1413,12 +1464,11 @@ function HomeInner() {
             return response;
           });
           const resp = JSON.parse(result.text);
-          const content = extractChatResponseText(resp, chatApiFormat);
-          if (!content.trim()) throw new Error('响应为空');
-          setDebugRaw(JSON.stringify(resp, null, 2));
-          writeTextBot(content, JSON.stringify(resp, null, 2));
+          const parts = extractChatResponseParts(resp, chatApiFormat);
+          if (!parts.text.trim() && !parts.thinking.trim()) throw new Error('响应为空');
+          writeTextBot(parts.text, '', parts.thinking, true);
           setStatus('回复完成', 'ok');
-          scheduleTitleGeneration(content);
+          scheduleTitleGeneration(parts.text || parts.thinking);
         }
       }
       // ---- Text-to-image mode ----

@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { ImageHit } from '@/types';
 import { imageHitToStoredUrl, normalizeChatImageHit, toStoredChatImageHit } from '@/lib/chat-asset-client';
+import { normalizeChatTitle } from '@/lib/title';
 import {
   ACTIVE_CHAT_SESSION_STORAGE_KEY,
   CHAT_MESSAGES_MAX,
@@ -21,6 +22,8 @@ export interface ChatMessage {
   prompt: string;
   images: ImageHit[];
   text: string;
+  thinking?: string;
+  thinkingDone?: boolean;
   code: string;
   extra: string;
   request?: ChatTurnSnapshot;
@@ -114,11 +117,11 @@ interface ChatContextValue {
   syncChatHistory: (auth: ChatSyncAuth, options?: { silent?: boolean }) => Promise<ChatSyncResult>;
   addUserMsg: (prompt: string, sessionId?: string, request?: ChatTurnSnapshot) => string;
   addBotMsg: (images: ImageHit[], code: string, extra: string, sessionId?: string) => string;
-  addTextBotMsg: (text: string, code: string, sessionId?: string) => string;
+  addTextBotMsg: (text: string, code: string, sessionId?: string, thinking?: string, thinkingDone?: boolean) => string;
   updateLastBotMsg: (images: ImageHit[], code?: string, sessionId?: string) => void;
   updateLastBotText: (text: string, sessionId?: string) => void;
   updateBotMsg: (messageId: string, images: ImageHit[], code?: string, sessionId?: string) => void;
-  updateBotText: (messageId: string, text: string, sessionId?: string) => void;
+  updateBotText: (messageId: string, text: string, sessionId?: string, thinking?: string, thinkingDone?: boolean) => void;
   addErrorMsg: (error: string, sessionId?: string) => void;
   deleteMessage: (messageId: string, sessionId?: string) => void;
   restoreSessionMessages: (sessionId: string, messages: ChatMessage[]) => void;
@@ -132,7 +135,7 @@ interface ChatContextValue {
   truncateChatAfterMessage: (messageId: string, sessionId?: string) => void;
   replaceBotMessage: (
     messageId: string,
-    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'>,
+    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'> & Partial<Pick<ChatMessage, 'thinking' | 'thinkingDone'>>,
     sessionId?: string,
   ) => void;
   setLoading: (v: boolean, sessionId?: string) => void;
@@ -165,6 +168,8 @@ function createMessageId() {
 
 function createChatMessage(
   message: Pick<ChatMessage, 'role' | 'prompt' | 'images' | 'text' | 'code' | 'extra'> & {
+    thinking?: string;
+    thinkingDone?: boolean;
     request?: ChatTurnSnapshot;
   },
   id = createMessageId(),
@@ -177,9 +182,9 @@ function createChatMessage(
 }
 
 function normalizeSessionTitle(value: unknown, fallback = DEFAULT_CHAT_TITLE) {
-  const title = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+  const title = normalizeChatTitle(value, { fallback, maxLength: SESSION_TITLE_MAX, appendEllipsis: true });
   if (!title) return fallback;
-  return title.length > SESSION_TITLE_MAX ? `${title.slice(0, SESSION_TITLE_MAX)}...` : title;
+  return title;
 }
 
 function sessionTitleFromMessages(messages: ChatMessage[], fallback = DEFAULT_CHAT_TITLE) {
@@ -241,6 +246,8 @@ function normalizeStoredMessages(value: unknown): ChatMessage[] {
             .filter((image): image is ImageHit => image !== null)
         : [],
       text: typeof message.text === 'string' ? message.text : '',
+      thinking: typeof message.thinking === 'string' ? message.thinking : '',
+      thinkingDone: typeof message.thinkingDone === 'boolean' ? message.thinkingDone : true,
       code: typeof message.code === 'string' ? message.code : '',
       extra: typeof message.extra === 'string' ? message.extra : '',
       request: normalizeStoredTurnSnapshot(message.request),
@@ -599,6 +606,7 @@ function isEmptyBotMessage(message: ChatMessage | undefined) {
     && !message.prompt
     && message.images.length === 0
     && !message.text
+    && !message.thinking
     && !message.code
     && !message.extra;
 }
@@ -848,8 +856,23 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     return message.id;
   }, [activeSessionId, updateSessionMessages]);
 
-  const addTextBotMsg = useCallback((text: string, code: string, sessionId = activeSessionId) => {
-    const message = createChatMessage({ role: 'bot', prompt: '', images: [], text, code, extra: '' });
+  const addTextBotMsg = useCallback((
+    text: string,
+    code: string,
+    sessionId = activeSessionId,
+    thinking?: string,
+    thinkingDone?: boolean,
+  ) => {
+    const message = createChatMessage({
+      role: 'bot',
+      prompt: '',
+      images: [],
+      text,
+      thinking,
+      thinkingDone,
+      code,
+      extra: '',
+    });
     updateSessionMessages(sessionId, (prev) => [
       ...prev,
       message,
@@ -884,10 +907,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     )));
   }, [activeSessionId, updateSessionMessages]);
 
-  const updateBotText = useCallback((messageId: string, text: string, sessionId = activeSessionId) => {
+  const updateBotText = useCallback((
+    messageId: string,
+    text: string,
+    sessionId = activeSessionId,
+    thinking?: string,
+    thinkingDone?: boolean,
+  ) => {
     updateSessionMessages(sessionId, (prev) => prev.map((message) => (
       message.id === messageId && message.role === 'bot'
-        ? { ...message, text, updatedAt: Date.now() }
+        ? {
+          ...message,
+          text,
+          thinking: thinking ?? message.thinking,
+          thinkingDone: thinkingDone ?? message.thinkingDone,
+          updatedAt: Date.now(),
+        }
         : message
     )));
   }, [activeSessionId, updateSessionMessages]);
@@ -965,7 +1000,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const replaceBotMessage = useCallback((
     messageId: string,
-    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'>,
+    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'> & Partial<Pick<ChatMessage, 'thinking' | 'thinkingDone'>>,
     sessionId = activeSessionId,
   ) => {
     updateSessionMessages(sessionId, (prev) => prev.map((current) => (
