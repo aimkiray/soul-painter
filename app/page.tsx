@@ -14,6 +14,7 @@ import ChatInput from '@/components/ChatInput';
 import ImageGrid from '@/components/ImageGrid';
 import ImageEditor from '@/components/ImageEditor';
 import SettingsModal from '@/components/SettingsModal';
+import LoginModal from '@/components/LoginModal';
 import DebugPanel from '@/components/DebugPanel';
 import Footer from '@/components/Footer';
 import { extractImage } from '@/lib/image-extract';
@@ -24,6 +25,7 @@ import {
   HISTORY_STORAGE_KEY,
   HISTORY_MAX,
   CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY,
+  CHAT_SYNC_AUTH_STORAGE_KEY,
   chatSessionPromptStorageKey,
 } from '@/lib/constants';
 import { imageHitToStoredUrl, uploadChatImage } from '@/lib/chat-asset-client';
@@ -43,6 +45,15 @@ function parseErrorDetail(probeText: string): string {
 
 function parseResponseBody(probeText: string): unknown {
   try { return JSON.parse(probeText); } catch { return probeText; }
+}
+
+function parseStreamResponseBody(probeText: string): unknown {
+  const cleaned = probeText
+    .split('\n')
+    .filter((line) => !line.startsWith(':'))
+    .join('\n')
+    .trim();
+  return parseResponseBody(cleaned || probeText);
 }
 
 function extractModelGateMessage(errorText: string): string | null {
@@ -156,6 +167,117 @@ function blobExt(blob: Blob) {
   if (blob.type === 'image/webp') return 'webp';
   if (blob.type === 'image/gif') return 'gif';
   return 'png';
+}
+
+const IMAGE_STREAM_CAPABILITY_STORAGE_KEY = 'imggen-image-stream-capability-v1';
+const IMAGE_STREAM_FIRST_EVENT_TIMEOUT_MS = 60_000;
+const IMAGE_STREAM_COMPLETE_TIMEOUT_MS = 90_000;
+const IMAGE_STREAM_UNSUPPORTED_TTL_MS = 24 * 60 * 60 * 1000;
+const IMAGE_STREAM_SUPPORTED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+type ImageStreamCapability = 'supported' | 'unsupported';
+
+interface ImageStreamCapabilityRecord {
+  state: ImageStreamCapability;
+  updatedAt: number;
+  expiresAt: number;
+}
+
+function getImageStreamCapabilityKey(endpoint: string, config: AppConfig, model: string, defaultBaseUrl: string) {
+  const baseUrl = (config.baseUrl || defaultBaseUrl).trim().replace(/\/+$/, '') || 'server-default';
+  return `${endpoint}|${baseUrl}|${model || 'default'}`;
+}
+
+function readImageStreamCapabilities(): Record<string, ImageStreamCapabilityRecord> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(IMAGE_STREAM_CAPABILITY_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, ImageStreamCapabilityRecord> : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeImageStreamCapabilities(records: Record<string, ImageStreamCapabilityRecord>) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(IMAGE_STREAM_CAPABILITY_STORAGE_KEY, JSON.stringify(records));
+  } catch {
+    // Capability caching is opportunistic.
+  }
+}
+
+function getImageStreamCapability(key: string): ImageStreamCapability | 'unknown' {
+  const records = readImageStreamCapabilities();
+  const record = records[key];
+  if (!record || (record.state !== 'supported' && record.state !== 'unsupported')) return 'unknown';
+  if (record.expiresAt <= Date.now()) {
+    delete records[key];
+    writeImageStreamCapabilities(records);
+    return 'unknown';
+  }
+  return record.state;
+}
+
+function setImageStreamCapability(key: string, state: ImageStreamCapability) {
+  const now = Date.now();
+  const ttl = state === 'unsupported' ? IMAGE_STREAM_UNSUPPORTED_TTL_MS : IMAGE_STREAM_SUPPORTED_TTL_MS;
+  const records = readImageStreamCapabilities();
+  records[key] = { state, updatedAt: now, expiresAt: now + ttl };
+  writeImageStreamCapabilities(records);
+}
+
+function createImageStreamAttempt(parentSignal: AbortSignal) {
+  const controller = new AbortController();
+  let timedOut = false;
+  let imageEventSeen = false;
+  let completeSeen = false;
+  let completeTimeoutId: number | null = null;
+
+  const abortFromParent = () => controller.abort();
+  if (parentSignal.aborted) {
+    controller.abort();
+  } else {
+    parentSignal.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  const timeoutId = window.setTimeout(() => {
+    if (imageEventSeen || parentSignal.aborted) return;
+    timedOut = true;
+    controller.abort();
+  }, IMAGE_STREAM_FIRST_EVENT_TIMEOUT_MS);
+
+  const scheduleCompleteTimeout = () => {
+    if (completeTimeoutId) window.clearTimeout(completeTimeoutId);
+    completeTimeoutId = window.setTimeout(() => {
+      if (completeSeen || parentSignal.aborted) return;
+      timedOut = true;
+      controller.abort();
+    }, IMAGE_STREAM_COMPLETE_TIMEOUT_MS);
+  };
+
+  return {
+    signal: controller.signal,
+    markPartial() {
+      imageEventSeen = true;
+      window.clearTimeout(timeoutId);
+      scheduleCompleteTimeout();
+    },
+    markComplete() {
+      imageEventSeen = true;
+      completeSeen = true;
+      window.clearTimeout(timeoutId);
+      if (completeTimeoutId) window.clearTimeout(completeTimeoutId);
+    },
+    didTimeout() {
+      return timedOut;
+    },
+    cleanup() {
+      window.clearTimeout(timeoutId);
+      if (completeTimeoutId) window.clearTimeout(completeTimeoutId);
+      parentSignal.removeEventListener('abort', abortFromParent);
+    },
+  };
 }
 
 async function buildEditsFormFromReferences(
@@ -336,6 +458,7 @@ async function processSSEStream(
   onPartial: (img: ImageHit) => void,
   onComplete: (img: ImageHit) => void,
   signal?: AbortSignal,
+  onImageEvent?: (type: 'partial' | 'complete') => void,
 ): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -387,13 +510,19 @@ async function processSSEStream(
           }
           if (eventType.includes('partial_image') || (evt.type && evt.type.includes('partial_image'))) {
             const url = evt.image_url || (evt.b64_json ? `data:image/png;base64,${evt.b64_json}` : null);
-            if (url) onPartial({ dataUrl: url.startsWith('data:') ? url : undefined, url: url.startsWith('data:') ? undefined : url } as ImageHit);
+            if (url) {
+              onImageEvent?.('partial');
+              onPartial({ dataUrl: url.startsWith('data:') ? url : undefined, url: url.startsWith('data:') ? undefined : url } as ImageHit);
+            }
           } else if (eventType.includes('completed') || (evt.type && evt.type.includes('completed'))) {
             if (evt.b64_json) {
+              onImageEvent?.('complete');
               onComplete({ dataUrl: `data:image/png;base64,${evt.b64_json}` });
             } else if (evt.url) {
+              onImageEvent?.('complete');
               onComplete({ url: evt.url });
             } else if (evt.image_url) {
+              onImageEvent?.('complete');
               onComplete({ dataUrl: evt.image_url.startsWith('data:') ? evt.image_url : undefined, url: evt.image_url.startsWith('data:') ? undefined : evt.image_url } as ImageHit);
             }
           }
@@ -433,11 +562,22 @@ function abortableDelay(ms: number, signal: AbortSignal) {
   });
 }
 
+function readSyncUsername() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CHAT_SYNC_AUTH_STORAGE_KEY) || 'null');
+    return typeof parsed?.username === 'string' ? parsed.username.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 // ── Component ──
 
 function HomeInner() {
   const [activeTab, setActiveTab] = useState<'generate' | 'decode'>('generate');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [syncUsername, setSyncUsername] = useState(readSyncUsername);
   const [pendingRegenerateMessageId, setPendingRegenerateMessageId] = useState<string | null>(null);
   const [chatSidebarCollapsed, setChatSidebarCollapsed] = useState(() => {
     try {
@@ -448,7 +588,7 @@ function HomeInner() {
   });
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
 
-  const { config, options, modelGateEnabled } = useConfig();
+  const { config, options, modelGateEnabled, defaultBaseUrl } = useConfig();
   const {
     sessions,
     activeSessionId,
@@ -784,6 +924,111 @@ function HomeInner() {
       return result;
       };
 
+      const formatDebugBody = (value: unknown) => (
+        typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+      );
+
+      const requestSingleImage = async (endpoint: string, body: RequestBody) => {
+        const result = await tryWithRetry(endpoint, body);
+        if (!result.ok) throw new Error(`HTTP ${result.status} ${parseErrorDetail(result.text)}`);
+        const resp = parseResponseBody(result.text);
+        return {
+          hit: extractImage(resp),
+          debugText: formatDebugBody(resp),
+        };
+      };
+
+      const requestImageWithAutoFallback = async (
+        endpoint: string,
+        body: RequestBody,
+        capabilityKey: string,
+      ): Promise<{ hits: ImageHit[]; debugText: string; usedPlaceholder: boolean }> => {
+        if (getImageStreamCapability(capabilityKey) === 'unsupported') {
+          const fallback = await requestSingleImage(endpoint, body);
+          return {
+            hits: fallback.hit ? [fallback.hit] : [],
+            debugText: fallback.debugText,
+            usedPlaceholder: false,
+          };
+        }
+
+        setRequestParam(body, 'stream', true);
+        setRequestParam(body, 'partial_images', 2);
+
+        const attempt = createImageStreamAttempt(requestSignal);
+        const previewHits: ImageHit[] = [];
+        const finalHits: ImageHit[] = [];
+        let rawText = '';
+        let streamError: Error | null = null;
+        let usedPlaceholder = false;
+
+        try {
+          const { ok, stream, text } = await proxyRequestStream(endpoint, config, body, options, attempt.signal);
+          if (!ok || !stream) {
+            streamError = new Error(parseErrorDetail(text) || '流式请求失败');
+          } else {
+            usedPlaceholder = true;
+            writeBotMsg([], '', '');
+            rawText = await processSSEStream(
+              stream,
+              (partial) => { previewHits[previewHits.length] = partial; writeBotImages([...previewHits], undefined); },
+              (final) => {
+                finalHits[finalHits.length > 0 ? finalHits.length - 1 : 0] = final;
+                previewHits[previewHits.length > 0 ? previewHits.length - 1 : 0] = final;
+                writeBotImages([...finalHits], undefined);
+              },
+              attempt.signal,
+              (type) => {
+                if (type === 'complete') attempt.markComplete();
+                else attempt.markPartial();
+              },
+            );
+          }
+        } catch (e) {
+          streamError = e as Error;
+        } finally {
+          attempt.cleanup();
+          deleteRequestParam(body, 'stream');
+          deleteRequestParam(body, 'partial_images');
+        }
+
+        if (requestSignal.aborted) throw new Error(USER_ABORT_SENTINEL);
+
+        if (finalHits.length > 0) {
+          setImageStreamCapability(capabilityKey, 'supported');
+          return {
+            hits: finalHits,
+            debugText: JSON.stringify(finalHits[0], null, 2),
+            usedPlaceholder,
+          };
+        }
+
+        if (!streamError) {
+          const resp = parseStreamResponseBody(rawText);
+          const hit = extractImage(resp);
+          if (hit) {
+            setImageStreamCapability(capabilityKey, 'unsupported');
+            return {
+              hits: [hit],
+              debugText: formatDebugBody(resp),
+              usedPlaceholder,
+            };
+          }
+        }
+
+        if (streamError?.message === USER_ABORT_SENTINEL && !attempt.didTimeout()) {
+          throw new Error(USER_ABORT_SENTINEL);
+        }
+
+        const fallback = await requestSingleImage(endpoint, body);
+        if (fallback.hit) setImageStreamCapability(capabilityKey, 'unsupported');
+        return {
+          hits: fallback.hit ? [fallback.hit] : [],
+          debugText: fallback.debugText,
+          usedPlaceholder,
+        };
+      };
+
       throwIfAborted(requestSignal);
       await ensureModelGateAccess(modelGateEnabled, requestSignal);
       throwIfAborted(requestSignal);
@@ -808,72 +1053,27 @@ function HomeInner() {
         } else {
           applyExtraParams(body);
 
-          const editsStreaming = runStreaming && actualImageCount <= 1;
+          const requestedImageCount = Math.max(1, n);
+          const editsStreaming = runStreaming && actualImageCount <= 1 && requestedImageCount === 1;
           if (editsStreaming) {
-            setRequestParam(body, 'stream', true);
-            setRequestParam(body, 'partial_images', 2);
-            const { ok, stream } = await proxyRequestStream('/api/images/edits', config, body, options, requestSignal);
-            if (!ok || !stream) {
-              deleteRequestParam(body, 'stream');
-              deleteRequestParam(body, 'partial_images');
-              const probe = await tryWithRetry('/api/images/edits', body);
-              if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
-              const resp = parseResponseBody(probe.text);
-              const hit = extractImage(resp);
-              if (hit) {
-                writeBotMsg([hit], JSON.stringify(resp, null, 2), '');
-                setStatus('生成完成 1 张', 'ok');
-                scheduleImageTitleGeneration(1);
-                void saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
+            const capabilityKey = getImageStreamCapabilityKey('/api/images/edits', config, model, defaultBaseUrl);
+            const result = await requestImageWithAutoFallback('/api/images/edits', body, capabilityKey);
+            if (result.hits.length > 0) {
+              if (result.usedPlaceholder) {
+                writeBotImages(result.hits, result.debugText);
               } else {
-                writeBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
-                setStatus('未识别到图片内容', 'err');
+                writeBotMsg(result.hits, result.debugText, '');
               }
+              setStatus(`生成完成 ${result.hits.length} 张`, 'ok');
+              scheduleImageTitleGeneration(result.hits.length);
+              void saveHistoryEntry(prompt, mode, model, resolvedSize, result.hits);
             } else {
-              const hits: ImageHit[] = [];
-              writeBotMsg([], '', '');
-              let streamError: Error | null = null;
-              let rawText = '';
-              try {
-                rawText = await processSSEStream(
-                  stream,
-                  (partial) => { hits[hits.length] = partial; writeBotImages([...hits], undefined); },
-                  (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; writeBotImages([...hits], undefined); },
-                  requestSignal,
-                );
-              } catch (e) {
-                streamError = e as Error;
-              }
-              if (streamError?.message === USER_ABORT_SENTINEL || requestSignal.aborted) throw new Error(USER_ABORT_SENTINEL);
-              if (hits.length === 0 && !streamError) {
-                const fallback = extractImage(parseResponseBody(rawText));
-                if (fallback) hits.push(fallback);
-              }
-              if (hits.length > 0) {
-                writeBotImages(hits, JSON.stringify(hits[0], null, 2));
-                setStatus(`生成完成 ${hits.length} 张`, 'ok');
-                scheduleImageTitleGeneration(hits.length);
-                void saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
-              } else if (streamError) {
-                deleteRequestParam(body, 'stream');
-                deleteRequestParam(body, 'partial_images');
-                const probe = await tryWithRetry('/api/images/edits', body);
-                if (!probe.ok) throw new Error(`HTTP ${probe.status} ${parseErrorDetail(probe.text)}`);
-                const resp = parseResponseBody(probe.text);
-                const hit = extractImage(resp);
-                if (hit) {
-                  writeBotImages([hit], JSON.stringify(resp, null, 2));
-                  setStatus('生成完成 1 张', 'ok');
-                  scheduleImageTitleGeneration(1);
-                  void saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
-                } else {
-                  writeBotImages([], JSON.stringify(resp, null, 2));
-                  setStatus('未识别到图片内容', 'err');
-                }
+              if (result.usedPlaceholder) {
+                writeBotImages([], result.debugText);
               } else {
-                writeBotImages([], '流式响应未返回图片');
-                setStatus('未识别到图片内容', 'err');
+                writeBotMsg([], result.debugText, '响应中未找到图片');
               }
+              setStatus('未识别到图片内容', 'err');
             }
           } else {
             const probe = await tryWithRetry('/api/images/edits', body);
@@ -962,83 +1162,39 @@ function HomeInner() {
       }
       // ---- Text-to-image mode ----
       else if (requestMode === 'images') {
+        const requestedImageCount = Math.max(1, n);
+        const imageStreaming = runStreaming && requestedImageCount === 1;
         const genBody: Record<string, unknown> = { model, prompt, n: 1, size: resolvedSize };
         applyExtraParams(genBody);
 
-        if (runStreaming) {
-          genBody.stream = true;
-          genBody.partial_images = 2;
-          const { ok, stream } = await proxyRequestStream('/api/images/generations', config, genBody, options, requestSignal);
-          if (!ok || !stream) {
-            delete genBody.stream;
-            delete genBody.partial_images;
-            const req = await tryWithRetry('/api/images/generations', genBody);
-            if (!req.ok) throw new Error(`HTTP ${req.status} ${parseErrorDetail(req.text)}`);
-            const resp = parseResponseBody(req.text);
-            const hit = extractImage(resp);
-            if (hit) {
-              writeBotMsg([hit], JSON.stringify(resp, null, 2), '');
-              setStatus('生成完成 1 张', 'ok');
-              scheduleImageTitleGeneration(1);
-              void saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
+        if (imageStreaming) {
+          const capabilityKey = getImageStreamCapabilityKey('/api/images/generations', config, model, defaultBaseUrl);
+          const result = await requestImageWithAutoFallback('/api/images/generations', genBody, capabilityKey);
+          if (result.hits.length > 0) {
+            if (result.usedPlaceholder) {
+              writeBotImages(result.hits, result.debugText);
             } else {
-              writeBotMsg([], JSON.stringify(resp, null, 2), '响应中未找到图片');
-              setStatus('未识别到图片内容', 'err');
+              writeBotMsg(result.hits, result.debugText, '');
             }
+            setStatus(`生成完成 ${result.hits.length} 张`, 'ok');
+            scheduleImageTitleGeneration(result.hits.length);
+            void saveHistoryEntry(prompt, mode, model, resolvedSize, result.hits);
           } else {
-            const hits: ImageHit[] = [];
-            writeBotMsg([], '', '');
-            let streamError: Error | null = null;
-            let rawText = '';
-            try {
-              rawText = await processSSEStream(
-                stream,
-                (partial) => { hits[hits.length] = partial; writeBotImages([...hits], undefined); },
-                (final) => { hits[hits.length > 0 ? hits.length - 1 : 0] = final; writeBotImages([...hits], undefined); },
-                requestSignal,
-              );
-            } catch (e) {
-              streamError = e as Error;
-            }
-            if (streamError?.message === USER_ABORT_SENTINEL || requestSignal.aborted) throw new Error(USER_ABORT_SENTINEL);
-            if (hits.length === 0 && !streamError) {
-              const fallback = extractImage(parseResponseBody(rawText));
-              if (fallback) hits.push(fallback);
-            }
-            if (hits.length > 0) {
-              writeBotImages(hits, JSON.stringify(hits[0], null, 2));
-              setStatus(`生成完成 ${hits.length} 张`, 'ok');
-              scheduleImageTitleGeneration(hits.length);
-              void saveHistoryEntry(prompt, mode, model, resolvedSize, hits);
-            } else if (streamError) {
-              delete genBody.stream;
-              delete genBody.partial_images;
-              const req = await tryWithRetry('/api/images/generations', genBody);
-              if (!req.ok) throw new Error(`HTTP ${req.status} ${parseErrorDetail(req.text)}`);
-              const resp = parseResponseBody(req.text);
-              const hit = extractImage(resp);
-              if (hit) {
-                writeBotImages([hit], JSON.stringify(resp, null, 2));
-                setStatus('生成完成 1 张', 'ok');
-                scheduleImageTitleGeneration(1);
-                void saveHistoryEntry(prompt, mode, model, resolvedSize, [hit]);
-              } else {
-                writeBotImages([], JSON.stringify(resp, null, 2));
-                setStatus('未识别到图片内容', 'err');
-              }
+            if (result.usedPlaceholder) {
+              writeBotImages([], result.debugText);
             } else {
-              writeBotImages([], '流式响应未返回图片');
-              setStatus('未识别到图片内容', 'err');
+              writeBotMsg([], result.debugText, '响应中未找到图片');
             }
+            setStatus('未识别到图片内容', 'err');
           }
         } else {
           const hits: ImageHit[] = [];
           const errors: string[] = [];
 
-          const limit = Math.min(5, Math.max(1, n));
+          const limit = Math.min(5, requestedImageCount);
           let cursor = 0;
           const worker = async () => {
-            while (cursor < Math.max(1, n)) {
+            while (cursor < requestedImageCount) {
               const i = cursor++;
               if (i > 0) await abortableDelay(200, requestSignal);
               throwIfAborted(requestSignal);
@@ -1114,6 +1270,7 @@ function HomeInner() {
     config,
     options,
     modelGateEnabled,
+    defaultBaseUrl,
     images,
     selectedIndices,
     buildEditsForm,
@@ -1178,6 +1335,8 @@ function HomeInner() {
       <MenuBar
         activeTab={activeTab}
         onTabChange={setActiveTab}
+        onOpenLogin={() => setLoginOpen(true)}
+        syncUsername={syncUsername}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenChatSidebar={() => setChatSidebarOpen(true)}
       />
@@ -1225,6 +1384,15 @@ function HomeInner() {
           onClose={() => setSettingsOpen(false)}
         />
       </ErrorBoundary>
+      {loginOpen && (
+        <ErrorBoundary>
+          <LoginModal
+            open={loginOpen}
+            onClose={() => setLoginOpen(false)}
+            onAuthChange={setSyncUsername}
+          />
+        </ErrorBoundary>
+      )}
 
       <DebugPanel />
     </div>

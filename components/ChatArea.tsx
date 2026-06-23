@@ -2,6 +2,8 @@
 
 import React, { useRef, useEffect } from 'react';
 import { useChat } from '@/contexts/ChatContext';
+import { useConfig } from '@/contexts/ConfigContext';
+import { useImages } from '@/contexts/ImageContext';
 import ChatBubble from './ChatBubble';
 
 const CHAT_CONTENT_CLASS = 'chat-content-width px-2 sm:px-3';
@@ -22,6 +24,8 @@ interface ChatAreaProps {
 }
 
 export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMessageId = null }: ChatAreaProps) {
+  const { config } = useConfig();
+  const { hasImages } = useImages();
   const {
     messages,
     isLoading,
@@ -38,6 +42,16 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
     hasAssistantForCurrentTurn
     || messages.some((message) => isPendingBotMessage(message) || message.id === pendingMessageId)
   );
+  const emptyTitle = config.mode === 'chat'
+    ? 'CHAT READY'
+    : hasImages
+      ? 'EDIT READY'
+      : 'IMG READY';
+  const emptySubtitle = config.mode === 'chat'
+    ? '等待输入'
+    : hasImages
+      ? '参考图已就绪'
+      : '等待描述';
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -48,9 +62,8 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
       <div className="chat-scroll-gutter flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col">
         <div className={`${CHAT_CONTENT_CLASS} flex-1 flex flex-col`}>
           <div className="m-auto flex flex-col items-center justify-center text-center px-4 py-8 select-none">
-            <p className="text-[#CCC] text-sm">输入提示词开始生成图片</p>
-            <p className="text-[#00aaaa] text-sm mt-1">Ctrl+Enter / Enter 发送 · Shift+Enter 换行</p>
-            <p className="text-[#CCC] text-sm mt-1">拖拽/粘贴图片启动图生图 · F1 打开设置</p>
+            <p className="text-[#00aaaa] text-sm tracking-normal">{emptyTitle}</p>
+            <p className="text-[#CCC] text-sm mt-1">{emptySubtitle}</p>
           </div>
         </div>
       </div>

@@ -6,11 +6,13 @@ import { MENU_BAR_FRAME_CLASS } from '@/lib/layout';
 interface MenuBarProps {
   activeTab: 'generate' | 'decode';
   onTabChange: (tab: 'generate' | 'decode') => void;
+  onOpenLogin?: () => void;
+  syncUsername?: string;
   onOpenSettings: () => void;
   onOpenChatSidebar?: () => void;
 }
 
-export default function MenuBar({ activeTab, onTabChange, onOpenSettings, onOpenChatSidebar }: MenuBarProps) {
+export default function MenuBar({ activeTab, onTabChange, onOpenLogin, syncUsername = '', onOpenSettings, onOpenChatSidebar }: MenuBarProps) {
   const tabBase = 'h-8 px-2 sm:px-3 py-1.5 sm:py-1 cursor-pointer whitespace-nowrap transition-colors flex items-center text-xs sm:text-sm';
   const tabActive = 'bg-black text-[#00aaaa]';
   const tabInactive = 'text-black hover:text-[#00aaaa]';
@@ -54,15 +56,22 @@ export default function MenuBar({ activeTab, onTabChange, onOpenSettings, onOpen
         </div>
 
         <div className="flex items-center gap-1">
+          {onOpenLogin && (
+            <button
+              onClick={onOpenLogin}
+              className={`flex h-8 max-w-[8rem] items-center justify-center truncate cursor-pointer whitespace-nowrap bg-transparent px-1 text-xs transition-colors hover:text-[#00aaaa] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00aaaa] ${syncUsername ? 'text-[#00aaaa]' : 'text-black'}`}
+              aria-label={syncUsername ? `同步账号：${syncUsername}` : '打开同步登录'}
+              title={syncUsername ? `同步账号：${syncUsername}` : '同步登录'}
+            >
+              {syncUsername || 'SYNC'}
+            </button>
+          )}
           <button
             onClick={onOpenSettings}
-            className="flex h-8 items-center justify-center cursor-pointer whitespace-nowrap bg-transparent p-0 text-black transition-colors hover:text-[#00aaaa] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00aaaa]"
+            className="flex h-8 items-center justify-center cursor-pointer whitespace-nowrap bg-transparent px-1 text-xs text-black transition-colors hover:text-[#00aaaa] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00aaaa]"
             aria-label="打开设置"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true" className="block h-6 w-6">
-              <path d="M0 0h22v22H0z" fill="none" />
-              <path fill="currentColor" d="M2 6h5V3h1V2h6v1h1v3h5v1h1v12h-1v1H2v-1H1V7h1zm7 0h4V4H9zm10 2H3v4h3v-2h3v2h4v-2h3v2h3zM3 18h16v-4h-3v2h-3v-2H9v2H6v-2H3z" />
-            </svg>
+            CONFIG
           </button>
         </div>
       </div>

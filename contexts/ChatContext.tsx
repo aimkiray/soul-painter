@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { ImageHit } from '@/types';
 import { imageHitToStoredUrl, normalizeChatImageHit, toStoredChatImageHit } from '@/lib/chat-asset-client';
 import {
@@ -9,6 +9,8 @@ import {
   CHAT_MESSAGES_STORAGE_KEY,
   CHAT_SESSIONS_MAX,
   CHAT_SESSIONS_STORAGE_KEY,
+  CHAT_SYNC_SESSION_AUTH_STORAGE_KEY,
+  CHAT_SYNC_TOMBSTONES_STORAGE_KEY,
   chatSessionPromptStorageKey,
   LAST_PROMPT_KEY,
 } from '@/lib/constants';
@@ -58,6 +60,38 @@ export interface ChatSession {
   updatedAt: number;
 }
 
+export interface ChatSyncTombstone {
+  type: 'session' | 'message';
+  id: string;
+  sessionId?: string;
+  deletedAt: number;
+}
+
+interface ChatSyncAuth {
+  username: string;
+  secret: string;
+}
+
+interface ChatSyncResponse {
+  ok?: boolean;
+  sessions?: unknown;
+  activeSessionId?: string;
+  tombstones?: unknown;
+  updatedAt?: number;
+  error?: string;
+}
+
+interface ChatSyncSnapshot {
+  sessions: ChatSession[];
+  activeSessionId: string;
+  tombstones: ChatSyncTombstone[];
+}
+
+interface ChatSyncResult {
+  updatedAt: number;
+  applied: boolean;
+}
+
 interface ChatContextValue {
   sessions: ChatSession[];
   activeSessionId: string;
@@ -74,6 +108,9 @@ interface ChatContextValue {
   setGeneratedSessionTitle: (sessionId: string, title: string) => void;
   deleteChatSession: (sessionId: string) => void;
   clearChatSession: (sessionId: string) => void;
+  getSyncSnapshot: () => Promise<ChatSyncSnapshot>;
+  applySyncedSessions: (sessions: unknown, activeSessionId?: string, tombstones?: unknown, options?: { silent?: boolean }) => void;
+  syncChatHistory: (auth: ChatSyncAuth, options?: { silent?: boolean }) => Promise<ChatSyncResult>;
   addUserMsg: (prompt: string, sessionId?: string, request?: ChatTurnSnapshot) => string;
   addBotMsg: (images: ImageHit[], code: string, extra: string, sessionId?: string) => string;
   addTextBotMsg: (text: string, code: string, sessionId?: string) => string;
@@ -269,6 +306,54 @@ function normalizeStoredSessions(value: unknown): ChatSession[] {
     if (sessions.length >= CHAT_SESSIONS_MAX) break;
   }
   return sessions;
+}
+
+function normalizeSyncTombstones(value: unknown): ChatSyncTombstone[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Map<string, ChatSyncTombstone>();
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as Partial<ChatSyncTombstone>;
+    const type = raw.type === 'session' || raw.type === 'message' ? raw.type : null;
+    const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id : '';
+    const sessionId = typeof raw.sessionId === 'string' && raw.sessionId.trim() ? raw.sessionId : undefined;
+    const deletedAt = typeof raw.deletedAt === 'number' && Number.isFinite(raw.deletedAt) ? raw.deletedAt : 0;
+    if (!type || !id || deletedAt <= 0) continue;
+    if (type === 'message' && !sessionId) continue;
+    const key = `${type}:${sessionId || ''}:${id}`;
+    const current = seen.get(key);
+    if (!current || deletedAt > current.deletedAt) {
+      seen.set(key, { type, id, sessionId, deletedAt });
+    }
+  }
+  return [...seen.values()]
+    .sort((a, b) => b.deletedAt - a.deletedAt)
+    .slice(0, 1000);
+}
+
+function loadSyncTombstones(): ChatSyncTombstone[] {
+  try {
+    return normalizeSyncTombstones(JSON.parse(localStorage.getItem(CHAT_SYNC_TOMBSTONES_STORAGE_KEY) || '[]'));
+  } catch {
+    return [];
+  }
+}
+
+function readSessionSyncAuth(): ChatSyncAuth | null {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(CHAT_SYNC_SESSION_AUTH_STORAGE_KEY) || 'null') as Partial<ChatSyncAuth> | null;
+    const username = typeof raw?.username === 'string' ? raw.username.trim() : '';
+    const secret = typeof raw?.secret === 'string' ? raw.secret : '';
+    return username && secret ? { username, secret } : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPlaceholderSession(session: ChatSession) {
+  return session.messages.length === 0
+    && (session.titleSource === 'auto' || !session.titleSource)
+    && (session.title === DEFAULT_CHAT_TITLE || session.title === LEGACY_CHAT_TITLE);
 }
 
 function loadLegacyStoredMessages(): ChatMessage[] {
@@ -512,6 +597,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [statusType, setStatusType] = useState<'' | 'ok' | 'err' | 'warn'>('');
   const [debugRaw, setDebugRaw] = useState('（尚未请求）');
   const [debugVisible, setDebugVisible] = useState(false);
+  const [syncTombstones, setSyncTombstones] = useState<ChatSyncTombstone[]>(loadSyncTombstones);
+  const [autoSyncRetryTick, setAutoSyncRetryTick] = useState(0);
+  const applyingSyncRef = useRef(false);
+  const lastAutoSyncSignatureRef = useRef('');
+  const autoSyncFailureCountRef = useRef(0);
+  const localMutationRevisionRef = useRef(0);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) || sessions[0],
@@ -519,10 +610,21 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   );
   const messages = useMemo(() => activeSession?.messages || EMPTY_MESSAGES, [activeSession]);
 
+  const markLocalMutation = useCallback(() => {
+    localMutationRevisionRef.current += 1;
+  }, []);
+
+  const addSyncTombstones = useCallback((items: ChatSyncTombstone[]) => {
+    if (items.length === 0) return;
+    markLocalMutation();
+    setSyncTombstones((prev) => normalizeSyncTombstones([...items, ...prev]));
+  }, [markLocalMutation]);
+
   const updateSessionMessages = useCallback((
     sessionId: string,
     updater: (messages: ChatMessage[], session: ChatSession) => ChatMessage[],
   ) => {
+    markLocalMutation();
     setSessions((prev) => prev.map((session) => {
       if (session.id !== sessionId) return session;
 
@@ -538,9 +640,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         updatedAt: Date.now(),
       };
     }));
-  }, []);
+  }, [markLocalMutation]);
 
   const createChatSession = useCallback(() => {
+    markLocalMutation();
     const session = createEmptySession();
     setSessions((prev) => [session, ...prev].slice(0, CHAT_SESSIONS_MAX));
     setActiveSessionId(session.id);
@@ -549,42 +652,47 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setDebugRaw('（尚未请求）');
     setDebugVisible(false);
     return session.id;
-  }, []);
+  }, [markLocalMutation]);
 
   const switchChatSession = useCallback((sessionId: string) => {
     if (!sessions.some((session) => session.id === sessionId)) return;
+    markLocalMutation();
     setActiveSessionId(sessionId);
-  }, [sessions]);
+  }, [sessions, markLocalMutation]);
 
   const renameChatSession = useCallback((sessionId: string, title: string) => {
     const cleanTitle = normalizeSessionTitle(title, '');
     if (!cleanTitle) return;
+    markLocalMutation();
     setSessions((prev) => prev.map((session) => (
       session.id === sessionId
         ? { ...session, title: cleanTitle, titleSource: 'manual', updatedAt: Date.now() }
         : session
     )));
-  }, []);
+  }, [markLocalMutation]);
 
   const setGeneratedSessionTitle = useCallback((sessionId: string, title: string) => {
     const cleanTitle = normalizeSessionTitle(title, '');
     if (!cleanTitle) return;
+    markLocalMutation();
     setSessions((prev) => prev.map((session) => (
       session.id === sessionId && isAutoManagedSessionTitle(session)
         ? { ...session, title: cleanTitle, titleSource: 'generated', updatedAt: Date.now() }
         : session
     )));
-  }, []);
+  }, [markLocalMutation]);
 
   const deleteChatSession = useCallback((sessionId: string) => {
     if (isLoading && loadingSessionId === sessionId) return;
 
     const index = sessions.findIndex((session) => session.id === sessionId);
     if (index < 0) return;
+    addSyncTombstones([{ type: 'session', id: sessionId, deletedAt: Date.now() }]);
 
     if (sessions.length <= 1) {
       const replacement = createEmptySession();
       removeSessionPrompt(sessionId);
+      markLocalMutation();
       setSessions([replacement]);
       setActiveSessionId(replacement.id);
       return;
@@ -592,14 +700,24 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
     const nextSessions = sessions.filter((session) => session.id !== sessionId);
     removeSessionPrompt(sessionId);
+    markLocalMutation();
     setSessions(nextSessions);
     if (activeSessionId === sessionId) {
       setActiveSessionId(nextSessions[Math.min(index, nextSessions.length - 1)]?.id || nextSessions[0].id);
     }
-  }, [sessions, activeSessionId, isLoading, loadingSessionId]);
+  }, [sessions, activeSessionId, isLoading, loadingSessionId, addSyncTombstones, markLocalMutation]);
 
   const clearChatSession = useCallback((sessionId: string) => {
     if (isLoading && loadingSessionId === sessionId) return;
+    const now = Date.now();
+    const target = sessions.find((session) => session.id === sessionId);
+    addSyncTombstones((target?.messages || []).map((message) => ({
+      type: 'message',
+      id: message.id,
+      sessionId,
+      deletedAt: now,
+    })));
+    markLocalMutation();
     setSessions((prev) => prev.map((session) => (
       session.id === sessionId
         ? {
@@ -616,7 +734,72 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setStatusType('');
     setDebugRaw('（尚未请求）');
     setDebugVisible(false);
-  }, [activeSessionId, isLoading, loadingSessionId]);
+  }, [sessions, activeSessionId, isLoading, loadingSessionId, addSyncTombstones, markLocalMutation]);
+
+  const getSyncSnapshot = useCallback(async () => {
+    const recentSessions = sessions.slice(0, CHAT_SESSIONS_MAX);
+    const skipOnlyPlaceholder = recentSessions.length === 1
+      && isPlaceholderSession(recentSessions[0])
+      && syncTombstones.length === 0;
+    const sessionsForSync = skipOnlyPlaceholder ? [] : recentSessions;
+    const { storedSessions } = await prepareSessionsForStorage(sessionsForSync);
+    return {
+      sessions: storedSessions,
+      activeSessionId: skipOnlyPlaceholder ? '' : activeSessionId,
+      tombstones: syncTombstones,
+    };
+  }, [sessions, activeSessionId, syncTombstones]);
+
+  const applySyncedSessions = useCallback((
+    value: unknown,
+    nextActiveSessionId?: string,
+    tombstones?: unknown,
+    applyOptions?: { silent?: boolean },
+  ) => {
+    applyingSyncRef.current = true;
+    const normalizedSessions = normalizeStoredSessions(value);
+    const nextSessions = normalizedSessions.length > 0 ? normalizedSessions : [createEmptySession()];
+    setSessions(nextSessions);
+    setSyncTombstones(normalizeSyncTombstones(tombstones));
+    setActiveSessionId(
+      nextSessions.some((session) => session.id === nextActiveSessionId)
+        ? nextActiveSessionId as string
+        : nextSessions[0].id,
+    );
+    if (!applyOptions?.silent) {
+      setStatusText('聊天记录已同步');
+      setStatusType('ok');
+    }
+    window.setTimeout(() => {
+      applyingSyncRef.current = false;
+    }, 0);
+  }, []);
+
+  const syncChatHistory = useCallback(async (auth: ChatSyncAuth, syncOptions?: { silent?: boolean }) => {
+    const username = auth.username.trim();
+    const secret = auth.secret;
+    if (!username || secret.length < 4) throw new Error('请输入玩家名和至少 4 位同步密钥');
+    const requestRevision = localMutationRevisionRef.current;
+    const snapshot = await getSyncSnapshot();
+    const response = await fetch('/api/chat-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username,
+        secret,
+        sessions: snapshot.sessions,
+        activeSessionId: snapshot.activeSessionId,
+        tombstones: snapshot.tombstones,
+      }),
+    });
+    const data = await response.json().catch(() => ({} as ChatSyncResponse)) as ChatSyncResponse;
+    if (!response.ok || !data.ok) throw new Error(data.error || 'SYNC FAILED');
+    if (localMutationRevisionRef.current !== requestRevision) {
+      return { updatedAt: data.updatedAt || Date.now(), applied: false };
+    }
+    applySyncedSessions(data.sessions, data.activeSessionId, data.tombstones, syncOptions);
+    return { updatedAt: data.updatedAt || Date.now(), applied: true };
+  }, [getSyncSnapshot, applySyncedSessions]);
 
   const addUserMsg = useCallback((prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot) => {
     const message = createChatMessage({ role: 'user', prompt, images: [], text: '', code: '', extra: '', request });
@@ -691,10 +874,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [activeSessionId, updateSessionMessages]);
 
   const deleteMessage = useCallback((messageId: string, sessionId = activeSessionId) => {
+    const session = sessions.find((item) => item.id === sessionId);
+    if (session?.messages.some((message) => message.id === messageId)) {
+      addSyncTombstones([{ type: 'message', id: messageId, sessionId, deletedAt: Date.now() }]);
+    }
     updateSessionMessages(sessionId, (prev) => prev.filter((message) => message.id !== messageId));
-  }, [activeSessionId, updateSessionMessages]);
+  }, [sessions, activeSessionId, updateSessionMessages, addSyncTombstones]);
 
   const restoreSessionMessages = useCallback((sessionId: string, messages: ChatMessage[]) => {
+    if (messages.length > 0) {
+      const restoredMessageIds = new Set(messages.map((message) => message.id));
+      setSyncTombstones((prev) => prev.filter((tombstone) => !(
+        tombstone.type === 'message'
+        && tombstone.sessionId === sessionId
+        && restoredMessageIds.has(tombstone.id)
+      )));
+    }
     updateSessionMessages(sessionId, () => messages);
   }, [updateSessionMessages]);
 
@@ -721,12 +916,23 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [activeSessionId, updateSessionMessages]);
 
   const truncateChatAfterMessage = useCallback((messageId: string, sessionId = activeSessionId) => {
+    const session = sessions.find((item) => item.id === sessionId);
+    const targetIndex = session?.messages.findIndex((message) => message.id === messageId) ?? -1;
+    if (session && targetIndex >= 0) {
+      const now = Date.now();
+      addSyncTombstones(session.messages.slice(targetIndex + 1).map((message) => ({
+        type: 'message',
+        id: message.id,
+        sessionId,
+        deletedAt: now,
+      })));
+    }
     updateSessionMessages(sessionId, (prev) => {
       const index = prev.findIndex((message) => message.id === messageId);
       if (index < 0) return prev;
       return prev.slice(0, index + 1);
     });
-  }, [activeSessionId, updateSessionMessages]);
+  }, [sessions, activeSessionId, updateSessionMessages, addSyncTombstones]);
 
   const replaceBotMessage = useCallback((
     messageId: string,
@@ -782,6 +988,53 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     };
   }, [sessions, activeSessionId]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify(syncTombstones));
+    } catch {
+      // ignore
+    }
+  }, [syncTombstones]);
+
+  useEffect(() => {
+    if (applyingSyncRef.current) return;
+    const auth = readSessionSyncAuth();
+    if (!auth) return;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const snapshot = await getSyncSnapshot();
+        const signature = JSON.stringify({
+          activeSessionId: snapshot.activeSessionId,
+          sessions: snapshot.sessions.map((session) => ({
+            id: session.id,
+            updatedAt: session.updatedAt,
+            messages: session.messages.map((message) => ({
+              id: message.id,
+              updatedAt: message.updatedAt || message.createdAt,
+            })),
+          })),
+          tombstones: snapshot.tombstones,
+        });
+        if (signature === lastAutoSyncSignatureRef.current) return;
+        try {
+          const result = await syncChatHistory(auth, { silent: true });
+          if (result.applied) {
+            autoSyncFailureCountRef.current = 0;
+            lastAutoSyncSignatureRef.current = signature;
+          } else {
+            setAutoSyncRetryTick((value) => value + 1);
+          }
+        } catch {
+          autoSyncFailureCountRef.current += 1;
+          window.setTimeout(() => {
+            setAutoSyncRetryTick((value) => value + 1);
+          }, Math.min(30_000, 2_000 * autoSyncFailureCountRef.current));
+        }
+      })();
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [sessions, activeSessionId, syncTombstones, autoSyncRetryTick, getSyncSnapshot, syncChatHistory]);
+
   const clearCurrentChat = useCallback(() => {
     clearChatSession(activeSessionId);
   }, [activeSessionId, clearChatSession]);
@@ -802,6 +1055,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setGeneratedSessionTitle,
     deleteChatSession,
     clearChatSession,
+    getSyncSnapshot,
+    applySyncedSessions,
+    syncChatHistory,
     addUserMsg,
     addBotMsg,
     addTextBotMsg,
@@ -838,6 +1094,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setGeneratedSessionTitle,
     deleteChatSession,
     clearChatSession,
+    getSyncSnapshot,
+    applySyncedSessions,
+    syncChatHistory,
     addUserMsg,
     addBotMsg,
     addTextBotMsg,

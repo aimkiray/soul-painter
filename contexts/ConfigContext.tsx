@@ -23,6 +23,7 @@ interface ConfigContextValue {
   clearAll: () => void;
   keySource: 'url' | 'user' | 'server' | 'none';
   hasDefaultKey: boolean;
+  defaultBaseUrl: string;
   chatKeySource: 'user' | 'server' | 'inherit' | 'none';
   hasDefaultChatKey: boolean;
   modelGateEnabled: boolean;
@@ -109,6 +110,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = useState<AppConfig>(initial.config);
   const [options, setOptions] = useState<AppOptions>(initial.options);
   const [hasDefaultKey, setHasDefaultKey] = useState(false);
+  const [defaultBaseUrl, setDefaultBaseUrl] = useState('');
   const [hasDefaultChatKey, setHasDefaultChatKey] = useState(false);
   const [modelGateEnabled, setModelGateEnabled] = useState(false);
   const [modelGateUnlocked, setModelGateUnlocked] = useState(false);
@@ -118,6 +120,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       .then((r) => r.json())
       .then((d) => {
         setHasDefaultKey(!!d.hasDefaultKey);
+        setDefaultBaseUrl(typeof d.defaultBaseUrl === 'string' ? d.defaultBaseUrl : '');
         setHasDefaultChatKey(!!d.hasDefaultChatKey);
         setModelGateEnabled(!!d.modelGateEnabled);
       })
@@ -150,17 +153,31 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   }, [options]);
 
   const clearAll = useCallback(() => {
-    try { localStorage.clear(); } catch { /* ignore */ }
-    Promise.allSettled([
-      fetch('/api/chat-assets', { method: 'DELETE' }),
-      fetch('/api/model-gate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'clear' }),
-      }),
-    ])
-      .catch(() => undefined)
-      .finally(() => window.location.reload());
+    void (async () => {
+      try { localStorage.clear(); } catch { /* ignore */ }
+      try { sessionStorage.clear(); } catch { /* ignore */ }
+
+      const cacheDeletes = 'caches' in window
+        ? window.caches.keys()
+            .then((keys) => Promise.allSettled(keys.map((key) => window.caches.delete(key))))
+        : Promise.resolve();
+      const workerDeletes = 'serviceWorker' in navigator
+        ? navigator.serviceWorker.getRegistrations()
+            .then((registrations) => Promise.allSettled(registrations.map((registration) => registration.unregister())))
+        : Promise.resolve();
+
+      await Promise.allSettled([
+        cacheDeletes,
+        workerDeletes,
+        fetch('/api/chat-assets', { method: 'DELETE' }),
+        fetch('/api/model-gate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'clear' }),
+        }),
+      ]);
+      window.location.reload();
+    })();
   }, []);
 
   const keySource = useMemo<'url' | 'user' | 'server' | 'none'>(() => {
@@ -179,8 +196,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({
     config, options, updateConfig, updateOption,
-    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked,
-  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, chatKeySource, hasDefaultChatKey, modelGateEnabled, modelGateUnlocked]);
+    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked,
+  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, modelGateEnabled, modelGateUnlocked]);
 
   // Auto-persist config & options on change (debounced)
   useEffect(() => {

@@ -37,6 +37,8 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [newImageModel, setNewImageModel] = useState('');
   const [newChatModel, setNewChatModel] = useState('');
   const [customSize, setCustomSize] = useState(false);
+  const [confirmClearLocalData, setConfirmClearLocalData] = useState(false);
+  const [clearingLocalData, setClearingLocalData] = useState(false);
 
   const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
   const chatModelOptions = mergeModelOptions(CHAT_MODEL_PRESETS, config.customChatModels);
@@ -54,6 +56,8 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     if (prevOpen.current && !open) {
       saveConfig();
       saveOptions();
+      setConfirmClearLocalData(false);
+      setClearingLocalData(false);
     }
     prevOpen.current = open;
   }, [open, saveConfig, saveOptions]);
@@ -127,6 +131,15 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     updateConfig('customChatModels', removeModelFromList(config.customChatModels, model));
     if (config.chatModel === model) updateConfig('chatModel', CHAT_MODEL_PRESETS[0].value);
     if (config.titleModel === model) updateConfig('titleModel', CHAT_MODEL_PRESETS[0].value);
+  };
+
+  const handleClearLocalData = () => {
+    if (!confirmClearLocalData) {
+      setConfirmClearLocalData(true);
+      return;
+    }
+    setClearingLocalData(true);
+    clearAll();
   };
 
   return (
@@ -514,20 +527,32 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
 
             <fieldset className="tui-fieldset border-[#aa0000] lg:col-span-2">
               <legend className="text-[#ff5555] px-2">数据管理</legend>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <p className="text-xs text-[#ff5555] flex-1">
-                  清除 localStorage 中保存的配置、设置项和历史记录，并刷新页面。
+                  {confirmClearLocalData
+                    ? '再次确认会清除本机保存的设置、聊天记录、草稿、历史、能力缓存和浏览器本地缓存，然后刷新页面。服务端 .env 不会受影响。'
+                    : '清除本机保存的设置、聊天记录、草稿、历史、能力缓存和浏览器本地缓存。用于开发期处理不兼容更新。'}
                 </p>
-                <button
-                  onClick={() => {
-                    if (confirm('确认清除所有本地数据？这会删除 API URL / Key / 模型 / 设置项 / 历史记录，并刷新页面。')) {
-                      clearAll();
-                    }
-                  }}
-                  className="w-full sm:w-auto py-1 px-3 bg-[#aa0000] hover:bg-[#aa0000] text-white text-xs cursor-pointer border-2 border-[#aaaaaa] shadow-[4px_4px_0_#aaaaaa] active:shadow-none active:bg-[#880000]"
-                >
-                  清除并刷新
-                </button>
+                <div className="flex w-full sm:w-auto gap-2">
+                  {confirmClearLocalData && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClearLocalData(false)}
+                      disabled={clearingLocalData}
+                      className="flex-1 sm:flex-none py-1 px-3 bg-black text-[#CCC] text-xs cursor-pointer border-2 border-[#777] disabled:opacity-60"
+                    >
+                      取消
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleClearLocalData}
+                    disabled={clearingLocalData}
+                    className="flex-1 sm:flex-none py-1 px-3 bg-[#aa0000] hover:bg-[#aa0000] text-white text-xs cursor-pointer border-2 border-[#aaaaaa] shadow-[4px_4px_0_#aaaaaa] active:shadow-none active:bg-[#880000] disabled:opacity-60 disabled:cursor-wait"
+                  >
+                    {clearingLocalData ? '清除中...' : confirmClearLocalData ? '确认清除' : '清除本地数据'}
+                  </button>
+                </div>
               </div>
             </fieldset>
           </div>
