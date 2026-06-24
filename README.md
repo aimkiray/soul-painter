@@ -105,7 +105,10 @@ When 2+ reference images are added and batch mode is enabled, each image gets an
 - **Framework**: Next.js 16 (App Router) + React 19
 - **Styling**: Tailwind CSS v4, monospace terminal aesthetic
 - **State**: React Context (Config, Chat, Image)
-- **API Proxy**: 4 Next.js API routes that forward requests to an OpenAI-compatible or Claude Messages API, injecting auth from client headers or server env
+- **Workflow orchestration**: `useRunPrompt` coordinates request lifecycle, retries, streaming, title generation, and context updates
+- **Local persistence**: IndexedDB via `idb-keyval` stores chat sessions, image history, sync tombstones, and stream capability cache; localStorage/sessionStorage are reserved for lightweight settings, prompts, and sync auth metadata
+- **Server persistence**: Prisma + SQLite store chat sync metadata in `data/chat-sync.db`; chat image assets are stored on local disk under `data/chat-assets`
+- **API Proxy**: Next.js API routes forward requests to an OpenAI-compatible or Claude Messages API, injecting auth from client headers or server env
 
 ### API Routes
 
@@ -115,6 +118,18 @@ When 2+ reference images are added and batch mode is enabled, each image gets an
 | `/api/images/generations` | `{baseUrl}/v1/images/generations` | JSON |
 | `/api/images/edits` | `{baseUrl}/v1/images/edits` | multipart/form-data |
 | `/api/config` | — | Returns server-side key status |
+| `/api/chat-assets` | — | Stores or clears local chat image assets |
+| `/api/chat-assets/[assetId]` | — | Serves local chat image assets |
+| `/api/chat-sync` | — | Syncs chat sessions through Prisma/SQLite |
+| `/api/model-gate` | — | Reads or updates model gate state |
+
+### Runtime Notes
+
+The server routes that touch Prisma, SQLite, local chat assets, Node streams, or filesystem APIs run on the Node.js runtime, not the Edge runtime. Deployments need persistent local storage for `data/` or equivalent replacements for SQLite and chat asset files. Serverless platforms without durable local disks require moving sync storage to a managed database and chat assets to object storage.
+
+### Tests
+
+The project uses Vitest for unit coverage of parser, streaming, and sync delta helpers.
 
 ## Scripts
 
@@ -123,6 +138,7 @@ npm run dev      # Dev server (port 3010)
 npm run build    # Production build
 npm run start    # Production server (port 3010)
 npm run lint     # ESLint
+npm run test     # Vitest unit tests
 ```
 
 ## Credits

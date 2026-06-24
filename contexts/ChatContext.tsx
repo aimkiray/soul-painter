@@ -2,19 +2,37 @@
 
 import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { ImageHit } from '@/types';
-import { imageHitToStoredUrl, normalizeChatImageHit, toStoredChatImageHit } from '@/lib/chat-asset-client';
-import { normalizeChatTitle } from '@/lib/title';
 import {
-  ACTIVE_CHAT_SESSION_STORAGE_KEY,
   CHAT_MESSAGES_MAX,
-  CHAT_MESSAGES_STORAGE_KEY,
   CHAT_SESSIONS_MAX,
-  CHAT_SESSIONS_STORAGE_KEY,
-  CHAT_SYNC_SESSION_AUTH_STORAGE_KEY,
   CHAT_SYNC_TOMBSTONES_STORAGE_KEY,
-  chatSessionPromptStorageKey,
-  LAST_PROMPT_KEY,
 } from '@/lib/constants';
+
+import {
+  DEFAULT_CHAT_TITLE,
+  EMPTY_MESSAGES,
+  createChatMessage,
+  normalizeSessionTitle,
+  sessionTitleFromMessages,
+  isAutoManagedSessionTitle,
+  createEmptySession,
+  createFallbackChatState,
+  normalizeSyncTombstones,
+  isEmptyBotMessage,
+} from '@/lib/storage/chat-normalize';
+
+import {
+  type ChatSyncAuth,
+  loadSyncTombstones,
+  readSessionSyncAuth,
+  persistSessionSyncAuth,
+  loadChatState,
+  removeSessionPrompt,
+  persistStoredSessions,
+  prepareSessionsForStorage,
+} from '@/lib/storage/chat-store';
+
+import { useChatSync, type ChatSyncSnapshot, type ChatSyncResult } from '@/lib/storage/chat-sync';
 
 export interface ChatMessage {
   id: string;
@@ -30,6 +48,7 @@ export interface ChatMessage {
   createdAt: number;
   updatedAt?: number;
   editedAt?: number;
+  syncDirty?: boolean;
 }
 
 export interface ChatReferenceImage {
@@ -62,6 +81,7 @@ export interface ChatSession {
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;
+  syncDirty?: boolean;
 }
 
 export interface ChatSyncTombstone {
@@ -69,32 +89,9 @@ export interface ChatSyncTombstone {
   id: string;
   sessionId?: string;
   deletedAt: number;
+  syncDirty?: boolean;
 }
 
-interface ChatSyncAuth {
-  username: string;
-  secret: string;
-}
-
-interface ChatSyncResponse {
-  ok?: boolean;
-  sessions?: unknown;
-  activeSessionId?: string;
-  tombstones?: unknown;
-  updatedAt?: number;
-  error?: string;
-}
-
-interface ChatSyncSnapshot {
-  sessions: ChatSession[];
-  activeSessionId: string;
-  tombstones: ChatSyncTombstone[];
-}
-
-interface ChatSyncResult {
-  updatedAt: number;
-  applied: boolean;
-}
 
 interface ChatContextValue {
   sessions: ChatSession[];
@@ -148,469 +145,6 @@ interface ChatContextValue {
 }
 
 const ChatContext = createContext<ChatContextValue | undefined>(undefined);
-const DEFAULT_CHAT_TITLE = '新聊天';
-const LEGACY_CHAT_TITLE = '默认聊天';
-const SESSION_TITLE_MAX = 24;
-const EMPTY_MESSAGES: ChatMessage[] = [];
-const FALLBACK_SESSION_ID = '__initial_chat_session__';
-const FALLBACK_SESSION_TIME = 0;
-
-function createSessionId() {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function createMessageId() {
-  return createSessionId();
-}
-
-function createChatMessage(
-  message: Pick<ChatMessage, 'role' | 'prompt' | 'images' | 'text' | 'code' | 'extra'> & {
-    thinking?: string;
-    thinkingDone?: boolean;
-    request?: ChatTurnSnapshot;
-  },
-  id = createMessageId(),
-): ChatMessage {
-  return {
-    ...message,
-    id,
-    createdAt: Date.now(),
-  };
-}
-
-function normalizeSessionTitle(value: unknown, fallback = DEFAULT_CHAT_TITLE) {
-  const title = normalizeChatTitle(value, { fallback, maxLength: SESSION_TITLE_MAX, appendEllipsis: true });
-  if (!title) return fallback;
-  return title;
-}
-
-function sessionTitleFromMessages(messages: ChatMessage[], fallback = DEFAULT_CHAT_TITLE) {
-  const firstPrompt = messages.find((message) => message.role === 'user' && message.prompt.trim())?.prompt;
-  return normalizeSessionTitle(firstPrompt, fallback);
-}
-
-function isAutoManagedSessionTitle(session: ChatSession) {
-  if (session.titleSource === 'generated' || session.titleSource === 'manual') return false;
-  return session.title === DEFAULT_CHAT_TITLE
-    || session.title === LEGACY_CHAT_TITLE
-    || session.title === sessionTitleFromMessages(session.messages, session.title);
-}
-
-function inferTitleSource(title: string, messages: ChatMessage[]): ChatSession['titleSource'] {
-  return title === DEFAULT_CHAT_TITLE
-    || title === LEGACY_CHAT_TITLE
-    || title === sessionTitleFromMessages(messages, title)
-      ? 'auto'
-      : 'manual';
-}
-
-function createEmptySession(messages: ChatMessage[] = [], title?: string): ChatSession {
-  const now = Date.now();
-  const normalizedTitle = normalizeSessionTitle(title || sessionTitleFromMessages(messages));
-  return {
-    id: createSessionId(),
-    title: normalizedTitle,
-    titleSource: inferTitleSource(normalizedTitle, messages),
-    messages: messages.slice(-CHAT_MESSAGES_MAX),
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-function createFallbackChatState(): { sessions: ChatSession[]; activeSessionId: string } {
-  const session: ChatSession = {
-    id: FALLBACK_SESSION_ID,
-    title: DEFAULT_CHAT_TITLE,
-    titleSource: 'auto',
-    messages: [],
-    createdAt: FALLBACK_SESSION_TIME,
-    updatedAt: FALLBACK_SESSION_TIME,
-  };
-  return { sessions: [session], activeSessionId: session.id };
-}
-
-function normalizeStoredMessages(value: unknown): ChatMessage[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((message): message is Partial<ChatMessage> => !!message && typeof message === 'object')
-    .map((message): ChatMessage => ({
-      id: typeof message.id === 'string' && message.id.trim() ? message.id : createMessageId(),
-      role: message.role === 'user' ? 'user' : 'bot',
-      prompt: typeof message.prompt === 'string' ? message.prompt : '',
-      images: Array.isArray(message.images)
-        ? message.images
-            .map(normalizeChatImageHit)
-            .filter((image): image is ImageHit => image !== null)
-        : [],
-      text: typeof message.text === 'string' ? message.text : '',
-      thinking: typeof message.thinking === 'string' ? message.thinking : '',
-      thinkingDone: typeof message.thinkingDone === 'boolean' ? message.thinkingDone : true,
-      code: typeof message.code === 'string' ? message.code : '',
-      extra: typeof message.extra === 'string' ? message.extra : '',
-      request: normalizeStoredTurnSnapshot(message.request),
-      createdAt: typeof message.createdAt === 'number' && Number.isFinite(message.createdAt) ? message.createdAt : Date.now(),
-      updatedAt: typeof message.updatedAt === 'number' && Number.isFinite(message.updatedAt) ? message.updatedAt : undefined,
-      editedAt: typeof message.editedAt === 'number' && Number.isFinite(message.editedAt) ? message.editedAt : undefined,
-    }))
-    .slice(-CHAT_MESSAGES_MAX);
-}
-
-function normalizeStoredReferenceImage(value: unknown): ChatReferenceImage | null {
-  if (!value || typeof value !== 'object') return null;
-  const raw = value as Partial<ChatReferenceImage>;
-  const image = normalizeChatImageHit(raw.image ?? value);
-  if (!image) return null;
-  const mask = normalizeChatImageHit(raw.mask);
-  return mask ? { image, mask } : { image };
-}
-
-function normalizeStoredTurnSnapshot(value: unknown): ChatTurnSnapshot | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const raw = value as Partial<ChatTurnSnapshot>;
-  const mode = raw.mode === 'chat' || raw.mode === 'edits' ? raw.mode : 'images';
-  const referenceImages = Array.isArray(raw.referenceImages)
-    ? raw.referenceImages
-        .map(normalizeStoredReferenceImage)
-        .filter((image): image is ChatReferenceImage => image !== null)
-    : [];
-
-  return {
-    mode,
-    model: typeof raw.model === 'string' ? raw.model : '',
-    chatModel: typeof raw.chatModel === 'string' ? raw.chatModel : '',
-    chatApiFormat: raw.chatApiFormat === 'claude' ? 'claude' : raw.chatApiFormat === 'openai' ? 'openai' : undefined,
-    size: typeof raw.size === 'string' ? raw.size : 'auto',
-    n: typeof raw.n === 'number' && Number.isFinite(raw.n) ? raw.n : 1,
-    quality: typeof raw.quality === 'string' ? raw.quality : 'auto',
-    format: typeof raw.format === 'string' ? raw.format : 'png',
-    background: typeof raw.background === 'string' ? raw.background : 'auto',
-    moderation: typeof raw.moderation === 'string' ? raw.moderation : 'auto',
-    compression: typeof raw.compression === 'number' && Number.isFinite(raw.compression) ? raw.compression : 80,
-    systemPrompt: typeof raw.systemPrompt === 'string' ? raw.systemPrompt : '',
-    streaming: typeof raw.streaming === 'boolean' ? raw.streaming : true,
-    contextLimit: typeof raw.contextLimit === 'number' && Number.isFinite(raw.contextLimit) ? raw.contextLimit : 5,
-    referenceImages,
-  };
-}
-
-function normalizeStoredSession(value: unknown): ChatSession | null {
-  if (!value || typeof value !== 'object') return null;
-  const raw = value as Partial<ChatSession>;
-  const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id : createSessionId();
-  const messages = normalizeStoredMessages(raw.messages);
-  const createdAt = typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now();
-  const updatedAt = typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : createdAt;
-
-  return {
-    id,
-    title: normalizeSessionTitle(raw.title, sessionTitleFromMessages(messages)),
-    titleSource: raw.titleSource === 'generated' || raw.titleSource === 'manual' || raw.titleSource === 'auto'
-      ? raw.titleSource
-      : inferTitleSource(normalizeSessionTitle(raw.title, sessionTitleFromMessages(messages)), messages),
-    messages,
-    createdAt,
-    updatedAt,
-  };
-}
-
-function normalizeStoredSessions(value: unknown): ChatSession[] {
-  if (!Array.isArray(value)) return [];
-
-  const seen = new Set<string>();
-  const sessions: ChatSession[] = [];
-  for (const item of value) {
-    const session = normalizeStoredSession(item);
-    if (!session || seen.has(session.id)) continue;
-    seen.add(session.id);
-    sessions.push(session);
-    if (sessions.length >= CHAT_SESSIONS_MAX) break;
-  }
-  return sessions;
-}
-
-function normalizeSyncTombstones(value: unknown): ChatSyncTombstone[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Map<string, ChatSyncTombstone>();
-  for (const item of value) {
-    if (!item || typeof item !== 'object') continue;
-    const raw = item as Partial<ChatSyncTombstone>;
-    const type = raw.type === 'session' || raw.type === 'message' ? raw.type : null;
-    const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id : '';
-    const sessionId = typeof raw.sessionId === 'string' && raw.sessionId.trim() ? raw.sessionId : undefined;
-    const deletedAt = typeof raw.deletedAt === 'number' && Number.isFinite(raw.deletedAt) ? raw.deletedAt : 0;
-    if (!type || !id || deletedAt <= 0) continue;
-    if (type === 'message' && !sessionId) continue;
-    const key = `${type}:${sessionId || ''}:${id}`;
-    const current = seen.get(key);
-    if (!current || deletedAt > current.deletedAt) {
-      seen.set(key, { type, id, sessionId, deletedAt });
-    }
-  }
-  return [...seen.values()]
-    .sort((a, b) => b.deletedAt - a.deletedAt)
-    .slice(0, 1000);
-}
-
-function loadSyncTombstones(): ChatSyncTombstone[] {
-  try {
-    return normalizeSyncTombstones(JSON.parse(localStorage.getItem(CHAT_SYNC_TOMBSTONES_STORAGE_KEY) || '[]'));
-  } catch {
-    return [];
-  }
-}
-
-function readSessionSyncAuth(): ChatSyncAuth | null {
-  try {
-    const raw = JSON.parse(sessionStorage.getItem(CHAT_SYNC_SESSION_AUTH_STORAGE_KEY) || 'null') as Partial<ChatSyncAuth> | null;
-    const username = typeof raw?.username === 'string' ? raw.username.trim() : '';
-    const secret = typeof raw?.secret === 'string' ? raw.secret : '';
-    return username && secret ? { username, secret } : null;
-  } catch {
-    return null;
-  }
-}
-
-function isPlaceholderSession(session: ChatSession) {
-  return session.messages.length === 0
-    && (session.titleSource === 'auto' || !session.titleSource)
-    && (session.title === DEFAULT_CHAT_TITLE || session.title === LEGACY_CHAT_TITLE);
-}
-
-function loadLegacyStoredMessages(): ChatMessage[] {
-  try {
-    return normalizeStoredMessages(JSON.parse(localStorage.getItem(CHAT_MESSAGES_STORAGE_KEY) || '[]'));
-  } catch {
-    return [];
-  }
-}
-
-function loadChatState(): { sessions: ChatSession[]; activeSessionId: string } {
-  try {
-    const storedSessions = normalizeStoredSessions(
-      JSON.parse(localStorage.getItem(CHAT_SESSIONS_STORAGE_KEY) || '[]'),
-    );
-    const migratedFromLegacy = storedSessions.length === 0;
-    const sessions = migratedFromLegacy
-      ? [createEmptySession(loadLegacyStoredMessages(), LEGACY_CHAT_TITLE)]
-      : storedSessions;
-
-    const storedActiveSessionId = localStorage.getItem(ACTIVE_CHAT_SESSION_STORAGE_KEY) || '';
-    const activeSessionId = sessions.some((session) => session.id === storedActiveSessionId)
-      ? storedActiveSessionId
-      : sessions[0].id;
-
-    migrateLegacyPromptToSession(activeSessionId);
-
-    return { sessions, activeSessionId };
-  } catch {
-    const session = createEmptySession();
-    return { sessions: [session], activeSessionId: session.id };
-  }
-}
-
-function migrateLegacyPromptToSession(sessionId: string) {
-  try {
-    const legacyPrompt = localStorage.getItem(LAST_PROMPT_KEY);
-    if (!legacyPrompt) return;
-    const sessionPromptKey = chatSessionPromptStorageKey(sessionId);
-    if (!localStorage.getItem(sessionPromptKey)) {
-      localStorage.setItem(sessionPromptKey, legacyPrompt);
-    }
-    localStorage.removeItem(LAST_PROMPT_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-function removeSessionPrompt(sessionId: string) {
-  try {
-    localStorage.removeItem(chatSessionPromptStorageKey(sessionId));
-  } catch {
-    // ignore
-  }
-}
-
-function stripHeavyMessageData(message: ChatMessage): ChatMessage {
-  const images = message.images
-    .map(toStoredChatImageHit)
-    .filter((image): image is ImageHit => image !== null);
-
-  return {
-    ...message,
-    code: '',
-    images,
-    request: stripHeavyTurnSnapshotData(message.request),
-  };
-}
-
-function stripHeavyTurnSnapshotData(request: ChatTurnSnapshot | undefined): ChatTurnSnapshot | undefined {
-  if (!request) return undefined;
-  const referenceImages = request.referenceImages
-    .map((reference) => {
-      const image = toStoredChatImageHit(reference.image);
-      if (!image) return null;
-      const mask = reference.mask ? toStoredChatImageHit(reference.mask) : null;
-      return mask ? { image, mask } : { image };
-    })
-    .filter((reference): reference is ChatReferenceImage => reference !== null);
-  return { ...request, referenceImages };
-}
-
-function persistStoredSessions(sessions: ChatSession[], activeSessionId: string) {
-  const sessionCaps = [CHAT_SESSIONS_MAX, 10, 5, 1];
-  const messageCaps = [CHAT_MESSAGES_MAX, 50, 20, 5, 0];
-
-  for (const sessionCap of sessionCaps) {
-    for (const messageCap of messageCaps) {
-      const payload = sessions.slice(0, sessionCap).map((session) => ({
-        ...session,
-        messages: (messageCap === 0 ? [] : session.messages.slice(-messageCap)).map(stripHeavyMessageData),
-      }));
-
-      try {
-        localStorage.setItem(CHAT_SESSIONS_STORAGE_KEY, JSON.stringify(payload));
-        localStorage.setItem(ACTIVE_CHAT_SESSION_STORAGE_KEY, activeSessionId);
-        localStorage.removeItem(CHAT_MESSAGES_STORAGE_KEY);
-        return;
-      } catch {
-        // Try a smaller storage payload below.
-      }
-    }
-  }
-
-  try {
-    localStorage.removeItem(CHAT_SESSIONS_STORAGE_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-async function prepareMessagesForStorage(messages: ChatMessage[]): Promise<{
-  storedMessages: ChatMessage[];
-  memoryMessages: ChatMessage[];
-  changed: boolean;
-}> {
-  const storedMessages: ChatMessage[] = [];
-  const memoryMessages: ChatMessage[] = [];
-  let changed = false;
-
-  for (const message of messages) {
-    const storedImages: ImageHit[] = [];
-    const memoryImages: ImageHit[] = [];
-
-    for (const image of message.images) {
-      const url = await imageHitToStoredUrl(image);
-      if (url) {
-        const storedImage = { url };
-        storedImages.push(storedImage);
-        memoryImages.push(storedImage);
-        if (!image.url || image.url !== url) changed = true;
-      } else if (image.dataUrl) {
-        memoryImages.push({ dataUrl: image.dataUrl });
-      }
-    }
-
-    const preparedRequest = await prepareTurnSnapshotForStorage(message.request);
-    changed = changed || preparedRequest.changed;
-
-    storedMessages.push({ ...message, images: storedImages, code: '', request: preparedRequest.storedRequest });
-    memoryMessages.push({ ...message, images: memoryImages, request: preparedRequest.memoryRequest });
-  }
-
-  return { storedMessages, memoryMessages, changed };
-}
-
-async function prepareImageHitForStorage(image: ImageHit | undefined): Promise<{
-  storedImage?: ImageHit;
-  memoryImage?: ImageHit;
-  changed: boolean;
-}> {
-  if (!image) return { changed: false };
-  const url = await imageHitToStoredUrl(image);
-  if (url) {
-    return {
-      storedImage: { url },
-      memoryImage: { url },
-      changed: !image.url || image.url !== url,
-    };
-  }
-  if (image.dataUrl) return { memoryImage: { dataUrl: image.dataUrl }, changed: false };
-  return { changed: false };
-}
-
-async function prepareTurnSnapshotForStorage(request: ChatTurnSnapshot | undefined): Promise<{
-  storedRequest?: ChatTurnSnapshot;
-  memoryRequest?: ChatTurnSnapshot;
-  changed: boolean;
-}> {
-  if (!request) return { changed: false };
-
-  const storedReferences: ChatReferenceImage[] = [];
-  const memoryReferences: ChatReferenceImage[] = [];
-  let changed = false;
-
-  for (const reference of request.referenceImages) {
-    const preparedImage = await prepareImageHitForStorage(reference.image);
-    const preparedMask = await prepareImageHitForStorage(reference.mask);
-    changed = changed || preparedImage.changed || preparedMask.changed;
-
-    if (preparedImage.storedImage) {
-      storedReferences.push(preparedMask.storedImage
-        ? { image: preparedImage.storedImage, mask: preparedMask.storedImage }
-        : { image: preparedImage.storedImage });
-    }
-
-    if (preparedImage.memoryImage) {
-      memoryReferences.push(preparedMask.memoryImage
-        ? { image: preparedImage.memoryImage, mask: preparedMask.memoryImage }
-        : { image: preparedImage.memoryImage });
-    }
-  }
-
-  return {
-    storedRequest: { ...request, referenceImages: storedReferences },
-    memoryRequest: { ...request, referenceImages: memoryReferences },
-    changed,
-  };
-}
-
-async function prepareSessionsForStorage(sessions: ChatSession[]): Promise<{
-  storedSessions: ChatSession[];
-  memorySessions: ChatSession[];
-  changed: boolean;
-}> {
-  const storedSessions: ChatSession[] = [];
-  const memorySessions: ChatSession[] = [];
-  let changed = false;
-
-  for (const session of sessions) {
-    const persistableMessages = isEmptyBotMessage(session.messages[session.messages.length - 1])
-      ? session.messages.slice(0, -1)
-      : session.messages;
-    const recentMessages = persistableMessages.slice(-CHAT_MESSAGES_MAX);
-    const prepared = await prepareMessagesForStorage(recentMessages);
-    changed = changed || prepared.changed;
-    storedSessions.push({ ...session, messages: prepared.storedMessages });
-    memorySessions.push({ ...session, messages: prepared.memoryMessages });
-  }
-
-  return { storedSessions, memorySessions, changed };
-}
-
-function isEmptyBotMessage(message: ChatMessage | undefined) {
-  return !!message
-    && message.role === 'bot'
-    && !message.prompt
-    && message.images.length === 0
-    && !message.text
-    && !message.thinking
-    && !message.code
-    && !message.extra;
-}
-
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [initialState, setInitialState] = useState(createFallbackChatState);
   const [sessions, setSessions] = useState<ChatSession[]>(initialState.sessions);
@@ -630,12 +164,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const localMutationRevisionRef = useRef(0);
 
   useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      const loaded = loadChatState();
+    const timeoutId = window.setTimeout(async () => {
+      const loaded = await loadChatState();
       setInitialState(loaded);
       setSessions(loaded.sessions);
       setActiveSessionId(loaded.activeSessionId);
-      setSyncTombstones(loadSyncTombstones());
+      setSyncTombstones(await loadSyncTombstones());
       setStorageReady(true);
     }, 0);
     return () => window.clearTimeout(timeoutId);
@@ -654,7 +188,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const addSyncTombstones = useCallback((items: ChatSyncTombstone[]) => {
     if (items.length === 0) return;
     markLocalMutation();
-    setSyncTombstones((prev) => normalizeSyncTombstones([...items, ...prev]));
+    setSyncTombstones((prev) => normalizeSyncTombstones([
+      ...items.map((item) => ({ ...item, syncDirty: true })),
+      ...prev,
+    ]));
   }, [markLocalMutation]);
 
   const updateSessionMessages = useCallback((
@@ -669,12 +206,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       const title = isAutoManagedSessionTitle(session)
         ? sessionTitleFromMessages(nextMessages, DEFAULT_CHAT_TITLE)
         : session.title;
+      const syncDirty = session.syncDirty === true || title !== session.title;
 
       return {
         ...session,
         title,
         messages: nextMessages,
         updatedAt: Date.now(),
+        syncDirty,
       };
     }));
   }, [markLocalMutation]);
@@ -703,7 +242,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     markLocalMutation();
     setSessions((prev) => prev.map((session) => (
       session.id === sessionId
-        ? { ...session, title: cleanTitle, titleSource: 'manual', updatedAt: Date.now() }
+        ? { ...session, title: cleanTitle, titleSource: 'manual', updatedAt: Date.now(), syncDirty: true }
         : session
     )));
   }, [markLocalMutation]);
@@ -714,7 +253,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     markLocalMutation();
     setSessions((prev) => prev.map((session) => (
       session.id === sessionId && isAutoManagedSessionTitle(session)
-        ? { ...session, title: cleanTitle, titleSource: 'generated', updatedAt: Date.now() }
+        ? { ...session, title: cleanTitle, titleSource: 'generated', updatedAt: Date.now(), syncDirty: true }
         : session
     )));
   }, [markLocalMutation]);
@@ -763,6 +302,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           titleSource: 'auto',
           messages: [],
           updatedAt: Date.now(),
+          syncDirty: true,
         }
         : session
     )));
@@ -773,70 +313,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setDebugVisible(false);
   }, [sessions, activeSessionId, isLoading, loadingSessionId, addSyncTombstones, markLocalMutation]);
 
-  const getSyncSnapshot = useCallback(async () => {
-    const recentSessions = sessions.slice(0, CHAT_SESSIONS_MAX);
-    const skipOnlyPlaceholder = recentSessions.length === 1
-      && isPlaceholderSession(recentSessions[0])
-      && syncTombstones.length === 0;
-    const sessionsForSync = skipOnlyPlaceholder ? [] : recentSessions;
-    const { storedSessions } = await prepareSessionsForStorage(sessionsForSync);
-    return {
-      sessions: storedSessions,
-      activeSessionId: skipOnlyPlaceholder ? '' : activeSessionId,
-      tombstones: syncTombstones,
-    };
-  }, [sessions, activeSessionId, syncTombstones]);
+  const { getSyncSnapshot, applySyncedSessions, syncChatHistory } = useChatSync({
+    sessions,
+    activeSessionId,
+    syncTombstones,
+    localMutationRevisionRef,
+    applyingSyncRef,
+    setSessions,
+    setSyncTombstones,
+    setActiveSessionId,
+    setStatusText,
+    setStatusType,
+  });
 
-  const applySyncedSessions = useCallback((
-    value: unknown,
-    nextActiveSessionId?: string,
-    tombstones?: unknown,
-    applyOptions?: { silent?: boolean },
-  ) => {
-    applyingSyncRef.current = true;
-    const normalizedSessions = normalizeStoredSessions(value);
-    const nextSessions = normalizedSessions.length > 0 ? normalizedSessions : [createEmptySession()];
-    setSessions(nextSessions);
-    setSyncTombstones(normalizeSyncTombstones(tombstones));
-    setActiveSessionId(
-      nextSessions.some((session) => session.id === nextActiveSessionId)
-        ? nextActiveSessionId as string
-        : nextSessions[0].id,
-    );
-    if (!applyOptions?.silent) {
-      setStatusText('聊天记录已同步');
-      setStatusType('ok');
-    }
-    window.setTimeout(() => {
-      applyingSyncRef.current = false;
-    }, 0);
-  }, []);
-
-  const syncChatHistory = useCallback(async (auth: ChatSyncAuth, syncOptions?: { silent?: boolean }) => {
-    const username = auth.username.trim();
-    const secret = auth.secret;
-    if (!username || secret.length < 4) throw new Error('请输入玩家名和至少 4 位同步密钥');
-    const requestRevision = localMutationRevisionRef.current;
-    const snapshot = await getSyncSnapshot();
-    const response = await fetch('/api/chat-sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username,
-        secret,
-        sessions: snapshot.sessions,
-        activeSessionId: snapshot.activeSessionId,
-        tombstones: snapshot.tombstones,
-      }),
-    });
-    const data = await response.json().catch(() => ({} as ChatSyncResponse)) as ChatSyncResponse;
-    if (!response.ok || !data.ok) throw new Error(data.error || 'SYNC FAILED');
-    if (localMutationRevisionRef.current !== requestRevision) {
-      return { updatedAt: data.updatedAt || Date.now(), applied: false };
-    }
-    applySyncedSessions(data.sessions, data.activeSessionId, data.tombstones, syncOptions);
-    return { updatedAt: data.updatedAt || Date.now(), applied: true };
-  }, [getSyncSnapshot, applySyncedSessions]);
 
   const addUserMsg = useCallback((prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot) => {
     const message = createChatMessage({ role: 'user', prompt, images: [], text: '', code: '', extra: '', request });
@@ -885,7 +374,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1];
       if (last.role !== 'bot') return prev;
-      const updated: ChatMessage = { ...last, images: [...images], code: code ?? last.code, updatedAt: Date.now() };
+      const updated: ChatMessage = { ...last, images: [...images], code: code ?? last.code, updatedAt: Date.now(), syncDirty: true };
       return [...prev.slice(0, -1), updated];
     });
   }, [activeSessionId, updateSessionMessages]);
@@ -895,14 +384,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1];
       if (last.role !== 'bot') return prev;
-      return [...prev.slice(0, -1), { ...last, text, updatedAt: Date.now() }];
+      return [...prev.slice(0, -1), { ...last, text, updatedAt: Date.now(), syncDirty: true }];
     });
   }, [activeSessionId, updateSessionMessages]);
 
   const updateBotMsg = useCallback((messageId: string, images: ImageHit[], code?: string, sessionId = activeSessionId) => {
     updateSessionMessages(sessionId, (prev) => prev.map((message) => (
       message.id === messageId && message.role === 'bot'
-        ? { ...message, images: [...images], code: code ?? message.code, updatedAt: Date.now() }
+        ? { ...message, images: [...images], code: code ?? message.code, updatedAt: Date.now(), syncDirty: true }
         : message
     )));
   }, [activeSessionId, updateSessionMessages]);
@@ -922,6 +411,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           thinking: thinking ?? message.thinking,
           thinkingDone: thinkingDone ?? message.thinkingDone,
           updatedAt: Date.now(),
+          syncDirty: true,
         }
         : message
     )));
@@ -974,6 +464,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           request: request ?? message.request,
           updatedAt: Date.now(),
           editedAt: options?.markEdited ? Date.now() : message.editedAt,
+          syncDirty: true,
         }
         : message
     )));
@@ -1005,7 +496,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   ) => {
     updateSessionMessages(sessionId, (prev) => prev.map((current) => (
       current.id === messageId && current.role === 'bot'
-        ? { ...current, ...message, role: 'bot', updatedAt: Date.now() }
+        ? { ...current, ...message, role: 'bot', updatedAt: Date.now(), syncDirty: true }
         : current
     )));
   }, [activeSessionId, updateSessionMessages]);
@@ -1056,7 +547,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!storageReady) return;
     try {
-      localStorage.setItem(CHAT_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify(syncTombstones));
+      import('idb-keyval').then(({ set }) => set(CHAT_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify(syncTombstones)));
     } catch {
       // ignore
     }
@@ -1088,6 +579,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           if (result.applied) {
             autoSyncFailureCountRef.current = 0;
             lastAutoSyncSignatureRef.current = signature;
+            persistSessionSyncAuth(auth, result.updatedAt);
           } else {
             setAutoSyncRetryTick((value) => value + 1);
           }

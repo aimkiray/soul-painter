@@ -1,47 +1,14 @@
-import { promises as fs } from 'fs';
-import path from 'path';
-import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import { CHAT_MESSAGES_MAX, CHAT_SESSIONS_MAX } from '@/lib/constants';
+import { prepareDatabase, prisma } from '@/lib/prisma';
+
+const CHAT_SYNC_MAX_BODY_BYTES = 5 * 1024 * 1024;
+const CHAT_SYNC_WRITE_RETRIES = 4;
+const TITLE_SOURCES = new Set(['auto', 'manual', 'generated']);
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const CHAT_SYNC_MAX_BODY_BYTES = 2 * 1024 * 1024;
-const CHAT_SYNC_LOCK_STALE_MS = 60_000;
-const CHAT_SYNC_LOCK_RETRY_MS = 25;
-
-const accountLocks = new Map<string, Promise<void>>();
-
-type SyncMessage = Record<string, unknown> & {
-  id: string;
-  role: 'user' | 'bot';
-  createdAt: number;
-  updatedAt?: number;
-};
-
-type SyncSession = Record<string, unknown> & {
-  id: string;
-  title: string;
-  messages: SyncMessage[];
-  createdAt: number;
-  updatedAt: number;
-};
-
-interface SyncTombstone {
-  type: 'session' | 'message';
-  id: string;
-  sessionId?: string;
-  deletedAt: number;
-}
-
-interface SyncStore {
-  user: string;
-  sessions: SyncSession[];
-  tombstones: SyncTombstone[];
-  activeSessionId: string;
-  updatedAt: number;
-}
 
 function cleanString(value: unknown, fallback = '') {
   return typeof value === 'string' ? value.trim() : fallback;
@@ -51,335 +18,331 @@ function cleanNumber(value: unknown, fallback = Date.now()) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-function accountId(username: string, secret: string) {
+function cleanDate(value: unknown, fallback = Date.now()) {
+  const date = new Date(cleanNumber(value, fallback));
+  return Number.isFinite(date.getTime()) ? date : new Date(fallback);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function hashSecret(username: string, secret: string) {
   return createHash('sha256')
     .update(`${username.trim().toLowerCase()}\0${secret}`)
     .digest('hex');
 }
 
-function dataFileFor(id: string) {
-  return path.join(process.cwd(), 'data', 'chat-sync', `${id}.json`);
+function entityStamp(value: Record<string, unknown>) {
+  return cleanNumber(value.updatedAt, cleanNumber(value.createdAt, 0));
 }
 
-function lockFileFor(id: string) {
-  return path.join(process.cwd(), 'data', 'chat-sync', `${id}.lock`);
+function shouldAcceptClientEntity(value: Record<string, unknown>, clientKnownUpdatedAt: number) {
+  return value.syncDirty === true || entityStamp(value) > clientKnownUpdatedAt;
+}
+
+function shouldAcceptClientTombstone(value: Record<string, unknown>, clientKnownUpdatedAt: number) {
+  return value.syncDirty === true || cleanNumber(value.deletedAt, 0) > clientKnownUpdatedAt;
+}
+
+function parseImages(value: string) {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function isRetryableWriteError(error: unknown) {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code || '')
+    : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return code === 'P1008'
+    || code === 'P2034'
+    || /SQLITE_BUSY|database is locked|write conflict|deadlock|timed out/i.test(message);
 }
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function errorCode(error: unknown) {
-  return error && typeof error === 'object' && 'code' in error
-    ? String((error as { code?: unknown }).code || '')
-    : '';
-}
-
-async function acquireFileLock(id: string) {
-  const lockFile = lockFileFor(id);
-  await fs.mkdir(path.dirname(lockFile), { recursive: true });
-
-  while (true) {
+async function withWriteRetry<T>(task: () => Promise<T>) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < CHAT_SYNC_WRITE_RETRIES; attempt += 1) {
     try {
-      const handle = await fs.open(lockFile, 'wx');
-      try {
-        await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }), 'utf8');
-      } finally {
-        await handle.close();
-      }
-
-      let released = false;
-      return async () => {
-        if (released) return;
-        released = true;
-        await fs.unlink(lockFile).catch(() => undefined);
-      };
+      return await task();
     } catch (error) {
-      if (errorCode(error) !== 'EEXIST') throw error;
-
-      try {
-        const stat = await fs.stat(lockFile);
-        if (Date.now() - stat.mtimeMs > CHAT_SYNC_LOCK_STALE_MS) {
-          await fs.unlink(lockFile).catch(() => undefined);
-          continue;
-        }
-      } catch (statError) {
-        if (errorCode(statError) === 'ENOENT') continue;
-        throw statError;
-      }
-
-      await sleep(CHAT_SYNC_LOCK_RETRY_MS + Math.floor(Math.random() * CHAT_SYNC_LOCK_RETRY_MS));
+      lastError = error;
+      if (!isRetryableWriteError(error) || attempt === CHAT_SYNC_WRITE_RETRIES - 1) break;
+      await sleep(40 * 2 ** attempt + Math.floor(Math.random() * 25));
     }
   }
-}
-
-async function withAccountLock<T>(id: string, task: () => Promise<T>) {
-  const previous = accountLocks.get(id) || Promise.resolve();
-  let releaseMemoryLock: () => void = () => {};
-  const current = new Promise<void>((resolve) => {
-    releaseMemoryLock = resolve;
-  });
-  const queued = previous.catch(() => undefined).then(() => current);
-  accountLocks.set(id, queued);
-
-  await previous.catch(() => undefined);
-  let releaseFileLock: (() => Promise<void>) | null = null;
-  try {
-    releaseFileLock = await acquireFileLock(id);
-    return await task();
-  } finally {
-    if (releaseFileLock) await releaseFileLock();
-    releaseMemoryLock();
-    if (accountLocks.get(id) === queued) accountLocks.delete(id);
-  }
-}
-
-function sanitizeMessage(value: unknown): SyncMessage | null {
-  if (!value || typeof value !== 'object') return null;
-  const raw = value as Record<string, unknown>;
-  const id = cleanString(raw.id);
-  if (!id) return null;
-  return {
-    ...raw,
-    id,
-    role: raw.role === 'user' ? 'user' : 'bot',
-    prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
-    images: Array.isArray(raw.images) ? raw.images.slice(0, 10) : [],
-    text: typeof raw.text === 'string' ? raw.text : '',
-    code: '',
-    extra: typeof raw.extra === 'string' ? raw.extra : '',
-    createdAt: cleanNumber(raw.createdAt),
-    updatedAt: typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : undefined,
-    editedAt: typeof raw.editedAt === 'number' && Number.isFinite(raw.editedAt) ? raw.editedAt : undefined,
-  };
-}
-
-function sanitizeSession(value: unknown): SyncSession | null {
-  if (!value || typeof value !== 'object') return null;
-  const raw = value as Record<string, unknown>;
-  const id = cleanString(raw.id);
-  if (!id) return null;
-  const messages = Array.isArray(raw.messages)
-    ? raw.messages.map(sanitizeMessage).filter((message): message is SyncMessage => message !== null)
-    : [];
-  return {
-    ...raw,
-    id,
-    title: cleanString(raw.title, '新聊天').slice(0, 24),
-    titleSource: raw.titleSource === 'generated' || raw.titleSource === 'manual' ? raw.titleSource : 'auto',
-    messages: messages.slice(-CHAT_MESSAGES_MAX),
-    createdAt: cleanNumber(raw.createdAt),
-    updatedAt: cleanNumber(raw.updatedAt),
-  };
-}
-
-function sanitizeTombstone(value: unknown): SyncTombstone | null {
-  if (!value || typeof value !== 'object') return null;
-  const raw = value as Partial<SyncTombstone>;
-  const type = raw.type === 'session' || raw.type === 'message' ? raw.type : null;
-  const id = cleanString(raw.id);
-  const sessionId = cleanString(raw.sessionId);
-  const deletedAt = cleanNumber(raw.deletedAt, 0);
-  if (!type || !id || deletedAt <= 0) return null;
-  if (type === 'message' && !sessionId) return null;
-  return {
-    type,
-    id,
-    sessionId: sessionId || undefined,
-    deletedAt,
-  };
-}
-
-function tombstoneKey(tombstone: SyncTombstone) {
-  return `${tombstone.type}:${tombstone.sessionId || ''}:${tombstone.id}`;
-}
-
-function mergeTombstones(...groups: SyncTombstone[][]) {
-  const byKey = new Map<string, SyncTombstone>();
-  for (const tombstones of groups) {
-    for (const tombstone of tombstones) {
-      const key = tombstoneKey(tombstone);
-      const current = byKey.get(key);
-      if (!current || tombstone.deletedAt > current.deletedAt) {
-        byKey.set(key, tombstone);
-      }
-    }
-  }
-  return [...byKey.values()]
-    .sort((a, b) => b.deletedAt - a.deletedAt)
-    .slice(0, 1000);
-}
-
-function sortMessages(messages: SyncMessage[]) {
-  return messages
-    .sort((a, b) => a.createdAt - b.createdAt)
-    .slice(-CHAT_MESSAGES_MAX);
-}
-
-function messageStamp(message: SyncMessage) {
-  return message.updatedAt || message.createdAt || 0;
-}
-
-function sessionStamp(session: SyncSession) {
-  return session.updatedAt || session.createdAt || 0;
-}
-
-function mergeSession(a: SyncSession, b: SyncSession): SyncSession {
-  const newer = sessionStamp(a) >= sessionStamp(b) ? a : b;
-  const older = newer === a ? b : a;
-  const messagesById = new Map<string, SyncMessage>();
-
-  for (const message of older.messages) messagesById.set(message.id, message);
-  for (const message of newer.messages) {
-    const current = messagesById.get(message.id);
-    if (!current || messageStamp(message) >= messageStamp(current)) {
-      messagesById.set(message.id, message);
-    }
-  }
-
-  return {
-    ...older,
-    ...newer,
-    createdAt: Math.min(a.createdAt, b.createdAt),
-    updatedAt: Math.max(sessionStamp(a), sessionStamp(b)),
-    messages: sortMessages([...messagesById.values()]),
-  };
-}
-
-function mergeSessions(localSessions: SyncSession[], storedSessions: SyncSession[]) {
-  const byId = new Map<string, SyncSession>();
-  for (const session of storedSessions) byId.set(session.id, session);
-  for (const session of localSessions) {
-    const current = byId.get(session.id);
-    byId.set(session.id, current ? mergeSession(current, session) : session);
-  }
-  return [...byId.values()]
-    .sort((a, b) => sessionStamp(b) - sessionStamp(a))
-    .slice(0, CHAT_SESSIONS_MAX);
-}
-
-function applyTombstones(sessions: SyncSession[], tombstones: SyncTombstone[]) {
-  const sessionDeletes = new Map<string, number>();
-  const messageDeletes = new Map<string, number>();
-
-  for (const tombstone of tombstones) {
-    if (tombstone.type === 'session') {
-      sessionDeletes.set(tombstone.id, Math.max(sessionDeletes.get(tombstone.id) || 0, tombstone.deletedAt));
-    } else if (tombstone.sessionId) {
-      const key = `${tombstone.sessionId}:${tombstone.id}`;
-      messageDeletes.set(key, Math.max(messageDeletes.get(key) || 0, tombstone.deletedAt));
-    }
-  }
-
-  return sessions
-    .filter((session) => (sessionDeletes.get(session.id) || 0) < sessionStamp(session))
-    .map((session) => ({
-      ...session,
-      messages: session.messages.filter((message) => (
-        (messageDeletes.get(`${session.id}:${message.id}`) || 0) < messageStamp(message)
-      )),
-    }))
-    .slice(0, CHAT_SESSIONS_MAX);
-}
-
-async function readStore(file: string, user: string): Promise<SyncStore> {
-  try {
-    const raw = JSON.parse(await fs.readFile(file, 'utf8')) as Partial<SyncStore>;
-    return {
-      user: cleanString(raw.user, user),
-      sessions: Array.isArray(raw.sessions)
-        ? raw.sessions.map(sanitizeSession).filter((session): session is SyncSession => session !== null)
-        : [],
-      tombstones: Array.isArray(raw.tombstones)
-        ? raw.tombstones.map(sanitizeTombstone).filter((item): item is SyncTombstone => item !== null)
-        : [],
-      activeSessionId: cleanString(raw.activeSessionId),
-      updatedAt: cleanNumber(raw.updatedAt, 0),
-    };
-  } catch (error) {
-    if (errorCode(error) === 'ENOENT') {
-      return { user, sessions: [], tombstones: [], activeSessionId: '', updatedAt: 0 };
-    }
-    throw new Error('聊天同步存档读取失败，已停止覆盖写入');
-  }
-}
-
-async function writeStore(file: string, store: SyncStore) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tempFile = path.join(
-    path.dirname(file),
-    `.${path.basename(file)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
-  );
-  try {
-    await fs.writeFile(tempFile, JSON.stringify(store), 'utf8');
-    await fs.rename(tempFile, file);
-  } catch (error) {
-    await fs.unlink(tempFile).catch(() => undefined);
-    throw error;
-  }
+  throw lastError;
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const contentLength = Number(request.headers.get('content-length') || 0);
-    if (contentLength > CHAT_SYNC_MAX_BODY_BYTES) {
-      return NextResponse.json({ error: '同步数据过大' }, { status: 413 });
-    }
-
     const rawBody = await request.text().catch(() => '');
     if (new TextEncoder().encode(rawBody).length > CHAT_SYNC_MAX_BODY_BYTES) {
       return NextResponse.json({ error: '同步数据过大' }, { status: 413 });
     }
-    let parsedBody: unknown = {};
+
+    let body: Record<string, unknown> = {};
     try {
-      parsedBody = rawBody ? JSON.parse(rawBody) as unknown : {};
+      const parsed = rawBody ? JSON.parse(rawBody) : {};
+      body = asRecord(parsed) || {};
     } catch {
       return NextResponse.json({ error: '同步数据格式错误' }, { status: 400 });
     }
-    const body = parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody)
-      ? parsedBody as Record<string, unknown>
-      : {};
+
     const username = cleanString(body.username).slice(0, 32);
     const secret = cleanString(body.secret);
     if (!username || secret.length < 4) {
       return NextResponse.json({ error: '请输入玩家名和至少 4 位同步密钥' }, { status: 400 });
     }
 
-    const id = accountId(username, secret);
-    const file = dataFileFor(id);
-    const rawSessions = Array.isArray(body.sessions) ? body.sessions as unknown[] : [];
-    const localSessions = rawSessions.length > 0
-      ? rawSessions.map(sanitizeSession).filter((session): session is SyncSession => session !== null)
-      : [];
-    const rawTombstones = Array.isArray(body.tombstones) ? body.tombstones as unknown[] : [];
-    const localTombstones = rawTombstones.length > 0
-      ? rawTombstones.map(sanitizeTombstone).filter((item): item is SyncTombstone => item !== null)
-      : [];
-    const requestedActiveId = cleanString(body.activeSessionId);
-    const updated = await withAccountLock(id, async () => {
-      const stored = await readStore(file, username);
-      const tombstones = mergeTombstones(localTombstones, stored.tombstones);
-      const sessions = applyTombstones(mergeSessions(localSessions, stored.sessions), tombstones);
-      const storedActiveId = cleanString(stored.activeSessionId);
-      const activeSessionId = sessions.some((session) => session.id === requestedActiveId)
-        ? requestedActiveId
-        : sessions.some((session) => session.id === storedActiveId)
-          ? storedActiveId
-        : sessions[0]?.id || '';
+    await prepareDatabase();
 
-      const nextStore: SyncStore = {
-        user: username,
-        sessions,
-        tombstones,
-        activeSessionId,
-        updatedAt: Date.now(),
-      };
-      await writeStore(file, nextStore);
-      return nextStore;
+    const secretHash = hashSecret(username, secret);
+    const user = await withWriteRetry(() => prisma.user.upsert({
+      where: { username },
+      update: {},
+      create: { username, secret: secretHash },
+    }));
+
+    if (user.secret !== secretHash) {
+      return NextResponse.json({ error: '同步密钥错误' }, { status: 401 });
+    }
+
+    const clientKnownUpdatedAt = cleanNumber(body.clientKnownUpdatedAt, 0);
+    const responseDate = cleanDate(clientKnownUpdatedAt, 0);
+    const clientSessions = Array.isArray(body.sessions) ? body.sessions : [];
+    const clientTombstones = Array.isArray(body.tombstones) ? body.tombstones : [];
+    const now = new Date();
+
+    await withWriteRetry(() => prisma.$transaction(async (tx) => {
+      const touchedSessionIds = new Set<string>();
+
+      for (const value of clientSessions) {
+        const rawSession = asRecord(value);
+        if (!rawSession) continue;
+
+        const sessionId = cleanString(rawSession.id);
+        if (!sessionId) continue;
+
+        const rawMessages = Array.isArray(rawSession.messages)
+          ? rawSession.messages.map(asRecord).filter((item): item is Record<string, unknown> => item !== null)
+          : [];
+        const changedMessages = rawMessages.filter((message) => (
+          shouldAcceptClientEntity(message, clientKnownUpdatedAt)
+        ));
+        const sessionChanged = shouldAcceptClientEntity(rawSession, clientKnownUpdatedAt);
+        if (!sessionChanged && changedMessages.length === 0) continue;
+
+        const title = cleanString(rawSession.title, '新聊天').slice(0, 24);
+        const titleSource = TITLE_SOURCES.has(String(rawSession.titleSource))
+          ? String(rawSession.titleSource)
+          : 'auto';
+        const createdAt = cleanDate(rawSession.createdAt, now.getTime());
+
+        const existingSession = await tx.session.findUnique({
+          where: { id: sessionId },
+          select: {
+            userId: true,
+            updatedAt: true,
+            deletedAt: true,
+            titleSource: true,
+          },
+        });
+        if (existingSession && existingSession.userId !== user.id) continue;
+        if (existingSession?.deletedAt && existingSession.updatedAt > responseDate) continue;
+
+        if (!existingSession) {
+          await tx.session.create({
+            data: { id: sessionId, userId: user.id, title, titleSource, createdAt, updatedAt: now },
+          });
+          touchedSessionIds.add(sessionId);
+        } else if (sessionChanged) {
+          const protectsManualTitle = existingSession.updatedAt > responseDate
+            && existingSession.titleSource === 'manual'
+            && titleSource !== 'manual';
+          if (!protectsManualTitle) {
+            await tx.session.update({
+              where: { id: sessionId },
+              data: { title, titleSource, deletedAt: null, updatedAt: now },
+            });
+            touchedSessionIds.add(sessionId);
+          }
+        }
+
+        for (const rawMsg of changedMessages) {
+          const msgId = cleanString(rawMsg.id);
+          if (!msgId) continue;
+
+          const existingMessage = await tx.message.findUnique({
+            where: { id: msgId },
+            select: {
+              sessionId: true,
+              session: { select: { userId: true } },
+            },
+          });
+          if (existingMessage && (existingMessage.session.userId !== user.id || existingMessage.sessionId !== sessionId)) {
+            continue;
+          }
+
+          const role = rawMsg.role === 'user' ? 'user' : 'bot';
+          const msgCreatedAt = cleanDate(rawMsg.createdAt, now.getTime());
+          const text = cleanString(rawMsg.text);
+          const prompt = cleanString(rawMsg.prompt);
+          const code = cleanString(rawMsg.code);
+          const extra = cleanString(rawMsg.extra);
+          const images = Array.isArray(rawMsg.images) ? JSON.stringify(rawMsg.images.slice(0, 10)) : '[]';
+
+          if (existingMessage) {
+            await tx.message.update({
+              where: { id: msgId },
+              data: { text, prompt, code, extra, images, deletedAt: null, updatedAt: now },
+            });
+          } else {
+            await tx.message.create({
+              data: {
+                id: msgId,
+                sessionId,
+                role,
+                text,
+                prompt,
+                code,
+                extra,
+                images,
+                createdAt: msgCreatedAt,
+                updatedAt: now,
+              },
+            });
+          }
+          touchedSessionIds.add(sessionId);
+        }
+      }
+
+      for (const value of clientTombstones) {
+        const tomb = asRecord(value);
+        if (!tomb || !shouldAcceptClientTombstone(tomb, clientKnownUpdatedAt)) continue;
+
+        const type = tomb.type;
+        const tombId = cleanString(tomb.id);
+        if (!tombId) continue;
+
+        if (type === 'session') {
+          const existingSession = await tx.session.findUnique({
+            where: { id: tombId },
+            select: { userId: true, updatedAt: true },
+          });
+          if (!existingSession || existingSession.userId !== user.id || existingSession.updatedAt > responseDate) continue;
+          await tx.session.update({
+            where: { id: tombId },
+            data: { deletedAt: now, updatedAt: now },
+          });
+        } else if (type === 'message') {
+          const existingMessage = await tx.message.findUnique({
+            where: { id: tombId },
+            select: {
+              sessionId: true,
+              updatedAt: true,
+              session: { select: { userId: true } },
+            },
+          });
+          const sessionId = cleanString(tomb.sessionId);
+          if (
+            !existingMessage
+            || existingMessage.session.userId !== user.id
+            || (sessionId && existingMessage.sessionId !== sessionId)
+            || existingMessage.updatedAt > responseDate
+          ) {
+            continue;
+          }
+          await tx.message.update({
+            where: { id: tombId },
+            data: { deletedAt: now, updatedAt: now },
+          });
+          touchedSessionIds.add(existingMessage.sessionId);
+        }
+      }
+
+      for (const sessionId of touchedSessionIds) {
+        await tx.session.updateMany({
+          where: { id: sessionId, userId: user.id, deletedAt: null },
+          data: { updatedAt: now },
+        });
+      }
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { updatedAt: now },
+      });
+    }));
+
+    const updatedSessions = await prisma.session.findMany({
+      where: {
+        userId: user.id,
+        OR: [
+          { updatedAt: { gt: responseDate } },
+          { messages: { some: { updatedAt: { gt: responseDate } } } },
+        ],
+      },
+      include: { messages: { orderBy: { createdAt: 'asc' } } },
+      orderBy: { updatedAt: 'desc' },
+      take: CHAT_SESSIONS_MAX,
     });
 
-    return NextResponse.json({ ok: true, ...updated });
+    const activeSessions = [];
+    const newTombstones = [];
+
+    for (const s of updatedSessions) {
+      if (s.deletedAt) {
+        newTombstones.push({ type: 'session', id: s.id, deletedAt: s.deletedAt.getTime() });
+      } else {
+        const msgs = [];
+        for (const m of s.messages) {
+          if (m.deletedAt) {
+            newTombstones.push({ type: 'message', id: m.id, sessionId: m.sessionId, deletedAt: m.deletedAt.getTime() });
+          } else {
+            msgs.push({
+              id: m.id,
+              role: m.role,
+              createdAt: m.createdAt.getTime(),
+              updatedAt: m.updatedAt.getTime(),
+              text: m.text,
+              prompt: m.prompt,
+              code: m.code,
+              extra: m.extra,
+              images: parseImages(m.images),
+            });
+          }
+        }
+
+        activeSessions.push({
+          id: s.id,
+          title: s.title,
+          titleSource: s.titleSource,
+          createdAt: s.createdAt.getTime(),
+          updatedAt: s.updatedAt.getTime(),
+          messages: msgs.slice(-CHAT_MESSAGES_MAX),
+        });
+      }
+    }
+
+    return NextResponse.json({
+      ok: true,
+      updatedAt: now.getTime(),
+      sessions: activeSessions,
+      tombstones: newTombstones,
+      activeSessionId: cleanString(body.activeSessionId),
+    });
   } catch (error) {
+    console.error(error);
     return NextResponse.json(
       { error: (error as Error).message || '聊天记录同步失败' },
       { status: 500 },

@@ -168,8 +168,8 @@ export default function ChatSidebar({
 
   const panel = (mobile: boolean) => (
     <div data-chat-sidebar-panel className="flex h-full min-h-0 w-full min-w-0 flex-col bg-black text-[#CCC] font-mono">
-      <div className="shrink-0 border-b-2 border-[#AAA] p-2">
-        <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="shrink-0 border-b-2 border-[#AAA] px-2 pb-2 pt-0 lg:pt-1">
+        <div className="flex items-center justify-between gap-2 lg:mb-1">
           <span className="text-sm text-[#00aaaa]">聊天</span>
           <button
             type="button"
@@ -349,9 +349,9 @@ export default function ChatSidebar({
     <>
       {open && (
         <>
-          <div className="fixed inset-0 z-40 bg-black/70 lg:hidden" onClick={closeSidebar} />
+          <div className="absolute inset-0 z-40 bg-black/70 lg:hidden" onClick={closeSidebar} />
           <aside
-            className="fixed inset-y-0 left-0 z-50 overflow-hidden border-r-2 border-[#AAA] lg:hidden"
+            className="absolute inset-y-0 left-0 z-50 overflow-hidden border-r-2 border-[#AAA] lg:hidden"
             style={{ width: 'clamp(240px, 72vw, 280px)' }}
             aria-label="聊天列表"
           >
@@ -361,17 +361,21 @@ export default function ChatSidebar({
       )}
 
       {collapsed ? (
-        <aside className="hidden w-[48px] shrink-0 bg-black lg:flex lg:flex-col lg:items-start lg:py-2 lg:pl-3" aria-label="聊天列表已收起">
-          <button
-            type="button"
-            onClick={toggleCollapse}
-            className="flex h-5 w-5 items-center justify-center bg-transparent p-0 text-[#CCC] cursor-pointer hover:text-[#00aaaa] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00aaaa]"
-            aria-label="展开聊天列表"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="2 2 18 18" aria-hidden="true" className="block h-5 w-5">
-              <path fill="currentColor" d="M12 16h-2v-2h1v-1h1v-1H6v-2h6V9h-1V8h-1V6h2v1h1v1h1v1h1v1h1v2h-1v1h-1v1h-1v1h-1m6 5H4v-1H3v-1H2V4h1V3h1V2h14v1h1v1h1v14h-1v1h-1m-1-1v-1h1V5h-1V4H5v1H4v12h1v1Z" />
-            </svg>
-          </button>
+        <aside className="hidden w-[48px] shrink-0 bg-black lg:flex lg:flex-col lg:items-center" aria-label="聊天列表已收起">
+          <div className="shrink-0 w-full px-2 pb-2 pt-0 lg:pt-1">
+            <div className="flex items-center justify-center lg:mb-1">
+              <button
+                type="button"
+                onClick={toggleCollapse}
+                className="flex h-8 w-8 items-center justify-center bg-transparent p-0 text-[#CCC] cursor-pointer hover:text-[#00aaaa] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00aaaa]"
+                aria-label="展开聊天列表"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="2 2 18 18" aria-hidden="true" className="block h-5 w-5">
+                  <path fill="currentColor" d="M12 16h-2v-2h1v-1h1v-1H6v-2h6V9h-1V8h-1V6h2v1h1v1h1v1h1v1h1v2h-1v1h-1v1h-1v1h-1m6 5H4v-1H3v-1H2V4h1V3h1V2h14v1h1v1h1v14h-1v1h-1m-1-1v-1h1V5h-1V4H5v1H4v12h1v1Z" />
+                </svg>
+              </button>
+            </div>
+          </div>
         </aside>
       ) : (
         <aside className="hidden w-[256px] shrink-0 overflow-hidden border-r-2 border-[#AAA] bg-black lg:flex" aria-label="聊天列表">

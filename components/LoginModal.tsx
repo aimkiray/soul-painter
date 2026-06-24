@@ -90,8 +90,8 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
     setSyncing(true);
     setMessage('CONNECTING...');
     try {
-      const result = await syncChatHistory({ username: cleanUsername, secret: cleanSecret });
-      const nextSyncedAt = result.updatedAt || Date.now();
+      const result = await syncChatHistory({ username: cleanUsername, secret: cleanSecret, clientKnownUpdatedAt: syncedAt || 0 });
+      const nextSyncedAt = result.applied ? result.updatedAt || Date.now() : syncedAt;
       localStorage.setItem(CHAT_SYNC_AUTH_STORAGE_KEY, JSON.stringify({
         username: cleanUsername,
         syncedAt: nextSyncedAt,
@@ -101,7 +101,7 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
         secret: cleanSecret,
         syncedAt: nextSyncedAt,
       }));
-      setSyncedAt(nextSyncedAt);
+      if (result.applied) setSyncedAt(nextSyncedAt);
       onAuthChange?.(cleanUsername);
       setMessage(result.applied ? 'SYNC COMPLETE' : 'SYNC QUEUED');
       setStatus(result.applied ? '聊天记录已同步' : '聊天已更新，将继续后台同步', result.applied ? 'ok' : 'warn');

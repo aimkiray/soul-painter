@@ -14,6 +14,7 @@ import {
   OPTS_STORAGE_KEY,
 } from '@/lib/constants';
 import { mergeModelOptions, normalizeModelList } from '@/lib/model-options';
+import { clear } from 'idb-keyval';
 
 interface ConfigContextValue {
   config: AppConfig;
@@ -43,7 +44,7 @@ function normalizeChatApiFormat(value: unknown): AppConfig['chatApiFormat'] {
     : DEFAULT_CONFIG.chatApiFormat;
 }
 
-function loadInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKey: boolean } {
+async function loadInitialConfig(): Promise<{ config: AppConfig; options: AppOptions; hasUrlKey: boolean }> {
   const urlConfig: Partial<AppConfig> = {};
   let hasUrlKey = false;
   if (typeof window !== 'undefined') {
@@ -183,10 +184,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      const loaded = loadInitialConfig();
-      setInitial(loaded);
-      setConfig(loaded.config);
-      setOptions(loaded.options);
+      loadInitialConfig().then((loaded) => {
+        setInitial(loaded);
+        setConfig(loaded.config);
+        setOptions(loaded.options);
+      });
     }, 0);
     return () => window.clearTimeout(timeoutId);
   }, []);
@@ -231,6 +233,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const clearAll = useCallback(() => {
     void (async () => {
+      try { await clear(); } catch { /* ignore */ }
       try { localStorage.clear(); } catch { /* ignore */ }
       try { sessionStorage.clear(); } catch { /* ignore */ }
 

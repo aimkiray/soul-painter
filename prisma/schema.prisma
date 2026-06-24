@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:../data/chat-sync.db"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  secret    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  sessions  Session[]
+}
+
+model Session {
+  id          String    @id // Client-generated session ID
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  titleSource String    @default("auto")
+  createdAt   DateTime
+  updatedAt   DateTime
+  deletedAt   DateTime?
+  
+  messages    Message[]
+
+  @@index([userId, updatedAt(sort: Desc)])
+}
+
+model Message {
+  id        String    @id // Client-generated message ID
+  sessionId String
+  session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String    // "user" or "bot"
+  createdAt DateTime
+  updatedAt DateTime
+  deletedAt DateTime?
+  
+  text      String
+  prompt    String
+  images    String    // JSON stringified ImageHit[]
+  code      String    @default("")
+  extra     String    @default("")
+  
+  @@index([sessionId, createdAt(sort: Asc)])
+}
