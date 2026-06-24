@@ -16,6 +16,8 @@ export interface ChatSyncResponse {
   activeSessionId?: string;
   tombstones?: unknown;
   updatedAt?: number;
+  username?: string;
+  assetMigrationWarning?: string;
   error?: string;
 }
 
@@ -28,6 +30,8 @@ export interface ChatSyncSnapshot {
 export interface ChatSyncResult {
   updatedAt: number;
   applied: boolean;
+  username?: string;
+  assetMigrationWarning?: string;
 }
 
 interface UseChatSyncParams {
@@ -153,12 +157,21 @@ export function useChatSync({
       }),
     });
     const data = await response.json().catch(() => ({} as ChatSyncResponse)) as ChatSyncResponse;
-    if (!response.ok || !data.ok) throw new Error(data.error || 'SYNC FAILED');
+    if (!response.ok || !data.ok) {
+      const error = new Error(data.error || 'SYNC FAILED') as Error & { status?: number };
+      error.status = response.status;
+      throw error;
+    }
     if (localMutationRevisionRef.current !== requestRevision) {
-      return { updatedAt: clientKnownUpdatedAt, applied: false };
+      return { updatedAt: clientKnownUpdatedAt, applied: false, username: data.username || username };
     }
     applySyncedSessions(data.sessions, data.activeSessionId, data.tombstones, syncOptions);
-    return { updatedAt: data.updatedAt || Date.now(), applied: true };
+    return {
+      updatedAt: data.updatedAt || Date.now(),
+      applied: true,
+      username: data.username || username,
+      assetMigrationWarning: data.assetMigrationWarning,
+    };
   }, [getSyncSnapshot, applySyncedSessions, localMutationRevisionRef]);
 
   return {

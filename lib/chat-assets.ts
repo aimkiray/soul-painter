@@ -1,11 +1,10 @@
-import { mkdir, opendir, readFile, rm, stat, writeFile } from 'fs/promises';
+import { copyFile, mkdir, opendir, readFile, rm, stat, writeFile } from 'fs/promises';
 import path from 'path';
-import { createHash, randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 import dns from 'dns/promises';
 import net from 'net';
-import { NextRequest, NextResponse } from 'next/server';
+import { isChatAssetSessionId } from '@/lib/chat-asset-session-id';
 
-export const CHAT_ASSET_SESSION_COOKIE = 'chat_asset_session';
 const CHAT_ASSET_DIR = path.join(process.cwd(), 'data', 'chat-assets');
 const MAX_IMAGE_BYTES = getPositiveEnvInt('CHAT_ASSET_MAX_IMAGE_BYTES', 8 * 1024 * 1024);
 const SESSION_MAX_BYTES = getPositiveEnvInt('CHAT_ASSET_SESSION_MAX_BYTES', 256 * 1024 * 1024);
@@ -19,7 +18,6 @@ export const CHAT_ASSET_MAX_BODY_BYTES = getPositiveEnvInt(
   Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 16 * 1024,
 );
 export const CHAT_ASSET_CACHE_MAX_AGE_SECONDS = getPositiveEnvInt('CHAT_ASSET_CACHE_MAX_AGE_SECONDS', 60 * 60);
-const SESSION_ID_PATTERN = /^[a-f0-9]{32}$/;
 const ASSET_ID_PATTERN = /^[a-f0-9]{64}\.(png|jpg|jpeg|webp|gif)$/;
 const SESSION_META_FILE = 'meta.json';
 let lastCleanupStartedAt = 0;
@@ -52,6 +50,12 @@ export interface ChatAssetSource {
   url?: string;
 }
 
+export interface ChatAssetCopyResult {
+  copied: number;
+  skipped: number;
+  failed: Array<{ id: string; error: string }>;
+}
+
 interface SessionAssetFile {
   name: string;
   path: string;
@@ -62,6 +66,13 @@ interface SessionAssetFile {
 interface SessionMeta {
   sessionId: string;
   lastAccessedAt: number;
+}
+
+function isMissingPathError(error: unknown) {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code || '')
+    : '';
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 function getPositiveEnvInt(name: string, fallback: number) {
@@ -232,44 +243,18 @@ async function fetchRemoteImageBytes(rawUrl: string, redirects = 0): Promise<{ b
   }
 }
 
-export function getChatAssetSession(request: NextRequest) {
-  const existing = request.cookies.get(CHAT_ASSET_SESSION_COOKIE)?.value || '';
-  if (SESSION_ID_PATTERN.test(existing)) return existing;
-  return randomBytes(16).toString('hex');
-}
-
-function shouldUseSecureCookie(request: NextRequest) {
-  const configured = (process.env.CHAT_ASSET_COOKIE_SECURE || 'auto').trim().toLowerCase();
-  if (configured === 'true') return true;
-  if (configured === 'false') return false;
-
-  const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase();
-  if (forwardedProto) return forwardedProto === 'https';
-  return request.nextUrl.protocol === 'https:';
-}
-
-export function setChatAssetSession(response: NextResponse, sessionId: string, request: NextRequest) {
-  response.cookies.set(CHAT_ASSET_SESSION_COOKIE, sessionId, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: shouldUseSecureCookie(request),
-    path: '/',
-    maxAge: 365 * 24 * 60 * 60,
-  });
-}
-
 export function isValidChatAssetId(assetId: string) {
   return ASSET_ID_PATTERN.test(assetId);
 }
 
 function assetPath(sessionId: string, assetId: string) {
-  if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid asset session');
+  if (!isChatAssetSessionId(sessionId)) throw new Error('Invalid asset session');
   if (!isValidChatAssetId(assetId)) throw new Error('Invalid asset id');
   return path.join(CHAT_ASSET_DIR, sessionId, assetId);
 }
 
 function sessionDir(sessionId: string) {
-  if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid asset session');
+  if (!isChatAssetSessionId(sessionId)) throw new Error('Invalid asset session');
   return path.join(CHAT_ASSET_DIR, sessionId);
 }
 
@@ -296,13 +281,17 @@ export async function touchChatAssetSession(sessionId: string, now = Date.now())
   );
 }
 
-async function listSessionAssets(sessionId: string): Promise<SessionAssetFile[]> {
+async function listSessionAssets(
+  sessionId: string,
+  options: { strictOpen?: boolean } = {},
+): Promise<SessionAssetFile[]> {
   const dir = sessionDir(sessionId);
   const files: SessionAssetFile[] = [];
   let handle;
   try {
     handle = await opendir(dir);
-  } catch {
+  } catch (error) {
+    if (options.strictOpen && !isMissingPathError(error)) throw error;
     return [];
   }
 
@@ -324,21 +313,15 @@ async function listSessionAssets(sessionId: string): Promise<SessionAssetFile[]>
   return files;
 }
 
-async function enforceSessionAssetLimits(sessionId: string, incomingSize: number, incomingId: string) {
+async function enforceSessionAssetLimits(sessionId: string, protectedAssetId?: string) {
   const files = await listSessionAssets(sessionId);
-  let totalSize = incomingSize;
-  let totalFiles = 1;
-
-  for (const file of files) {
-    if (file.name === incomingId) continue;
-    totalSize += file.size;
-    totalFiles += 1;
-  }
+  let totalSize = files.reduce((sum, file) => sum + file.size, 0);
+  let totalFiles = files.length;
 
   if (totalSize <= SESSION_MAX_BYTES && totalFiles <= SESSION_MAX_FILES) return;
 
   const evictionQueue = files
-    .filter((file) => file.name !== incomingId)
+    .filter((file) => file.name !== protectedAssetId)
     .sort((a, b) => a.mtimeMs - b.mtimeMs);
 
   while ((totalSize > SESSION_MAX_BYTES || totalFiles > SESSION_MAX_FILES) && evictionQueue.length > 0) {
@@ -363,7 +346,7 @@ async function cleanupExpiredChatAssetSessions() {
 
   const expiresBefore = Date.now() - SESSION_MAX_AGE_MS;
   for await (const entry of handle) {
-    if (!entry.isDirectory() || !SESSION_ID_PATTERN.test(entry.name)) continue;
+    if (!entry.isDirectory() || !isChatAssetSessionId(entry.name)) continue;
     const dir = path.join(CHAT_ASSET_DIR, entry.name);
     try {
       const meta = await readSessionMeta(entry.name);
@@ -393,6 +376,48 @@ export async function clearChatAssets(sessionId: string) {
   await rm(sessionDir(sessionId), { recursive: true, force: true });
 }
 
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || 'Unknown error');
+}
+
+export async function copyChatAssetsBetweenSessions(
+  sourceSessionId: string,
+  targetSessionId: string,
+): Promise<ChatAssetCopyResult> {
+  const result: ChatAssetCopyResult = { copied: 0, skipped: 0, failed: [] };
+  if (sourceSessionId === targetSessionId) return result;
+
+  const files = await listSessionAssets(sourceSessionId, { strictOpen: true });
+  if (files.length === 0) return result;
+
+  await mkdir(sessionDir(targetSessionId), { recursive: true });
+  for (const file of files) {
+    const targetPath = assetPath(targetSessionId, file.name);
+    try {
+      await stat(targetPath);
+      result.skipped += 1;
+      continue;
+    } catch {
+      // Missing target is expected; copying below handles real failures.
+    }
+
+    try {
+      await copyFile(file.path, targetPath);
+      result.copied += 1;
+    } catch (error) {
+      result.failed.push({ id: file.name, error: errorMessage(error) });
+    }
+  }
+
+  if (result.copied > 0 || result.skipped > 0) {
+    await touchChatAssetSession(targetSessionId);
+    await enforceSessionAssetLimits(targetSessionId);
+    scheduleExpiredChatAssetCleanup();
+  }
+
+  return result;
+}
+
 export async function saveChatAsset(sessionId: string, bytes: Uint8Array, mime: string): Promise<StoredChatAsset> {
   const ext = MIME_TO_EXT[mime];
   if (!ext) throw new Error('Unsupported image type');
@@ -410,7 +435,7 @@ export async function saveChatAsset(sessionId: string, bytes: Uint8Array, mime: 
   } catch {
     await writeFile(filePath, bytes);
   }
-  await enforceSessionAssetLimits(sessionId, bytes.byteLength, id);
+  await enforceSessionAssetLimits(sessionId, id);
   scheduleExpiredChatAssetCleanup();
 
   return {

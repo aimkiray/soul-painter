@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { CHAT_MESSAGES_MAX, CHAT_SESSIONS_MAX } from '@/lib/constants';
+import {
+  copyChatAssetsBetweenSessions,
+} from '@/lib/chat-assets';
+import {
+  createUserChatAssetSession,
+  getAnonymousChatAssetSessionId,
+  setChatAssetSession,
+} from '@/lib/chat-asset-session';
 import { prepareDatabase, prisma } from '@/lib/prisma';
 
 const CHAT_SYNC_MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -12,6 +20,10 @@ export const dynamic = 'force-dynamic';
 
 function cleanString(value: unknown, fallback = '') {
   return typeof value === 'string' ? value.trim() : fallback;
+}
+
+function normalizeUsername(value: unknown) {
+  return cleanString(value).slice(0, 32).toLowerCase();
 }
 
 function cleanNumber(value: unknown, fallback = Date.now()) {
@@ -31,8 +43,45 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function hashSecret(username: string, secret: string) {
   return createHash('sha256')
-    .update(`${username.trim().toLowerCase()}\0${secret}`)
+    .update(`${username}\0${secret}`)
     .digest('hex');
+}
+
+class ChatSyncHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+interface ChatSyncUser {
+  id: string;
+  username: string;
+  secret: string;
+}
+
+async function findUsersByNormalizedUsername(username: string) {
+  return prisma.$queryRaw<ChatSyncUser[]>`
+    SELECT id, username, secret
+    FROM "User"
+    WHERE lower(username) = ${username}
+    ORDER BY "createdAt" ASC
+    LIMIT 2
+  `;
+}
+
+async function getOrCreateChatSyncUser(username: string, secretHash: string): Promise<ChatSyncUser> {
+  const existingUsers = await findUsersByNormalizedUsername(username);
+  if (existingUsers.length === 1) return existingUsers[0];
+  if (existingUsers.length > 1) {
+    throw new ChatSyncHttpError('用户名大小写冲突，请使用最初创建时的名字大小写登录', 409);
+  }
+
+  return withWriteRetry(() => prisma.user.upsert({
+    where: { username },
+    update: {},
+    create: { username, secret: secretHash },
+    select: { id: true, username: true, secret: true },
+  }));
 }
 
 function entityStamp(value: Record<string, unknown>) {
@@ -99,7 +148,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '同步数据格式错误' }, { status: 400 });
     }
 
-    const username = cleanString(body.username).slice(0, 32);
+    const username = normalizeUsername(body.username);
     const secret = cleanString(body.secret);
     if (!username || secret.length < 4) {
       return NextResponse.json({ error: '请输入玩家名和至少 4 位同步密钥' }, { status: 400 });
@@ -108,11 +157,7 @@ export async function POST(request: NextRequest) {
     await prepareDatabase();
 
     const secretHash = hashSecret(username, secret);
-    const user = await withWriteRetry(() => prisma.user.upsert({
-      where: { username },
-      update: {},
-      create: { username, secret: secretHash },
-    }));
+    const user = await getOrCreateChatSyncUser(username, secretHash);
 
     if (user.secret !== secretHash) {
       return NextResponse.json({ error: '同步密钥错误' }, { status: 401 });
@@ -334,14 +379,41 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({
+    const userAssetSession = createUserChatAssetSession(user.id, user.secret);
+    const anonymousAssetSessionId = getAnonymousChatAssetSessionId(request);
+    let assetMigrationWarning = '';
+    if (anonymousAssetSessionId) {
+      try {
+        const migration = await copyChatAssetsBetweenSessions(anonymousAssetSessionId, userAssetSession.id);
+        if (migration.failed.length > 0) {
+          assetMigrationWarning = '部分聊天图片迁移失败，请稍后重新同步';
+          console.warn('Some anonymous chat assets failed to migrate', {
+            sourceSessionId: anonymousAssetSessionId,
+            targetSessionId: userAssetSession.id,
+            failed: migration.failed,
+          });
+        }
+      } catch (error) {
+        assetMigrationWarning = '部分聊天图片迁移失败，请稍后重新同步';
+        console.warn('Failed to migrate anonymous chat assets', error);
+      }
+    }
+
+    const response = NextResponse.json({
       ok: true,
       updatedAt: now.getTime(),
       sessions: activeSessions,
       tombstones: newTombstones,
       activeSessionId: cleanString(body.activeSessionId),
+      username,
+      assetMigrationWarning: assetMigrationWarning || undefined,
     });
+    setChatAssetSession(response, userAssetSession, request);
+    return response;
   } catch (error) {
+    if (error instanceof ChatSyncHttpError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     console.error(error);
     return NextResponse.json(
       { error: (error as Error).message || '聊天记录同步失败' },

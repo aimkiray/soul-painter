@@ -67,6 +67,18 @@ function loginStatusBox(message: string) {
   ].join('\n');
 }
 
+function loginStatusColor(message: string) {
+  return message === 'AUTH FAILED' ? 'text-[#ff5555]' : 'text-[#00ff00]';
+}
+
+function clearAssetSessionCookie() {
+  void fetch('/api/chat-assets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'clear-session' }),
+  }).catch(() => undefined);
+}
+
 export default function LoginModal({ open, onClose, onAuthChange }: LoginModalProps) {
   const { syncChatHistory, setStatus } = useChat();
   const [initialAuth] = useState(readStoredAuth);
@@ -92,29 +104,43 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
     try {
       const result = await syncChatHistory({ username: cleanUsername, secret: cleanSecret, clientKnownUpdatedAt: syncedAt || 0 });
       const nextSyncedAt = result.applied ? result.updatedAt || Date.now() : syncedAt;
+      const syncedUsername = result.username || cleanUsername;
       localStorage.setItem(CHAT_SYNC_AUTH_STORAGE_KEY, JSON.stringify({
-        username: cleanUsername,
+        username: syncedUsername,
         syncedAt: nextSyncedAt,
       }));
       sessionStorage.setItem(CHAT_SYNC_SESSION_AUTH_STORAGE_KEY, JSON.stringify({
-        username: cleanUsername,
+        username: syncedUsername,
         secret: cleanSecret,
         syncedAt: nextSyncedAt,
       }));
       if (result.applied) setSyncedAt(nextSyncedAt);
-      onAuthChange?.(cleanUsername);
-      setMessage(result.applied ? 'SYNC COMPLETE' : 'SYNC QUEUED');
-      setStatus(result.applied ? '聊天记录已同步' : '聊天已更新，将继续后台同步', result.applied ? 'ok' : 'warn');
+      onAuthChange?.(syncedUsername);
+      setMessage(result.assetMigrationWarning ? 'SYNC WARNING' : result.applied ? 'SYNC COMPLETE' : 'SYNC QUEUED');
+      setStatus(
+        result.assetMigrationWarning || (result.applied ? '聊天记录已同步' : '聊天已更新，将继续后台同步'),
+        result.assetMigrationWarning || !result.applied ? 'warn' : 'ok',
+      );
     } catch (error) {
-      const text = (error as Error).message || 'SYNC FAILED';
-      setMessage(text.toUpperCase().slice(0, 32));
-      setStatus('聊天记录同步失败', 'err');
+      const syncError = error as Error & { status?: number };
+      const text = syncError.message || 'SYNC FAILED';
+      const authRejected = syncError.status === 401 || syncError.status === 409;
+      if (authRejected) {
+        clearAssetSessionCookie();
+        localStorage.removeItem(CHAT_SYNC_AUTH_STORAGE_KEY);
+        sessionStorage.removeItem(CHAT_SYNC_SESSION_AUTH_STORAGE_KEY);
+        setSyncedAt(undefined);
+        onAuthChange?.('');
+      }
+      setMessage(authRejected ? 'AUTH FAILED' : 'SYNC FAILED');
+      setStatus(text, 'err');
     } finally {
       setSyncing(false);
     }
   };
 
   const logout = () => {
+    clearAssetSessionCookie();
     localStorage.removeItem(CHAT_SYNC_AUTH_STORAGE_KEY);
     sessionStorage.removeItem(CHAT_SYNC_SESSION_AUTH_STORAGE_KEY);
     setSecret('');
@@ -146,7 +172,7 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
             void syncHistory();
           }}
         >
-          <pre className="overflow-x-auto border-2 border-[#555] bg-[#000022] p-3 text-xs leading-5 text-[#00ff00]">{loginStatusBox(message)}</pre>
+          <pre className={`overflow-x-auto border-2 border-[#555] bg-[#000022] p-3 text-xs leading-5 ${loginStatusColor(message)}`}>{loginStatusBox(message)}</pre>
           <p className="text-xs leading-5 text-[#AAA]">
             第一次输入名字和同步密钥就会自动创建账号。之后用同样的信息登录，就能同步聊天记录。
           </p>

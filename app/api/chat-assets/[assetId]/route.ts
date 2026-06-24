@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   CHAT_ASSET_CACHE_MAX_AGE_SECONDS,
-  getChatAssetSession,
   isValidChatAssetId,
   readChatAsset,
-  setChatAssetSession,
 } from '@/lib/chat-assets';
+import {
+  getChatAssetSession,
+  setChatAssetSession,
+} from '@/lib/chat-asset-session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,8 +22,8 @@ export async function GET(
   }
 
   try {
-    const sessionId = getChatAssetSession(request);
-    const { bytes, mime } = await readChatAsset(sessionId, assetId);
+    const session = await getChatAssetSession(request);
+    const { bytes, mime } = await readChatAsset(session.id, assetId);
     const response = new NextResponse(bytes, {
       headers: {
         'Content-Type': mime,
@@ -30,7 +32,7 @@ export async function GET(
         'X-Content-Type-Options': 'nosniff',
       },
     });
-    setChatAssetSession(response, sessionId, request);
+    setChatAssetSession(response, session, request);
     return response;
   } catch {
     return NextResponse.json({ error: 'Asset not found' }, { status: 404 });

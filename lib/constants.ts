@@ -93,6 +93,7 @@ export const ACTIVE_CHAT_SESSION_STORAGE_KEY = 'imggen-active-chat-session-v1';
 export const CHAT_SYNC_AUTH_STORAGE_KEY = 'imggen-chat-sync-auth-v1';
 export const CHAT_SYNC_SESSION_AUTH_STORAGE_KEY = 'imggen-chat-sync-session-auth-v1';
 export const CHAT_SYNC_TOMBSTONES_STORAGE_KEY = 'imggen-chat-sync-tombstones-v1';
+export const CHAT_ASSET_SESSION_COOKIE = 'chat_asset_session';
 export const LAST_PROMPT_KEY = 'imggen-last-prompt-v1';
 export const PARAMS_OPEN_STORAGE_KEY = 'imggen-params-open-v1';
 export const CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY = 'imggen-chat-sidebar-collapsed-v1';
