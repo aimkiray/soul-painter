@@ -8,7 +8,7 @@ import ChatBubble from './ChatBubble';
 
 const CHAT_CONTENT_CLASS = 'chat-content-width px-2 sm:px-3';
 
-function isPendingBotMessage(message: { role: string; prompt: string; images: unknown[]; text: string; code: string; extra: string }) {
+function isPendingBotMessage(message: { role: string; prompt: string; images: unknown[]; text: string; code: string; extra: string; serverRunId?: string }) {
   return message.role === 'bot'
     && !message.prompt
     && message.images.length === 0
@@ -75,7 +75,8 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
       <div className={`${CHAT_CONTENT_CLASS} flex flex-col`}>
         {messages.map((msg, i) => {
           const isRegeneratingMessage = msg.id === pendingMessageId;
-          const isMessagePending = isRegeneratingMessage || (isActiveSessionLoading && isPendingBotMessage(msg));
+          const isServerRunPending = !!msg.serverRunId && isPendingBotMessage(msg);
+          const isMessagePending = isRegeneratingMessage || isServerRunPending || (isActiveSessionLoading && isPendingBotMessage(msg));
           const canRegenerate = msg.role === 'bot'
             && messages.slice(0, i).some((message) => message.role === 'user' && message.prompt.trim());
           return (

@@ -18,7 +18,7 @@ export default function MenuBar({ activeTab, onTabChange, onOpenLogin, syncUsern
   const tabInactive = 'text-black hover:text-[#00aaaa]';
 
   return (
-    <nav className="flex-shrink-0 bg-[#AAA] text-black font-mono text-sm" role="tablist" aria-label="功能标签">
+    <nav className="flex-shrink-0 bg-[#AAA] text-black font-mono text-sm font-bold" role="tablist" aria-label="功能标签">
       <div className={`${MENU_BAR_FRAME_CLASS} flex items-stretch justify-between`}>
         <div className="flex items-center gap-[14px] sm:gap-[18px]">
           {onOpenChatSidebar && (

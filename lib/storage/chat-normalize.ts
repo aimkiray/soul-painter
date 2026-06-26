@@ -27,6 +27,7 @@ export function createChatMessage(
     thinking?: string;
     thinkingDone?: boolean;
     request?: ChatTurnSnapshot;
+    serverRunId?: string;
   },
   id = createMessageId(),
 ): ChatMessage {
@@ -113,6 +114,7 @@ export function normalizeStoredMessages(value: unknown): ChatMessage[] {
       updatedAt: typeof message.updatedAt === 'number' && Number.isFinite(message.updatedAt) ? message.updatedAt : undefined,
       editedAt: typeof message.editedAt === 'number' && Number.isFinite(message.editedAt) ? message.editedAt : undefined,
       syncDirty: message.syncDirty === true,
+      serverRunId: typeof message.serverRunId === 'string' && message.serverRunId.trim() ? message.serverRunId : undefined,
     }))
     .slice(-CHAT_MESSAGES_MAX);
 }
@@ -228,5 +230,6 @@ export function isEmptyBotMessage(message: ChatMessage | undefined) {
     && !message.text
     && !message.thinking
     && !message.code
-    && !message.extra;
+    && !message.extra
+    && !message.serverRunId;
 }

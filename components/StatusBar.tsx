@@ -87,7 +87,7 @@ export default function StatusBar() {
   };
 
   return (
-    <header className="flex-shrink-0 bg-[#aa0000] text-white px-2 py-1 font-mono text-sm flex items-center justify-start gap-2">
+    <header className="flex-shrink-0 bg-[#aa0000] text-white px-2 py-1 font-mono text-sm font-bold flex items-center justify-start gap-2">
       <span>{lockedRepeaterMode ? '复读机' : '灵魂画师'}</span>
       <span className="text-[#ffff55]">::</span>
       <span className="text-[#CCC]">{modeLabel}</span>

@@ -112,9 +112,9 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
   };
 
   return (
-    <div className={`${COMPOSER_FRAME_CLASS} shrink min-h-0 flex flex-col pb-3 border-t md:border-t-0 border-[#AAA]`}>
-      <div className="w-full py-1.5 mb-1">
-        <div className="flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden pb-0.5">
+    <div className={`${COMPOSER_FRAME_CLASS} shrink min-h-0 flex flex-col pb-2 border-t md:border-t-0 border-[#AAA]`}>
+      <div className="w-full py-1.5 md:mb-1">
+        <div className="flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden pb-0 md:pb-0.5">
             <div
               className="grid h-8 w-32 shrink-0 grid-cols-2 overflow-hidden border-2 border-[#AAA] bg-black p-0.5"
               role="tablist"

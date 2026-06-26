@@ -3,9 +3,70 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { writeClipboardText } from '@/lib/clipboard';
 
 interface MarkdownRendererProps {
   content: string;
+}
+
+function extractText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (React.isValidElement(node)) {
+    return extractText((node.props as { children?: React.ReactNode }).children);
+  }
+  return '';
+}
+
+function MarkdownCodeBlock({ children }: { children: React.ReactNode }) {
+  const [copyStatus, setCopyStatus] = React.useState<'idle' | 'copied' | 'failed'>('idle');
+  const feedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const codeText = extractText(children);
+
+  React.useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    };
+  }, []);
+
+  const handleCopy = async () => {
+    if (!codeText) return;
+    const ok = await writeClipboardText(codeText);
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    setCopyStatus(ok ? 'copied' : 'failed');
+    feedbackTimerRef.current = setTimeout(() => {
+      setCopyStatus('idle');
+    }, 1600);
+  };
+
+  const buttonText = copyStatus === 'copied'
+    ? '已复制'
+    : copyStatus === 'failed'
+      ? '失败'
+      : '复制';
+  const statusClass = copyStatus === 'copied'
+    ? 'border-[#00aaaa] text-[#00aaaa]'
+    : copyStatus === 'failed'
+      ? 'border-[#ff5555] text-[#ff5555]'
+      : 'border-[#555] text-[#AAA] hover:border-[#00aaaa] hover:text-[#00aaaa]';
+
+  return (
+    <div className="relative my-2 bg-[#0a0a0a] border border-[#666]">
+      <button
+        type="button"
+        onClick={() => { void handleCopy(); }}
+        disabled={!codeText}
+        className={`absolute right-1 top-1 z-10 border bg-black px-2 py-0.5 text-[0.65rem] leading-4 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${statusClass}`}
+        aria-label={copyStatus === 'copied' ? '已复制代码' : copyStatus === 'failed' ? '复制代码失败' : '复制代码'}
+        title={copyStatus === 'copied' ? '已复制' : copyStatus === 'failed' ? '复制失败' : '复制代码'}
+      >
+        {buttonText}
+      </button>
+      <pre className="overflow-x-auto p-2 pt-8">
+        {children}
+      </pre>
+    </div>
+  );
 }
 
 export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
@@ -14,7 +75,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
       remarkPlugins={[remarkGfm]}
       components={{
         code({ className, children, ...props }) {
-          const isBlock = /language-/.test(className || '') || (typeof children === 'string' && children.includes('\n'));
+          const isBlock = /language-/.test(className || '') || extractText(children).includes('\n');
           if (!isBlock) {
             return (
               <code className="bg-[#222] text-[#00ffaa] px-1 py-0.5 border border-[#444] text-xs" {...props}>
@@ -23,12 +84,13 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
             );
           }
           return (
-            <pre className="bg-[#0a0a0a] border border-[#666] p-2 my-2 overflow-x-auto">
-              <code className={`${className || ''} text-xs text-[#CCC]`} {...props}>
-                {children}
-              </code>
-            </pre>
+            <code className={`${className || ''} text-xs text-[#CCC]`} {...props}>
+              {children}
+            </code>
           );
+        },
+        pre({ children }) {
+          return <MarkdownCodeBlock>{children}</MarkdownCodeBlock>;
         },
         a({ href, children }) {
           return (

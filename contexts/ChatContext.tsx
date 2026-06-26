@@ -49,6 +49,7 @@ export interface ChatMessage {
   updatedAt?: number;
   editedAt?: number;
   syncDirty?: boolean;
+  serverRunId?: string;
 }
 
 export interface ChatReferenceImage {
@@ -112,8 +113,8 @@ interface ChatContextValue {
   getSyncSnapshot: () => Promise<ChatSyncSnapshot>;
   applySyncedSessions: (sessions: unknown, activeSessionId?: string, tombstones?: unknown, options?: { silent?: boolean }) => void;
   syncChatHistory: (auth: ChatSyncAuth, options?: { silent?: boolean }) => Promise<ChatSyncResult>;
-  addUserMsg: (prompt: string, sessionId?: string, request?: ChatTurnSnapshot) => string;
-  addBotMsg: (images: ImageHit[], code: string, extra: string, sessionId?: string) => string;
+  addUserMsg: (prompt: string, sessionId?: string, request?: ChatTurnSnapshot, serverRunId?: string) => string;
+  addBotMsg: (images: ImageHit[], code: string, extra: string, sessionId?: string, serverRunId?: string) => string;
   addTextBotMsg: (text: string, code: string, sessionId?: string, thinking?: string, thinkingDone?: boolean) => string;
   updateLastBotMsg: (images: ImageHit[], code?: string, sessionId?: string) => void;
   updateLastBotText: (text: string, sessionId?: string) => void;
@@ -132,9 +133,10 @@ interface ChatContextValue {
   truncateChatAfterMessage: (messageId: string, sessionId?: string) => void;
   replaceBotMessage: (
     messageId: string,
-    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'> & Partial<Pick<ChatMessage, 'thinking' | 'thinkingDone'>>,
+    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'> & Partial<Pick<ChatMessage, 'thinking' | 'thinkingDone' | 'serverRunId'>>,
     sessionId?: string,
   ) => void;
+  upsertMessages: (sessionId: string, messages: ChatMessage[], titleHint?: string) => void;
   setLoading: (v: boolean, sessionId?: string) => void;
   setStatus: (text: string, type?: '' | 'ok' | 'err' | 'warn') => void;
   setDebugRaw: (text: string) => void;
@@ -327,8 +329,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   });
 
 
-  const addUserMsg = useCallback((prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot) => {
-    const message = createChatMessage({ role: 'user', prompt, images: [], text: '', code: '', extra: '', request });
+  const addUserMsg = useCallback((prompt: string, sessionId = activeSessionId, request?: ChatTurnSnapshot, serverRunId?: string) => {
+    const message = createChatMessage({ role: 'user', prompt, images: [], text: '', code: '', extra: '', request, serverRunId });
     updateSessionMessages(sessionId, (prev) => [
       ...prev,
       message,
@@ -336,8 +338,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     return message.id;
   }, [activeSessionId, updateSessionMessages]);
 
-  const addBotMsg = useCallback((images: ImageHit[], code: string, extra: string, sessionId = activeSessionId) => {
-    const message = createChatMessage({ role: 'bot', prompt: '', images, text: '', code, extra });
+  const addBotMsg = useCallback((images: ImageHit[], code: string, extra: string, sessionId = activeSessionId, serverRunId?: string) => {
+    const message = createChatMessage({ role: 'bot', prompt: '', images, text: '', code, extra, serverRunId });
     updateSessionMessages(sessionId, (prev) => [
       ...prev,
       message,
@@ -447,6 +449,62 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateSessionMessages(sessionId, () => messages);
   }, [updateSessionMessages]);
 
+  const upsertMessages = useCallback((sessionId: string, incomingMessages: ChatMessage[], titleHint?: string) => {
+    if (incomingMessages.length === 0) return;
+    markLocalMutation();
+    setSessions((prev) => {
+      const now = Date.now();
+      const applyMessages = (session: ChatSession): ChatSession => {
+        const byId = new Map(session.messages.map((message) => [message.id, message]));
+        for (const message of incomingMessages) {
+          byId.set(message.id, {
+            ...byId.get(message.id),
+            ...message,
+            syncDirty: true,
+          });
+        }
+        const nextMessages = [...byId.values()]
+          .sort((a, b) => a.createdAt - b.createdAt)
+          .slice(-CHAT_MESSAGES_MAX);
+        const title = isAutoManagedSessionTitle(session)
+          ? sessionTitleFromMessages(nextMessages, titleHint || DEFAULT_CHAT_TITLE)
+          : session.title;
+
+        return {
+          ...session,
+          title,
+          messages: nextMessages,
+          updatedAt: now,
+          syncDirty: true,
+        };
+      };
+
+      if (prev.some((session) => session.id === sessionId)) {
+        return prev.map((session) => (
+          session.id === sessionId ? applyMessages(session) : session
+        ));
+      }
+
+      const nextMessages = incomingMessages
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(-CHAT_MESSAGES_MAX);
+      const createdAt = Math.min(...nextMessages.map((message) => message.createdAt), now);
+
+      return [
+        {
+          id: sessionId,
+          title: sessionTitleFromMessages(nextMessages, titleHint || DEFAULT_CHAT_TITLE),
+          titleSource: 'auto' as const,
+          messages: nextMessages,
+          createdAt,
+          updatedAt: now,
+          syncDirty: true,
+        },
+        ...prev,
+      ].slice(0, CHAT_SESSIONS_MAX);
+    });
+  }, [markLocalMutation]);
+
   const updateUserMessage = useCallback((
     messageId: string,
     prompt: string,
@@ -491,7 +549,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const replaceBotMessage = useCallback((
     messageId: string,
-    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'> & Partial<Pick<ChatMessage, 'thinking' | 'thinkingDone'>>,
+    message: Pick<ChatMessage, 'prompt' | 'images' | 'text' | 'code' | 'extra'> & Partial<Pick<ChatMessage, 'thinking' | 'thinkingDone' | 'serverRunId'>>,
     sessionId = activeSessionId,
   ) => {
     updateSessionMessages(sessionId, (prev) => prev.map((current) => (
@@ -630,6 +688,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateUserMessage,
     truncateChatAfterMessage,
     replaceBotMessage,
+    upsertMessages,
     setLoading,
     setStatus,
     setDebugRaw,
@@ -669,6 +728,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateUserMessage,
     truncateChatAfterMessage,
     replaceBotMessage,
+    upsertMessages,
     setLoading,
     setStatus,
     setDebugRaw,

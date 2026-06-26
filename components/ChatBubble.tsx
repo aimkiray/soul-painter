@@ -4,6 +4,7 @@
 
 import React, { useState } from 'react';
 import { ImageHit } from '@/types';
+import { writeClipboardText } from '@/lib/clipboard';
 import MarkdownRenderer from './MarkdownRenderer';
 
 interface ChatBubbleProps {
@@ -37,45 +38,6 @@ function getExt(link: string, isData: boolean) {
   }
   const m = link.match(/\.(png|jpe?g|webp|gif)(?:\?|$)/i);
   return m ? m[1].toLowerCase().replace('jpeg', 'jpg') : 'png';
-}
-
-function toCopyableUrl(url: string) {
-  try {
-    return new URL(url, window.location.origin).toString();
-  } catch {
-    return url;
-  }
-}
-
-async function writeClipboardText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // Fall through to the selection-based fallback for non-secure contexts.
-    }
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  textarea.style.top = '0';
-  textarea.style.opacity = '0';
-  document.body.appendChild(textarea);
-
-  try {
-    textarea.focus({ preventScroll: true });
-    textarea.select();
-    textarea.setSelectionRange(0, text.length);
-    return document.execCommand('copy');
-  } catch {
-    return false;
-  } finally {
-    document.body.removeChild(textarea);
-  }
 }
 
 function EditIcon() {
@@ -147,14 +109,11 @@ export default function ChatBubble({
   const visibleImages = images.filter((hit) => hit.dataUrl || hit.url);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [imgErrors, setImgErrors] = useState<Set<number>>(new Set());
-  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
-  const [copyFailedUrl, setCopyFailedUrl] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(prompt);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [copyTextStatus, setCopyTextStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
   const [thinkingOpen, setThinkingOpen] = useState(!message.thinkingDone);
-  const copyFeedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTextFeedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const deleteTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -167,7 +126,6 @@ export default function ChatBubble({
 
   React.useEffect(() => {
     return () => {
-      if (copyFeedbackTimerRef.current) clearTimeout(copyFeedbackTimerRef.current);
       if (copyTextFeedbackTimerRef.current) clearTimeout(copyTextFeedbackTimerRef.current);
       if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
     };
@@ -193,18 +151,6 @@ export default function ChatBubble({
     } else {
       window.open(link, '_blank');
     }
-  };
-
-  const handleCopyUrl = async (url: string) => {
-    const ok = await writeClipboardText(toCopyableUrl(url));
-    if (copyFeedbackTimerRef.current) clearTimeout(copyFeedbackTimerRef.current);
-
-    setCopiedUrl(ok ? url : null);
-    setCopyFailedUrl(ok ? null : url);
-    copyFeedbackTimerRef.current = setTimeout(() => {
-      setCopiedUrl(null);
-      setCopyFailedUrl(null);
-    }, 1600);
   };
 
   const handleCopyText = async () => {
@@ -398,14 +344,6 @@ export default function ChatBubble({
                             >
                               {isData ? '下载' : '打开'}
                             </button>
-                            {!isData && (
-                              <button
-                                onClick={() => { void handleCopyUrl(link); }}
-                                className="btn-retro text-xs px-2 py-0.5"
-                              >
-                                {copyFailedUrl === link ? '复制失败' : copiedUrl === link ? '已复制' : '复制URL'}
-                              </button>
-                            )}
                           </span>
                         );
                       })}
