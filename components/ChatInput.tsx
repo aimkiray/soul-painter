@@ -123,7 +123,7 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
               {([
                 ['image', 'IMG'],
                 ['chat', 'CHAT'],
-              ] as const).map(([mode, label], index) => {
+              ] as const).map(([mode, label]) => {
                 const active = config.mode === mode;
                 return (
                   <button
@@ -133,10 +133,9 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
                     aria-selected={active}
                     onClick={() => updateConfig('mode', mode)}
                     className={[
-                      'flex h-full min-w-0 cursor-pointer items-center justify-center gap-1 whitespace-nowrap px-1 text-xs font-mono transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-white',
-                      index > 0 ? 'border-l border-[#555]' : '',
+                      'flex h-full min-w-0 cursor-pointer items-center justify-center gap-1 whitespace-nowrap px-1 text-xs font-mono font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-white',
                       active
-                        ? 'bg-[#00aaaa] text-black shadow-[inset_0_-3px_0_#00aaaa]'
+                        ? 'bg-[#AAA] text-black'
                         : 'bg-black text-[#CCC] hover:bg-[#111] hover:text-[#00aaaa]',
                     ].filter(Boolean).join(' ')}
                   >
