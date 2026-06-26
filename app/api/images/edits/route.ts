@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
 
     return await proxyUpstreamFormDataStream(
       validated.baseUrl, validated.apiKey,
-      '/v1/images/edits', form, origin,
+      '/images/edits', form, origin,
       request.signal,
     );
   } catch (err: unknown) {

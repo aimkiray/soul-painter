@@ -153,12 +153,12 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3">
       <div className="w-full max-w-md border-2 border-[#00aaaa] bg-black font-mono text-[#CCC] shadow-[8px_8px_0_#001f1f]">
-        <div className="flex items-center justify-between border-b-2 border-[#00aaaa] bg-[#0000aa] px-2 py-1 text-white">
+        <div className="flex items-center justify-between border-b-2 border-[#00aaaa] bg-black px-2 py-1 font-bold text-[#CCC]">
           <span>SYNC</span>
           <button
             type="button"
             onClick={onClose}
-            className="cursor-pointer text-white hover:text-[#ffff55]"
+            className="cursor-pointer text-[#CCC] hover:text-[#00aaaa]"
             aria-label="关闭登录"
           >
             [X]

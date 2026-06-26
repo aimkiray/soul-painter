@@ -178,12 +178,12 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
                   {lockedRepeaterMode ? <option value={REPEATER_MODEL_LABEL}>{REPEATER_MODEL_LABEL}</option> : (
                     <>
                       {!chatModelIsOption && <option value={activeChatChoice}>{activeChatModel}</option>}
-                      <optgroup label="OpenAI-compatible">
+                      <optgroup label="OpenAI Compatible">
                         {openAIChatModelOptions.map(m=>(
                           <option key={`openai:${m.value}`} value={encodeChatModelChoice('openai', m.value)}>{m.label}</option>
                         ))}
                       </optgroup>
-                      <optgroup label="Claude Messages">
+                      <optgroup label="Claude Compatible">
                         {claudeChatModelOptions.map(m=>(
                           <option key={`claude:${m.value}`} value={encodeChatModelChoice('claude', m.value)}>{m.label}</option>
                         ))}

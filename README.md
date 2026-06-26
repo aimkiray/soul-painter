@@ -43,11 +43,11 @@ npm run dev
 | Variable | Description |
 |---|---|
 | `DEFAULT_API_KEY` | API key used when the frontend doesn't provide one |
-| `DEFAULT_BASE_URL` | Upstream API base URL (e.g. `https://api.avemujica.moe`) |
+| `DEFAULT_BASE_URL` | OpenAI-compatible/image base URL; include the provider's version prefix when required, e.g. `https://api.openai.com/v1` |
 | `DEFAULT_CHAT_API_KEY` | Optional chat-specific API key; falls back to `DEFAULT_API_KEY` |
-| `DEFAULT_CHAT_BASE_URL` | Optional chat-specific base URL; falls back to `DEFAULT_BASE_URL` |
+| `DEFAULT_CHAT_BASE_URL` | Optional OpenAI-compatible chat base URL; falls back to `DEFAULT_BASE_URL` |
 | `DEFAULT_CLAUDE_API_KEY` | Optional Claude-specific API key; falls back to `DEFAULT_CHAT_API_KEY` |
-| `DEFAULT_CLAUDE_BASE_URL` | Optional Claude-specific base URL; normally `https://api.anthropic.com` |
+| `DEFAULT_CLAUDE_BASE_URL` | Optional Claude Compatible base URL; normally `https://api.anthropic.com/v1` |
 | `MODEL_GATE_ENABLED` | Enables the header-tap gate for model access |
 | `MODEL_GATE_SECRET` | Secret used to sign the model-gate unlock cookie |
 | `CHAT_ASSET_MAX_IMAGE_BYTES` | Maximum size of a single server-stored chat image; defaults to 8 MB |
@@ -69,7 +69,7 @@ The app supports four ways to provide API credentials, in priority order:
 3. **Server default** — Set in `.env.local` as `DEFAULT_API_KEY`
 4. **None** — Requests return a 401 error until configured
 
-Chat settings can save separate OpenAI-compatible and Claude Messages credentials at the same time. The selected chat model automatically chooses the matching API format. To use Claude directly, select a Claude model, set **Claude Base URL** to `https://api.anthropic.com`, and use an Anthropic API key.
+Chat settings can save separate OpenAI Compatible and Claude Compatible credentials at the same time. The selected chat model automatically chooses the matching API format. To use Claude directly, select a Claude model, set **Claude Base URL** to `https://api.anthropic.com/v1`, and use an Anthropic API key.
 
 ## Usage
 
@@ -108,15 +108,15 @@ When 2+ reference images are added and batch mode is enabled, each image gets an
 - **Workflow orchestration**: `useRunPrompt` coordinates request lifecycle, retries, streaming, title generation, and context updates
 - **Local persistence**: IndexedDB via `idb-keyval` stores chat sessions, image history, sync tombstones, and stream capability cache; localStorage/sessionStorage are reserved for lightweight settings, prompts, and sync auth metadata
 - **Server persistence**: Prisma + SQLite store chat sync metadata in `data/chat-sync.db`; chat image assets are stored on local disk under `data/chat-assets`
-- **API Proxy**: Next.js API routes forward requests to an OpenAI-compatible or Claude Messages API, injecting auth from client headers or server env
+- **API Proxy**: Next.js API routes forward requests to an OpenAI Compatible or Claude Compatible API, injecting auth from client headers or server env
 
 ### API Routes
 
 | Route | Upstream Endpoint | Body Type |
 |---|---|---|
-| `/api/chat/completions` | `{baseUrl}/v1/chat/completions` or `{baseUrl}/v1/messages` | JSON |
-| `/api/images/generations` | `{baseUrl}/v1/images/generations` | JSON |
-| `/api/images/edits` | `{baseUrl}/v1/images/edits` | multipart/form-data |
+| `/api/chat/completions` | OpenAI: `{baseUrl}/chat/completions`; Claude: `{baseUrl}/messages` | JSON |
+| `/api/images/generations` | `{baseUrl}/images/generations` | JSON |
+| `/api/images/edits` | `{baseUrl}/images/edits` | multipart/form-data |
 | `/api/config` | — | Returns server-side key status |
 | `/api/chat-assets` | — | Stores or clears local chat image assets |
 | `/api/chat-assets/[assetId]` | — | Serves local chat image assets |

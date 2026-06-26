@@ -89,7 +89,7 @@ export function getChatProviderConfig(
   return {
     format,
     apiKey: config.chatApiKey || config.apiKey,
-    baseUrl: config.chatBaseUrl || config.baseUrl,
+    baseUrl: config.chatBaseUrl,
     model,
     titleModel: config.titleModel,
     customModels: config.customChatModels,

@@ -20,6 +20,7 @@ import {
   setRequestParam,
 } from '@/lib/request-helpers';
 import { readServerRun, updateServerRun } from '@/lib/server-run-store';
+import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from '@/lib/upstream-url';
 
 type UpstreamAuthMode = 'bearer' | 'anthropic';
 
@@ -70,13 +71,9 @@ function runAssetCookie(runId: string) {
   return runtimeSecrets.get(runId)?.assetCookie || '';
 }
 
-function cleanBaseUrl(value: string) {
-  return value.replace(/\/+$/, '');
-}
-
 function validateBaseUrl(value: string) {
-  const baseUrl = cleanBaseUrl(value);
-  if (!baseUrl || !/^https?:\/\/[\w.-]+(:\d+)?$/.test(baseUrl)) {
+  const baseUrl = normalizeUpstreamBaseUrl(value);
+  if (!baseUrl) {
     throw new Error('Base URL 无效或未配置。仅允许 http/https 协议。');
   }
   return baseUrl;
@@ -101,7 +98,7 @@ function chatTarget(config: AppConfig, format: ChatApiFormat): UpstreamTarget {
 
   return {
     apiKey: config.chatApiKey || config.apiKey || process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY || '',
-    baseUrl: validateBaseUrl(config.chatBaseUrl || config.baseUrl || process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL || ''),
+    baseUrl: validateBaseUrl(config.chatBaseUrl || process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL || ''),
     authMode: 'bearer',
   };
 }
@@ -220,7 +217,7 @@ async function fetchUpstreamText(
   signal.addEventListener('abort', abort, { once: true });
 
   try {
-    const response = await fetch(`${target.baseUrl}${path}`, {
+    const response = await fetch(buildUpstreamUrl(target.baseUrl, path), {
       method: 'POST',
       headers: upstreamHeaders(target, contentType),
       body,
@@ -348,7 +345,7 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
   const upstreamBody = format === 'claude' ? toClaudeMessagesBody(body) : body;
   const text = await retryable(run.id, signal, () => fetchUpstreamText(
     target,
-    format === 'claude' ? '/v1/messages' : '/v1/chat/completions',
+    format === 'claude' ? '/messages' : '/chat/completions',
     JSON.stringify(upstreamBody),
     run.options,
     signal,
@@ -374,7 +371,7 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
 async function runSingleImage(run: ServerRunRecord, body: Record<string, unknown>, signal: AbortSignal) {
   const text = await fetchUpstreamText(
     imageTarget(runConfig(run)),
-    '/v1/images/generations',
+    '/images/generations',
     JSON.stringify(body),
     run.options,
     signal,
@@ -420,7 +417,7 @@ async function runImageGeneration(run: ServerRunRecord, signal: AbortSignal): Pr
 async function runSingleEdit(run: ServerRunRecord, form: FormData, signal: AbortSignal) {
   const text = await fetchUpstreamText(
     imageTarget(runConfig(run)),
-    '/v1/images/edits',
+    '/images/edits',
     form,
     run.options,
     signal,

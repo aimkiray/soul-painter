@@ -5,6 +5,7 @@ import {
   verifyModelGateUnlockToken,
 } from './model-gate';
 import { isModelGateEnabled } from './model-gate-env';
+import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from './upstream-url';
 
 export const TIMEOUT_SEC = 600;
 export const MAX_BODY_SIZE = 32 * 1024 * 1024;
@@ -58,8 +59,8 @@ export async function validateRequest(request: NextRequest, kind: RequestKind = 
     );
   }
 
-  const baseUrl = (request.headers.get('x-base-url') || urlEnv || '').replace(/\/+$/, '');
-  if (!baseUrl || !/^https?:\/\/[\w.-]+(:\d+)?$/.test(baseUrl)) {
+  const baseUrl = normalizeUpstreamBaseUrl(request.headers.get('x-base-url') || urlEnv || '');
+  if (!baseUrl) {
     return NextResponse.json(
       { error: { message: 'Base URL 无效或未配置。仅允许 http/https 协议。' } },
       { status: 400 }
@@ -86,7 +87,7 @@ async function proxyUpstreamBodyStream(
   requestSignal?: AbortSignal,
   options: UpstreamProxyOptions = {},
 ): Promise<Response> {
-  const url = `${baseUrl}${path}`;
+  const url = buildUpstreamUrl(baseUrl, path);
   console.log(`[proxy-stream] POST ${url}`);
 
   const stream = new ReadableStream({

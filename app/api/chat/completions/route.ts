@@ -72,7 +72,7 @@ export async function POST(request: NextRequest) {
     const recordBody = body && typeof body === 'object' && !Array.isArray(body)
       ? body as Record<string, unknown>
       : {};
-    const upstreamPath = format === 'claude' ? '/v1/messages' : '/v1/chat/completions';
+    const upstreamPath = format === 'claude' ? '/messages' : '/chat/completions';
     const upstreamBody = format === 'claude'
       ? toClaudeMessagesBody(recordBody)
       : body;

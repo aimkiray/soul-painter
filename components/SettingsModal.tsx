@@ -42,12 +42,12 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
         className="w-full max-w-2xl max-h-full flex flex-col border-2 border-[#00aaaa] bg-black font-mono text-[#CCC] shadow-[8px_8px_0_#001f1f]"
         onClick={e => e.stopPropagation()}
       >
-        <div className="shrink-0 flex items-center justify-between border-b-2 border-[#00aaaa] bg-[#0000aa] px-2 py-1 text-white">
-          <span>SETTINGS</span>
+        <div className="shrink-0 flex items-center justify-between border-b-2 border-[#00aaaa] bg-black px-2 py-1 font-bold text-[#CCC]">
+          <span>CONFIG</span>
           <button 
             type="button"
             onClick={onClose}
-            className="cursor-pointer text-white hover:text-[#ffff55]"
+            className="cursor-pointer text-[#CCC] hover:text-[#00aaaa]"
             aria-label="关闭配置"
           >
             [X]

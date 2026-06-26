@@ -23,7 +23,7 @@ export const labelClass = 'block text-xs text-[#CCC] mb-0.5';
 export const inputClass = 'w-full bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono';
 export const selectClass = 'w-full bg-[#AAA] text-black border-2 border-[#999] text-sm py-1 px-1 cursor-pointer font-mono';
 export const hintClass = 'text-xs text-[#888] mt-1';
-export const providerHeadingClass = 'flex items-center justify-between gap-2 pt-2 border-t border-[#444] text-xs text-[#00aaaa]';
+export const providerHeadingClass = 'flex items-center justify-between gap-2 border-t border-[#444] pt-2 pb-1 text-xs text-[#00aaaa]';
 export const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer';
 export const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
 
@@ -41,7 +41,7 @@ export default function ModelSettings() {
   const activeChatModel = getActiveChatModel(config);
   const activeChatApiFormat = getChatFormatForModel(config, activeChatModel);
   const activeChatChoice = encodeChatModelChoice(activeChatApiFormat, activeChatModel);
-  const activeChatProviderLabel = activeChatApiFormat === 'claude' ? 'Claude Messages' : 'OpenAI-compatible';
+  const activeChatProviderLabel = activeChatApiFormat === 'claude' ? 'Claude Compatible' : 'OpenAI Compatible';
   const chatModelIsOption = allChatModelOptions.some(m => m.format === activeChatApiFormat && m.value === activeChatModel);
   const titleModelIsOption = openAIChatModelOptions.some(m => m.value === config.titleModel);
   const claudeTitleModelIsOption = claudeModelOptions.some(m => m.value === config.claudeTitleModel);
@@ -168,12 +168,12 @@ export default function ModelSettings() {
                       className={selectClass}
                     >
                       {!chatModelIsOption && <option value={activeChatChoice}>{activeChatModel}</option>}
-                      <optgroup label="OpenAI-compatible">
+                      <optgroup label="OpenAI Compatible">
                         {openAIChatModelOptions.map(m => (
                           <option key={`openai:${m.value}`} value={encodeChatModelChoice('openai', m.value)}>{m.label}</option>
                         ))}
                       </optgroup>
-                      <optgroup label="Claude Messages">
+                      <optgroup label="Claude Compatible">
                         {claudeModelOptions.map(m => (
                           <option key={`claude:${m.value}`} value={encodeChatModelChoice('claude', m.value)}>{m.label}</option>
                         ))}
@@ -185,7 +185,7 @@ export default function ModelSettings() {
 
                 <div>
                   <div className={providerHeadingClass}>
-                    <span>OpenAI-compatible</span>
+                    <span>OpenAI Compatible</span>
                   </div>
                   <div className="space-y-1">
                     <label className={labelClass}>Title Model</label>
@@ -208,7 +208,7 @@ export default function ModelSettings() {
                         value={newChatModel}
                         onChange={(e) => setNewChatModel(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChatModel(); } }}
-                        placeholder="添加 OpenAI-compatible 模型"
+                        placeholder="添加 OpenAI Compatible 模型"
                         className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                       />
                       <button onClick={addChatModel} className="btn-retro px-2 text-xs shrink-0">
@@ -232,7 +232,7 @@ export default function ModelSettings() {
 
                 <div>
                   <div className={providerHeadingClass}>
-                    <span>Claude Messages</span>
+                    <span>Claude Compatible</span>
                   </div>
                   <div className="space-y-1">
                     <label className={labelClass}>Title Model</label>

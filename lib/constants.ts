@@ -37,7 +37,7 @@ export const CLAUDE_MODEL_PRESETS = [
 
 export const CHAT_API_FORMAT_OPTIONS = [
   { label: 'OpenAI Compatible', value: 'openai' },
-  { label: 'Claude Messages', value: 'claude' },
+  { label: 'Claude Compatible', value: 'claude' },
 ] as const;
 
 export const REPEATER_MODEL_LABEL = 'copy-fable-5';
