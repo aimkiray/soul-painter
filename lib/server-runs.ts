@@ -28,7 +28,6 @@ export interface ServerRunCreatePayload {
   options: AppOptions;
   request: ChatTurnSnapshot;
   historyMessages: ChatMessage[];
-  appOrigin?: string;
 }
 
 export interface ServerRunRecord extends Omit<ServerRunCreatePayload, 'accessToken'> {

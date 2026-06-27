@@ -13,11 +13,16 @@ import {
   verifyModelGateUnlockToken,
 } from '@/lib/model-gate';
 import { isModelGateEnabled } from '@/lib/model-gate-env';
+import { getChatAssetSession } from '@/lib/chat-asset-session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const RUN_CREATE_MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+interface ServerRunQueryPayload {
+  items: Array<{ id: string; accessToken: string }>;
+}
 
 function isRunPayload(value: unknown): value is ServerRunCreatePayload {
   if (!value || typeof value !== 'object') return false;
@@ -32,6 +37,18 @@ function isRunPayload(value: unknown): value is ServerRunCreatePayload {
     && !!payload.options
     && !!payload.request
     && Array.isArray(payload.historyMessages);
+}
+
+function isRunQueryPayload(value: unknown): value is ServerRunQueryPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Partial<ServerRunQueryPayload>;
+  return Array.isArray(payload.items)
+    && payload.items.every((item) => (
+      !!item
+      && typeof item === 'object'
+      && typeof item.id === 'string'
+      && typeof item.accessToken === 'string'
+    ));
 }
 
 function hashAccessToken(runId: string, token: string) {
@@ -83,9 +100,6 @@ async function validateModelGate(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const gateResponse = await validateModelGate(request);
-  if (gateResponse) return gateResponse;
-
   const rawBody = await request.text();
   if (new TextEncoder().encode(rawBody).length > RUN_CREATE_MAX_BODY_BYTES) {
     return NextResponse.json({ error: '任务数据过大' }, { status: 413 });
@@ -99,8 +113,28 @@ export async function POST(request: NextRequest) {
   }
 
   if (!isRunPayload(body)) {
+    if (isRunQueryPayload(body)) {
+      const items = body.items
+        .filter((item) => item.id.trim() && item.accessToken.trim())
+        .slice(0, 50);
+      if (items.length === 0) return NextResponse.json({ ok: true, runs: [] });
+
+      const tokenById = new Map(items.map((item) => [item.id, item.accessToken]));
+      const runs = await readServerRuns(items.map((item) => item.id));
+      const authorizedRuns = runs.filter((run) => isAuthorizedRun(run, tokenById.get(run.id) || ''));
+      for (const run of authorizedRuns) {
+        if (run.status === 'queued' || run.status === 'running') {
+          void ensureServerRunStarted(run.id);
+        }
+      }
+      return NextResponse.json({ ok: true, runs: authorizedRuns.map(toPublicServerRun) });
+    }
+
     return NextResponse.json({ error: '任务参数不完整' }, { status: 400 });
   }
+
+  const gateResponse = await validateModelGate(request);
+  if (gateResponse) return gateResponse;
 
   const now = Date.now();
   const record: ServerRunRecord = {
@@ -113,41 +147,22 @@ export async function POST(request: NextRequest) {
     options: body.options,
     request: body.request,
     historyMessages: body.historyMessages,
-    appOrigin: request.headers.get('origin') || body.appOrigin || '',
     accessTokenHash: hashAccessToken(body.id, body.accessToken),
     status: 'queued',
     createdAt: now,
     updatedAt: now,
   };
 
+  const assetSession = await getChatAssetSession(request);
   registerServerRunRuntimeSecrets(record.id, {
     credentials: pickRuntimeCredentials(body.config),
-    assetCookie: request.headers.get('cookie') || '',
+    assetSessionId: assetSession.id,
   });
   await upsertServerRun(record);
   void ensureServerRunStarted(record.id);
   return NextResponse.json({ ok: true, run: toPublicServerRun(record) });
 }
 
-export async function GET(request: NextRequest) {
-  const ids = (request.nextUrl.searchParams.get('ids') || '')
-    .split(',')
-    .map((id) => id.trim())
-    .filter(Boolean)
-    .slice(0, 50);
-  const tokens = (request.nextUrl.searchParams.get('tokens') || '')
-    .split(',')
-    .map((token) => token.trim())
-    .slice(0, ids.length);
-  if (ids.length === 0) return NextResponse.json({ ok: true, runs: [] });
-
-  const tokenById = new Map(ids.map((id, index) => [id, tokens[index] || '']));
-  const runs = await readServerRuns(ids);
-  const authorizedRuns = runs.filter((run) => isAuthorizedRun(run, tokenById.get(run.id) || ''));
-  for (const run of authorizedRuns) {
-    if (run.status === 'queued' || run.status === 'running') {
-      void ensureServerRunStarted(run.id);
-    }
-  }
-  return NextResponse.json({ ok: true, runs: authorizedRuns.map(toPublicServerRun) });
+export async function GET() {
+  return NextResponse.json({ error: '请使用 POST 查询后台任务状态' }, { status: 405 });
 }

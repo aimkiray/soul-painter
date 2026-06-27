@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { ServerRunRecord } from '@/lib/server-runs';
+import { publishServerRunUpdate } from '@/lib/server-run-events';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const RUNS_FILE = path.join(DATA_DIR, 'server-runs.json');
@@ -69,6 +70,7 @@ export function upsertServerRun(run: ServerRunRecord) {
     if (index >= 0) runs[index] = run;
     else runs.unshift(run);
     await writeAllRunsUnsafe(runs);
+    publishServerRunUpdate(run);
     return run;
   });
 }
@@ -85,6 +87,7 @@ export function updateServerRun(id: string, patch: Partial<ServerRunRecord>) {
     };
     runs[index] = next;
     await writeAllRunsUnsafe(runs);
+    publishServerRunUpdate(next);
     return next;
   });
 }

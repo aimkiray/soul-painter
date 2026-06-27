@@ -3,6 +3,8 @@ import type { ChatApiFormat } from '@/lib/chat-config';
 import type { ChatReferenceImage, ChatTurnSnapshot } from '@/contexts/ChatContext';
 import type { RequestBody } from '@/lib/request-helpers';
 import type { ServerRunRecord, ServerRunResult } from '@/lib/server-runs';
+import type { ChatContentParts } from '@/lib/chat-thinking';
+import { isValidChatAssetId, readChatAsset } from '@/lib/chat-assets';
 import { extractImage } from '@/lib/image-extract';
 import {
   buildChatMessages,
@@ -20,6 +22,7 @@ import {
   setRequestParam,
 } from '@/lib/request-helpers';
 import { readServerRun, updateServerRun } from '@/lib/server-run-store';
+import { processChatStream } from '@/lib/stream-utils';
 import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from '@/lib/upstream-url';
 
 type UpstreamAuthMode = 'bearer' | 'anthropic';
@@ -46,7 +49,7 @@ interface ServerRunRuntimeSecrets {
     | 'chatBaseUrl'
     | 'claudeBaseUrl'
   >>;
-  assetCookie: string;
+  assetSessionId: string;
 }
 
 const activeRuns = globalForServerRuns.serverRunPromises ?? new Map<string, Promise<void>>();
@@ -55,6 +58,8 @@ const runtimeSecrets = globalForServerRuns.serverRunRuntimeSecrets ?? new Map<st
 globalForServerRuns.serverRunPromises = activeRuns;
 globalForServerRuns.serverRunControllers = activeControllers;
 globalForServerRuns.serverRunRuntimeSecrets = runtimeSecrets;
+
+const CHAT_PARTIAL_WRITE_INTERVAL_MS = 120;
 
 export function registerServerRunRuntimeSecrets(runId: string, secrets: ServerRunRuntimeSecrets) {
   runtimeSecrets.set(runId, secrets);
@@ -67,8 +72,8 @@ function runConfig(run: ServerRunRecord): AppConfig {
   };
 }
 
-function runAssetCookie(runId: string) {
-  return runtimeSecrets.get(runId)?.assetCookie || '';
+function runAssetSessionId(runId: string) {
+  return runtimeSecrets.get(runId)?.assetSessionId || '';
 }
 
 function validateBaseUrl(value: string) {
@@ -203,12 +208,13 @@ function upstreamHeaders(target: UpstreamTarget, contentType?: string): HeadersI
   return headers;
 }
 
-async function fetchUpstreamText(
+async function fetchUpstreamResponse<T>(
   target: UpstreamTarget,
   path: string,
   body: BodyInit,
   options: AppOptions,
   signal: AbortSignal,
+  handleResponse: (response: Response) => Promise<T>,
   contentType?: string,
 ) {
   const controller = new AbortController();
@@ -223,11 +229,11 @@ async function fetchUpstreamText(
       body,
       signal: controller.signal,
     });
-    const text = await response.text();
     if (!response.ok) {
+      const text = await response.text();
       throw new RequestStatusError({ status: response.status, statusText: response.statusText, text });
     }
-    return text;
+    return await handleResponse(response);
   } catch (error) {
     if (controller.signal.aborted) {
       throw signal.aborted
@@ -239,6 +245,25 @@ async function fetchUpstreamText(
     clearTimeout(timeoutId);
     signal.removeEventListener('abort', abort);
   }
+}
+
+async function fetchUpstreamText(
+  target: UpstreamTarget,
+  path: string,
+  body: BodyInit,
+  options: AppOptions,
+  signal: AbortSignal,
+  contentType?: string,
+) {
+  return fetchUpstreamResponse(
+    target,
+    path,
+    body,
+    options,
+    signal,
+    (response) => response.text(),
+    contentType,
+  );
 }
 
 function toClaudeMessagesBody(body: Record<string, unknown>) {
@@ -262,8 +287,87 @@ function toClaudeMessagesBody(body: Record<string, unknown>) {
     messages,
     max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? Math.floor(maxTokens) : 4096,
   };
+  if (body.stream !== undefined) claudeBody.stream = Boolean(body.stream);
   if (systemParts.length > 0) claudeBody.system = systemParts.join('\n\n');
   return claudeBody;
+}
+
+function chatResultFromParts(
+  parts: ChatContentParts,
+  statusText: string,
+  statusType: ServerRunResult['statusType'],
+  debugRaw?: string,
+): ServerRunResult {
+  return {
+    prompt: '',
+    images: [],
+    text: parts.text,
+    thinking: parts.thinking,
+    thinkingDone: parts.thinkingDone,
+    code: '',
+    extra: '',
+    ...(debugRaw ? { debugRaw } : {}),
+    statusText,
+    statusType,
+  };
+}
+
+function createPartialChatRunWriter(runId: string) {
+  let latestParts: ChatContentParts | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastWriteAt = 0;
+  let canceled = false;
+  let writeQueue: Promise<void> = Promise.resolve();
+
+  const writeParts = (parts: ChatContentParts) => {
+    lastWriteAt = Date.now();
+    const result = chatResultFromParts(parts, '正在回复...', 'warn');
+    writeQueue = writeQueue
+      .catch(() => undefined)
+      .then(() => updateServerRun(runId, { result, error: undefined }))
+      .then(() => undefined, () => undefined);
+  };
+
+  const flushLatest = () => {
+    timer = null;
+    if (canceled || !latestParts) return;
+    const parts = latestParts;
+    latestParts = null;
+    writeParts(parts);
+  };
+
+  return {
+    enqueue(parts: ChatContentParts) {
+      if (canceled) return;
+      latestParts = parts;
+      const delay = Math.max(0, CHAT_PARTIAL_WRITE_INTERVAL_MS - (Date.now() - lastWriteAt));
+      if (delay === 0) {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        flushLatest();
+      } else if (!timer) {
+        timer = setTimeout(flushLatest, delay);
+      }
+    },
+    cancel() {
+      canceled = true;
+      latestParts = null;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+    async flush() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      flushLatest();
+      await writeQueue;
+    },
+  };
 }
 
 function applyImageParams(target: RequestBody, request: ChatTurnSnapshot) {
@@ -293,28 +397,33 @@ function blobExt(blob: Blob) {
   return 'png';
 }
 
-async function imageHitToBlob(image: ImageHit, appOrigin: string, assetCookie: string, signal: AbortSignal): Promise<Blob | null> {
+function localChatAssetId(source: string) {
+  const match = /^\/api\/chat-assets\/([^/?#]+)$/.exec(source);
+  if (!match || !isValidChatAssetId(match[1])) {
+    throw new Error('参考图来源无效');
+  }
+
+  return match[1];
+}
+
+async function imageHitToBlob(image: ImageHit, assetSessionId: string, signal: AbortSignal): Promise<Blob | null> {
   const source = image.dataUrl || image.url;
   if (!source) return null;
   if (source.startsWith('data:')) return dataUrlToBlob(source);
 
-  const url = /^https?:\/\//i.test(source)
-    ? source
-    : new URL(source, appOrigin || 'http://localhost:3010').toString();
-  const response = await fetch(url, {
-    signal,
-    headers: assetCookie ? { cookie: assetCookie } : undefined,
-  });
-  if (!response.ok) return null;
-  return response.blob();
+  if (signal.aborted) throw new Error('任务已取消');
+  if (!assetSessionId) throw new Error('参考图会话无效，请重新上传参考图');
+  const assetId = localChatAssetId(source);
+  const { bytes, mime } = await readChatAsset(assetSessionId, assetId);
+  if (signal.aborted) throw new Error('任务已取消');
+  return new Blob([bytes], { type: mime });
 }
 
 async function buildEditsForm(
   references: ChatReferenceImage[],
   prompt: string,
   request: ChatTurnSnapshot,
-  appOrigin: string,
-  assetCookie: string,
+  assetSessionId: string,
   signal: AbortSignal,
 ) {
   const form = new FormData();
@@ -322,12 +431,12 @@ async function buildEditsForm(
   form.append('prompt', prompt);
   if (request.size && request.size !== 'auto') form.append('size', request.size);
 
-  const imageBlobs = await Promise.all(references.map((reference) => imageHitToBlob(reference.image, appOrigin, assetCookie, signal)));
+  const imageBlobs = await Promise.all(references.map((reference) => imageHitToBlob(reference.image, assetSessionId, signal)));
   imageBlobs.forEach((blob, index) => {
     if (blob) form.append('image[]', blob, `image-${index + 1}.${blobExt(blob)}`);
   });
 
-  const maskBlob = await imageHitToBlob(references[0]?.mask || {}, appOrigin, assetCookie, signal);
+  const maskBlob = await imageHitToBlob(references[0]?.mask || {}, assetSessionId, signal);
   if (maskBlob) form.append('mask', maskBlob, `mask.${blobExt(maskBlob)}`);
   applyImageParams(form, request);
   return form;
@@ -337,15 +446,29 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
   const config = runConfig(run);
   const format = run.request.chatApiFormat || run.config.chatApiFormat;
   const target = chatTarget(config, format);
+  const streaming = Boolean(run.request.streaming && run.options.streaming);
   const body = {
     model: run.request.chatModel || config.chatModel,
     messages: buildChatMessages(run.historyMessages, run.prompt, run.request.systemPrompt || '', run.request.contextLimit),
-    stream: false,
+    stream: streaming,
   };
   const upstreamBody = format === 'claude' ? toClaudeMessagesBody(body) : body;
+  const upstreamPath = format === 'claude' ? '/messages' : '/chat/completions';
+
+  if (streaming) {
+    return retryable(run.id, signal, () => runChatStreamAttempt(
+      run,
+      target,
+      format,
+      upstreamPath,
+      upstreamBody,
+      signal,
+    ));
+  }
+
   const text = await retryable(run.id, signal, () => fetchUpstreamText(
     target,
-    format === 'claude' ? '/messages' : '/chat/completions',
+    upstreamPath,
     JSON.stringify(upstreamBody),
     run.options,
     signal,
@@ -354,18 +477,7 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
   const response = JSON.parse(text);
   const parts = extractChatResponseParts(response, format);
   if (!parts.text.trim() && !parts.thinking.trim()) throw new Error('响应为空');
-  return {
-    prompt: '',
-    images: [],
-    text: parts.text,
-    thinking: parts.thinking,
-    thinkingDone: true,
-    code: '',
-    extra: '',
-    debugRaw: text,
-    statusText: '回复完成',
-    statusType: 'ok',
-  };
+  return chatResultFromParts(parts, '回复完成', 'ok', text);
 }
 
 async function runSingleImage(run: ServerRunRecord, body: Record<string, unknown>, signal: AbortSignal) {
@@ -429,15 +541,14 @@ async function runSingleEdit(run: ServerRunRecord, form: FormData, signal: Abort
 }
 
 async function runImageEdit(run: ServerRunRecord, signal: AbortSignal): Promise<ServerRunResult> {
-  const appOrigin = run.appOrigin || 'http://localhost:3010';
-  const assetCookie = runAssetCookie(run.id);
+  const assetSessionId = runAssetSessionId(run.id);
   const requestedImageCount = Math.max(1, run.request.n);
   const hits: ImageHit[] = [];
   let debugRaw = '';
 
   for (let index = 0; index < requestedImageCount; index += 1) {
     const result = await retryable(run.id, signal, async () => {
-      const form = await buildEditsForm(run.request.referenceImages, run.prompt, run.request, appOrigin, assetCookie, signal);
+      const form = await buildEditsForm(run.request.referenceImages, run.prompt, run.request, assetSessionId, signal);
       return runSingleEdit(run, form, signal);
     });
     hits.push(result.hit);
@@ -455,6 +566,62 @@ async function runImageEdit(run: ServerRunRecord, signal: AbortSignal): Promise<
     statusText: `生成完成 ${hits.length} 张`,
     statusType: 'ok',
   };
+}
+
+async function runChatStreamAttempt(
+  run: ServerRunRecord,
+  target: UpstreamTarget,
+  format: ChatApiFormat,
+  upstreamPath: string,
+  upstreamBody: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<ServerRunResult> {
+  const partialWriter = createPartialChatRunWriter(run.id);
+
+  try {
+    const { parts, debugRaw } = await fetchUpstreamResponse(
+      target,
+      upstreamPath,
+      JSON.stringify(upstreamBody),
+      run.options,
+      signal,
+      async (response) => {
+        const contentType = response.headers.get('content-type') || '';
+
+        if (!/text\/event-stream|stream/i.test(contentType)) {
+          const text = await response.text();
+          const parsed = JSON.parse(text);
+          return {
+            parts: extractChatResponseParts(parsed, format),
+            debugRaw: text,
+          };
+        }
+
+        if (!response.body) throw new Error('响应为空');
+        const parts = await processChatStream(
+          response.body,
+          (nextParts) => partialWriter.enqueue(nextParts),
+          format,
+          signal,
+          { minEmitIntervalMs: CHAT_PARTIAL_WRITE_INTERVAL_MS },
+        );
+        return {
+          parts,
+          debugRaw: JSON.stringify(parts, null, 2),
+        };
+      },
+      'application/json',
+    );
+
+    partialWriter.enqueue(parts);
+    await partialWriter.flush();
+    if (!parts.text.trim() && !parts.thinking.trim()) throw new Error('响应为空');
+    return chatResultFromParts(parts, '回复完成', 'ok', debugRaw);
+  } catch (error) {
+    partialWriter.cancel();
+    await partialWriter.flush();
+    throw error;
+  }
 }
 
 async function executeServerRun(id: string, controller: AbortController) {

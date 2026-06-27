@@ -32,9 +32,17 @@ export interface PromptRunOptions {
 
 const SERVER_RUN_MISSING_TIMEOUT_MS = 30_000;
 
+function isRunningServerRun(run: ServerRunPublicRecord) {
+  return run.status === 'queued' || run.status === 'running';
+}
+
+function isFinishedServerRun(run: ServerRunPublicRecord) {
+  return run.status === 'completed' || run.status === 'failed' || run.status === 'canceled';
+}
+
 function createRestoredMessages(run: ServerRunPublicRecord): ChatMessage[] {
   const createdAt = run.createdAt || Date.now();
-  const running = run.status === 'queued' || run.status === 'running';
+  const running = isRunningServerRun(run);
   const result = run.result;
   const errorText = run.error || '请求失败';
 
@@ -77,6 +85,22 @@ interface RunApiResponse {
   run?: ServerRunPublicRecord;
 }
 
+function parseRunEventBlock(block: string): ServerRunPublicRecord | null {
+  let eventType = 'message';
+  const dataLines: string[] = [];
+
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event:')) {
+      eventType = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+
+  if (eventType !== 'run' || dataLines.length === 0) return null;
+  return JSON.parse(dataLines.join('\n')) as ServerRunPublicRecord;
+}
+
 async function readRunResponse(response: Response): Promise<RunApiResponse> {
   const data = await response.json().catch(() => ({} as RunApiResponse)) as RunApiResponse;
   if (!response.ok) {
@@ -114,21 +138,92 @@ export function useRunPrompt() {
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollPendingRunsRef = useRef<() => Promise<void>>(async () => undefined);
   const activeRunIdsRef = useRef<Set<string>>(new Set());
+  const runEventControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const applyRunToChatRef = useRef<(run: ServerRunPublicRecord) => void>(() => undefined);
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 
+  const closeRunEvents = useCallback((runId: string) => {
+    const controller = runEventControllersRef.current.get(runId);
+    if (!controller) return;
+    controller.abort();
+    runEventControllersRef.current.delete(runId);
+  }, []);
+
+  const closeAllRunEvents = useCallback(() => {
+    for (const controller of runEventControllersRef.current.values()) controller.abort();
+    runEventControllersRef.current.clear();
+  }, []);
+
+  const subscribeRunEvents = useCallback((runId: string) => {
+    if (typeof window === 'undefined') return;
+    if (runEventControllersRef.current.has(runId)) return;
+
+    const pending = readPendingServerRuns().find((item) => item.id === runId);
+    if (!pending) return;
+
+    const controller = new AbortController();
+    runEventControllersRef.current.set(runId, controller);
+
+    void (async () => {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      try {
+        const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/events`, {
+          headers: { 'x-run-access-token': pending.accessToken },
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) throw new Error('后台任务事件订阅失败');
+
+        reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (!controller.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split('\n\n');
+          buffer = blocks.pop() || '';
+
+          for (const block of blocks) {
+            const run = parseRunEventBlock(block);
+            if (!run) continue;
+            applyRunToChatRef.current(run);
+            if (isFinishedServerRun(run)) return;
+          }
+        }
+
+        const tail = decoder.decode();
+        if (tail) buffer += tail;
+        if (buffer.trim()) {
+          const run = parseRunEventBlock(buffer);
+          if (run) applyRunToChatRef.current(run);
+        }
+      } catch {
+        // Polling remains the fallback when the streaming subscription fails.
+      } finally {
+        await reader?.cancel().catch(() => undefined);
+        if (runEventControllersRef.current.get(runId) === controller) {
+          runEventControllersRef.current.delete(runId);
+        }
+      }
+    })();
+  }, []);
+
   const applyRunToChat = useCallback((run: ServerRunPublicRecord) => {
-    const running = run.status === 'queued' || run.status === 'running';
+    const running = isRunningServerRun(run);
     upsertMessages(run.sessionId, createRestoredMessages(run), run.prompt);
 
     if (running) {
       activeRunIdsRef.current.add(run.id);
       setLoading(true, run.sessionId);
-      setStatus(run.error || '后台任务运行中...', 'warn');
+      subscribeRunEvents(run.id);
+      setStatus(run.error || run.result?.statusText || '后台任务运行中...', run.error ? 'warn' : run.result?.statusType || 'warn');
       return;
     }
 
     activeRunIdsRef.current.delete(run.id);
+    closeRunEvents(run.id);
     removePendingServerRun(run.id);
     if (run.botMessageId === pendingRegenerateMessageId) setPendingRegenerateMessageId(null);
 
@@ -138,20 +233,29 @@ export function useRunPrompt() {
     else setStatus(run.error || '请求失败', run.status === 'canceled' ? 'warn' : 'err');
 
     if (activeRunIdsRef.current.size === 0) setLoading(false, run.sessionId);
-  }, [pendingRegenerateMessageId, setDebugRaw, setLoading, setStatus, upsertMessages]);
+  }, [closeRunEvents, pendingRegenerateMessageId, setDebugRaw, setLoading, setStatus, subscribeRunEvents, upsertMessages]);
+
+  useEffect(() => {
+    applyRunToChatRef.current = applyRunToChat;
+  }, [applyRunToChat]);
 
   const pollPendingRuns = useCallback(async () => {
     const pending = readPendingServerRuns();
     if (pending.length === 0) {
       activeRunIdsRef.current.clear();
+      closeAllRunEvents();
       setLoading(false);
       return;
     }
 
     try {
-      const response = await fetch(
-        `/api/runs?ids=${encodeURIComponent(pending.map((item) => item.id).join(','))}&tokens=${encodeURIComponent(pending.map((item) => item.accessToken).join(','))}`,
-      );
+      const response = await fetch('/api/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: pending.map((item) => ({ id: item.id, accessToken: item.accessToken })),
+        }),
+      });
       const data = await readRunResponse(response);
       const runs = Array.isArray(data.runs) ? data.runs : [];
       const seen = new Set(runs.map((run) => run.id));
@@ -162,6 +266,7 @@ export function useRunPrompt() {
         if (Date.now() - item.createdAt > SERVER_RUN_MISSING_TIMEOUT_MS) {
           removePendingServerRun(item.id);
           activeRunIdsRef.current.delete(item.id);
+          closeRunEvents(item.id);
           replaceBotMessage(item.botMessageId, {
             prompt: '后台任务未成功提交，请重新发送。',
             images: [],
@@ -173,6 +278,7 @@ export function useRunPrompt() {
           setStatus('后台任务未成功提交', 'err');
           continue;
         }
+        subscribeRunEvents(item.id);
         setLoading(true, item.sessionId);
         setStatus('后台任务提交中...', 'warn');
       }
@@ -186,7 +292,7 @@ export function useRunPrompt() {
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
       pollTimerRef.current = setTimeout(() => { void pollPendingRunsRef.current(); }, 4000);
     }
-  }, [applyRunToChat, replaceBotMessage, setLoading, setStatus]);
+  }, [applyRunToChat, closeAllRunEvents, closeRunEvents, replaceBotMessage, setLoading, setStatus, subscribeRunEvents]);
 
   useEffect(() => {
     pollPendingRunsRef.current = pollPendingRuns;
@@ -197,8 +303,9 @@ export function useRunPrompt() {
     return () => {
       clearTimeout(initialPollId);
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      closeAllRunEvents();
     };
-  }, [pollPendingRuns]);
+  }, [closeAllRunEvents, pollPendingRuns]);
 
   const submitServerRun = useCallback(async (payload: ServerRunCreatePayload) => {
     addPendingServerRun({
@@ -264,10 +371,11 @@ export function useRunPrompt() {
           : []);
       const requestSnapshot = runOptions.requestSnapshot
         ?? createTurnSnapshot(config, options, requestedMode, resolvedSize, requestedMode === 'edits' ? referenceImages : []);
+      const shouldStream = requestedMode === 'chat' && options.streaming;
       const normalizedRequest: ChatTurnSnapshot = {
         ...requestSnapshot,
         size: parseSize(requestSnapshot.size) ? requestSnapshot.size : resolvedSize,
-        streaming: false,
+        streaming: shouldStream,
       };
 
       let userMessageId = existingUserMessageId || '';
@@ -307,7 +415,7 @@ export function useRunPrompt() {
         botMessageId,
         prompt: cleanPrompt,
         config,
-        options: { ...options, streaming: false },
+        options: { ...options, streaming: shouldStream },
         request: normalizedRequest,
         historyMessages: sessionMessages,
       });
@@ -366,13 +474,16 @@ export function useRunPrompt() {
       headers: { 'x-run-access-token': item.accessToken },
     })))
       .finally(() => {
-        pending.forEach((item) => removePendingServerRun(item.id));
+        pending.forEach((item) => {
+          closeRunEvents(item.id);
+          removePendingServerRun(item.id);
+        });
         activeRunIdsRef.current.clear();
         setLoading(false);
         setStatus('已取消', 'warn');
         void pollPendingRuns();
       });
-  }, [pollPendingRuns, setLoading, setStatus]);
+  }, [closeRunEvents, pollPendingRuns, setLoading, setStatus]);
 
   const handleSend = useCallback((prompt: string) => {
     void runPrompt(prompt);

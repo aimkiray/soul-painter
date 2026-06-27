@@ -22,9 +22,7 @@ function safeEqual(value: string, expected: string) {
 }
 
 function requestAccessToken(request: NextRequest) {
-  return request.headers.get('x-run-access-token')
-    || request.nextUrl.searchParams.get('token')
-    || '';
+  return request.headers.get('x-run-access-token') || '';
 }
 
 function assertAuthorized(request: NextRequest, run: ServerRunRecord) {
