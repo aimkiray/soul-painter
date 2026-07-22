@@ -52,6 +52,7 @@ export const MODERATION_OPTIONS = ['auto', 'low'] as const;
 export const DEFAULT_CONFIG = {
   baseUrl: '',
   apiKey: '',
+  serverAccessToken: '',
   mode: 'image',
   model: 'gpt-image-2',
   chatModel: 'gpt-5.5',

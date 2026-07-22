@@ -63,15 +63,15 @@ export function readServerRun(id: string) {
   });
 }
 
-export function upsertServerRun(run: ServerRunRecord) {
+export function createServerRun(run: ServerRunRecord) {
   return enqueueWrite(async () => {
     const runs = await readAllRunsUnsafe();
-    const index = runs.findIndex((item) => item.id === run.id);
-    if (index >= 0) runs[index] = run;
-    else runs.unshift(run);
+    const existing = runs.find((item) => item.id === run.id);
+    if (existing) return { created: false as const, run: existing };
+    runs.unshift(run);
     await writeAllRunsUnsafe(runs);
     publishServerRunUpdate(run);
-    return run;
+    return { created: true as const, run };
   });
 }
 

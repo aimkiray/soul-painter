@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateRequest, proxyUpstreamFormDataStream } from '@/lib/server-proxy';
+import { corsPreflightResponse, validateRequest, proxyUpstreamFormDataStream } from '@/lib/server-proxy';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+export const OPTIONS = corsPreflightResponse;
 
 function dataUrlToBlob(dataUrl: string): { blob: Blob; mime: string } {
   const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/);

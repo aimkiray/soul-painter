@@ -45,7 +45,7 @@ model Message {
   prompt    String
   images    String    // JSON stringified ImageHit[]
   code      String    @default("")
-  extra     String    @default("")
+  extra     String    @default("") // Versioned sync metadata envelope; legacy rows remain plain text
   
   @@index([sessionId, createdAt(sort: Asc)])
 }

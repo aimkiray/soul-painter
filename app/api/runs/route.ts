@@ -5,8 +5,9 @@ import {
   toPublicServerRun,
   type ServerRunRecord,
 } from '@/lib/server-runs';
-import { readServerRuns, upsertServerRun } from '@/lib/server-run-store';
+import { createServerRun, readServerRuns } from '@/lib/server-run-store';
 import { ensureServerRunStarted, registerServerRunRuntimeSecrets } from '@/lib/server-runner';
+import { assertServerDefaultAccess, serverDefaultAccessAuthorized } from '@/lib/server-access';
 import {
   getRandomModelGateMessage,
   MODEL_GATE_UNLOCKED_COOKIE,
@@ -24,19 +25,36 @@ interface ServerRunQueryPayload {
   items: Array<{ id: string; accessToken: string }>;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 function isRunPayload(value: unknown): value is ServerRunCreatePayload {
-  if (!value || typeof value !== 'object') return false;
+  if (!isRecord(value)) return false;
   const payload = value as Partial<ServerRunCreatePayload>;
-  return !!payload.id
-    && !!payload.accessToken
-    && !!payload.sessionId
-    && !!payload.userMessageId
-    && !!payload.botMessageId
+  const validId = (item: unknown) => typeof item === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(item);
+  const config = isRecord(payload.config) ? payload.config : null;
+  const options = isRecord(payload.options) ? payload.options : null;
+  const runRequest = isRecord(payload.request) ? payload.request : null;
+  const credentialFields = ['apiKey', 'baseUrl', 'chatApiKey', 'chatBaseUrl', 'claudeApiKey', 'claudeBaseUrl', 'serverAccessToken'];
+  return validId(payload.id)
+    && typeof payload.accessToken === 'string'
+    && payload.accessToken.length >= 16
+    && payload.accessToken.length <= 512
+    && validId(payload.sessionId)
+    && validId(payload.userMessageId)
+    && validId(payload.botMessageId)
     && typeof payload.prompt === 'string'
-    && !!payload.config
-    && !!payload.options
-    && !!payload.request
-    && Array.isArray(payload.historyMessages);
+    && !!config
+    && credentialFields.every((field) => typeof config[field] === 'string')
+    && !!options
+    && typeof options.timeout === 'number'
+    && Number.isFinite(options.timeout)
+    && !!runRequest
+    && (runRequest.mode === 'chat' || runRequest.mode === 'images' || runRequest.mode === 'edits')
+    && Array.isArray(runRequest.referenceImages)
+    && Array.isArray(payload.historyMessages)
+    && payload.historyMessages.every(isRecord);
 }
 
 function isRunQueryPayload(value: unknown): value is ServerRunQueryPayload {
@@ -69,12 +87,19 @@ function sanitizeConfig(config: ServerRunCreatePayload['config']): ServerRunCrea
   return {
     ...config,
     apiKey: '',
+    serverAccessToken: '',
     baseUrl: '',
     chatApiKey: '',
     chatBaseUrl: '',
     claudeApiKey: '',
     claudeBaseUrl: '',
   };
+}
+
+function usesServerDefaultForPrimaryRequest(payload: ServerRunCreatePayload) {
+  if (payload.request.mode !== 'chat') return !payload.config.apiKey;
+  if (payload.request.chatApiFormat === 'claude') return !payload.config.claudeApiKey;
+  return !(payload.config.chatApiKey || payload.config.apiKey);
 }
 
 function pickRuntimeCredentials(config: ServerRunCreatePayload['config']) {
@@ -136,6 +161,16 @@ export async function POST(request: NextRequest) {
   const gateResponse = await validateModelGate(request);
   if (gateResponse) return gateResponse;
 
+  const serverAccessToken = request.headers.get('x-server-access-token') || body.config.serverAccessToken;
+
+  if (usesServerDefaultForPrimaryRequest(body)) {
+    try {
+      assertServerDefaultAccess(serverAccessToken);
+    } catch (error) {
+      return NextResponse.json({ error: (error as Error).message }, { status: 401 });
+    }
+  }
+
   const now = Date.now();
   const record: ServerRunRecord = {
     id: body.id,
@@ -154,11 +189,20 @@ export async function POST(request: NextRequest) {
   };
 
   const assetSession = await getChatAssetSession(request);
+  const created = await createServerRun(record);
+  if (!created.created) {
+    if (!isAuthorizedRun(created.run, body.accessToken)) {
+      return NextResponse.json({ error: '任务 ID 已存在' }, { status: 409 });
+    }
+    if (created.run.status === 'queued' || created.run.status === 'running') void ensureServerRunStarted(created.run.id);
+    return NextResponse.json({ ok: true, run: toPublicServerRun(created.run) });
+  }
+
   registerServerRunRuntimeSecrets(record.id, {
     credentials: pickRuntimeCredentials(body.config),
     assetSessionId: assetSession.id,
+    allowServerDefaults: serverDefaultAccessAuthorized(serverAccessToken),
   });
-  await upsertServerRun(record);
   void ensureServerRunStarted(record.id);
   return NextResponse.json({ ok: true, run: toPublicServerRun(record) });
 }

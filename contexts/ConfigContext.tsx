@@ -31,6 +31,8 @@ interface ConfigContextValue {
   hasDefaultChatKey: boolean;
   claudeKeySource: 'user' | 'server' | 'none';
   hasDefaultClaudeKey: boolean;
+  serverAccessRequired: boolean;
+  serverAccessConfigured: boolean;
   modelGateEnabled: boolean;
   modelGateUnlocked: boolean;
   setModelGateUnlocked: (unlocked: boolean) => void;
@@ -179,18 +181,32 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [defaultBaseUrl, setDefaultBaseUrl] = useState('');
   const [hasDefaultChatKey, setHasDefaultChatKey] = useState(false);
   const [hasDefaultClaudeKey, setHasDefaultClaudeKey] = useState(false);
+  const [serverAccessRequired, setServerAccessRequired] = useState(false);
+  const [serverAccessConfigured, setServerAccessConfigured] = useState(false);
   const [modelGateEnabled, setModelGateEnabled] = useState(false);
   const [modelGateUnlocked, setModelGateUnlocked] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [serverConfigReady, setServerConfigReady] = useState(false);
+  const [modelGateReady, setModelGateReady] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     const timeoutId = window.setTimeout(() => {
-      loadInitialConfig().then((loaded) => {
-        setInitial(loaded);
-        setConfig(loaded.config);
-        setOptions(loaded.options);
-      });
+      loadInitialConfig()
+        .then((loaded) => {
+          if (cancelled) return;
+          setInitial(loaded);
+          setConfig(loaded.config);
+          setOptions(loaded.options);
+        })
+        .finally(() => {
+          if (!cancelled) setReady(true);
+        });
     }, 0);
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
   }, []);
 
   useEffect(() => {
@@ -201,9 +217,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         setDefaultBaseUrl(typeof d.defaultBaseUrl === 'string' ? d.defaultBaseUrl : '');
         setHasDefaultChatKey(!!d.hasDefaultChatKey);
         setHasDefaultClaudeKey(!!d.hasDefaultClaudeKey);
+        setServerAccessRequired(!!d.serverAccessRequired);
+        setServerAccessConfigured(!!d.serverAccessConfigured);
         setModelGateEnabled(!!d.modelGateEnabled);
       })
-      .catch(() => { /* ignore */ });
+      .catch(() => { /* ignore */ })
+      .finally(() => setServerConfigReady(true));
   }, []);
 
   useEffect(() => {
@@ -212,7 +231,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
       .then((d) => {
         setModelGateUnlocked((prev) => prev || !!d.unlocked);
       })
-      .catch(() => { /* ignore */ });
+      .catch(() => { /* ignore */ })
+      .finally(() => setModelGateReady(true));
   }, []);
 
   const updateConfig = useCallback(<K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
@@ -282,8 +302,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({
     config, options, updateConfig, updateOption,
-    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked,
-  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, modelGateEnabled, modelGateUnlocked]);
+    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, serverAccessRequired, serverAccessConfigured, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked,
+  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, serverAccessRequired, serverAccessConfigured, modelGateEnabled, modelGateUnlocked]);
 
   // Auto-persist config & options on change (debounced)
   useEffect(() => {
@@ -304,7 +324,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('beforeunload', handleUnload);
   }, [config, options]);
 
-  return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
+  const hydrationReady = ready && serverConfigReady && modelGateReady;
+  return <ConfigContext.Provider value={value}>{hydrationReady ? children : null}</ConfigContext.Provider>;
 }
 
 export function useConfig() {

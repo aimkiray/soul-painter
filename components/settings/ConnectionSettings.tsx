@@ -15,7 +15,15 @@ export const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#A
 export const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
 
 export default function ConnectionSettings() {
-  const { config, updateConfig, keySource, chatKeySource, claudeKeySource } = useConfig();
+  const {
+    config,
+    updateConfig,
+    keySource,
+    chatKeySource,
+    claudeKeySource,
+    serverAccessRequired,
+    serverAccessConfigured,
+  } = useConfig();
   const [showKey, setShowKey] = useState(false);
   const [showChatKey, setShowChatKey] = useState(false);
   const [showClaudeKey, setShowClaudeKey] = useState(false);
@@ -64,6 +72,22 @@ export default function ConnectionSettings() {
     <fieldset className={fieldsetClass}>
               <legend className="text-[#00aaaa] px-2">连接配置</legend>
               <div className="space-y-3">
+                {(serverAccessRequired || serverAccessConfigured) && (
+                  <div>
+                    <label className={labelClass} htmlFor="cfg-server-access-token">服务端访问令牌</label>
+                    <input
+                      id="cfg-server-access-token"
+                      type="password"
+                      value={config.serverAccessToken}
+                      onChange={(e) => updateConfig('serverAccessToken', e.target.value)}
+                      placeholder="由部署者提供的 SERVER_ACCESS_TOKEN"
+                      className={inputClass}
+                    />
+                    <p className={hintClass}>
+                      {serverAccessRequired ? '使用服务端默认 API Key 时必须填写。' : '仅在服务端启用访问令牌时需要。'}
+                    </p>
+                  </div>
+                )}
                 <div>
                   <div className={firstProviderHeadingClass}>
                     <span>Image</span>

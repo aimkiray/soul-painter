@@ -15,6 +15,7 @@ export interface ServerRunResult {
   debugRaw?: string;
   statusText?: string;
   statusType?: '' | 'ok' | 'err' | 'warn';
+  generatedTitle?: string;
 }
 
 export interface ServerRunCreatePayload {

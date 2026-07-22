@@ -165,15 +165,26 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const localMutationRevisionRef = useRef(0);
 
   useEffect(() => {
+    let cancelled = false;
     const timeoutId = window.setTimeout(async () => {
-      const loaded = await loadChatState();
-      setInitialState(loaded);
-      setSessions(loaded.sessions);
-      setActiveSessionId(loaded.activeSessionId);
-      setSyncTombstones(await loadSyncTombstones());
-      setStorageReady(true);
+      try {
+        const loaded = await loadChatState();
+        const tombstones = await loadSyncTombstones();
+        if (cancelled) return;
+        setInitialState(loaded);
+        setSessions(loaded.sessions);
+        setActiveSessionId(loaded.activeSessionId);
+        setSyncTombstones(tombstones);
+      } catch {
+        // Keep the fallback session when IndexedDB is unavailable.
+      } finally {
+        if (!cancelled) setStorageReady(true);
+      }
     }, 0);
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
   }, []);
 
   const activeSession = useMemo(
@@ -750,7 +761,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     clearCurrentChat,
   ]);
 
-  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
+  return <ChatContext.Provider value={value}>{storageReady ? children : null}</ChatContext.Provider>;
 }
 
 export function useChat() {

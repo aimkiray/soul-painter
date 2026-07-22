@@ -16,6 +16,7 @@ export interface ImageHit {
 export interface AppConfig {
   baseUrl: string;
   apiKey: string;
+  serverAccessToken: string;
   mode: 'image' | 'chat';
   model: string;
   chatModel: string;

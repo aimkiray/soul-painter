@@ -7,6 +7,7 @@ import { useImages } from '@/contexts/ImageContext';
 import type { ChatMessage, ChatReferenceImage, ChatTurnSnapshot } from '@/contexts/ChatContext';
 import { chatSessionPromptStorageKey } from '@/lib/constants';
 import { parseSize, resolveRequestSize } from '@/lib/size';
+import { buildRepeaterReply } from '@/lib/api-parsers';
 import {
   type RunMode,
   imageRefToReferenceImage,
@@ -127,16 +128,18 @@ async function readRunResponse(response: Response): Promise<RunApiResponse> {
 export function useRunPrompt() {
   const [pendingRegenerateMessageId, setPendingRegenerateMessageId] = useState<string | null>(null);
 
-  const { config, options } = useConfig();
+  const { config, options, modelGateEnabled, modelGateUnlocked } = useConfig();
   const {
     sessions,
     activeSessionId,
     addBotMsg,
+    addTextBotMsg,
     addUserMsg,
     updateUserMessage,
     truncateChatAfterMessage,
     replaceBotMessage,
     upsertMessages,
+    setGeneratedSessionTitle,
     setLoading,
     setStatus,
     setDebugRaw,
@@ -237,6 +240,7 @@ export function useRunPrompt() {
   const applyRunToChat = useCallback((run: ServerRunPublicRecord) => {
     const running = isRunningServerRun(run);
     upsertMessages(run.sessionId, createRestoredMessages(run), run.prompt);
+    if (run.result?.generatedTitle) setGeneratedSessionTitle(run.sessionId, run.result.generatedTitle);
 
     if (running) {
       activeRunIdsRef.current.add(run.id);
@@ -270,6 +274,7 @@ export function useRunPrompt() {
     setLoading,
     setStatusForSession,
     subscribeRunEvents,
+    setGeneratedSessionTitle,
     upsertMessages,
   ]);
 
@@ -372,10 +377,15 @@ export function useRunPrompt() {
     setLoading(true, payload.sessionId);
     setStatusForSession(payload.sessionId, '后台任务已提交...', 'warn');
 
-    const body = JSON.stringify(payload);
+    const body = JSON.stringify({
+      ...payload,
+      config: { ...payload.config, serverAccessToken: '' },
+    });
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (payload.config.serverAccessToken) headers['x-server-access-token'] = payload.config.serverAccessToken;
     const response = await fetch('/api/runs', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body,
       keepalive: body.length < 60_000,
     });
@@ -403,6 +413,30 @@ export function useRunPrompt() {
     const requestController = new AbortController();
 
     try {
+      if (modelGateEnabled && !modelGateUnlocked) {
+        const reply = buildRepeaterReply(cleanPrompt);
+        if (targetBotMessageId) {
+          replaceBotMessage(targetBotMessageId, {
+            prompt: '',
+            images: [],
+            text: reply,
+            code: '',
+            extra: '',
+            serverRunId: undefined,
+          }, sessionId);
+        } else if (existingUserMessageId) {
+          updateUserMessage(existingUserMessageId, cleanPrompt, sessionId);
+          truncateChatAfterMessage(existingUserMessageId, sessionId);
+          addTextBotMsg(reply, '', sessionId);
+        } else {
+          addUserMsg(cleanPrompt, sessionId);
+          addTextBotMsg(reply, '', sessionId);
+        }
+        setDebugRawForSession(sessionId, reply);
+        setStatusForSession(sessionId, '回复完成', 'ok');
+        return;
+      }
+
       if (options.persistPrompt) {
         try { localStorage.setItem(chatSessionPromptStorageKey(sessionId), cleanPrompt); } catch { /* ignore */ }
       }
@@ -421,6 +455,9 @@ export function useRunPrompt() {
           ? (await Promise.all(selectedImagesForRun.map((image) => imageRefToReferenceImage(image, requestController.signal))))
               .filter((reference): reference is ChatReferenceImage => reference !== null)
           : []);
+      if (requestedMode === 'edits' && referenceImages.length === 0) {
+        throw new Error('参考图加载失败，请重新上传后重试。');
+      }
       const requestSnapshot = runOptions.requestSnapshot
         ?? createTurnSnapshot(config, options, requestedMode, resolvedSize, requestedMode === 'edits' ? referenceImages : []);
       const shouldStream = requestedMode === 'chat' && options.streaming;
@@ -504,14 +541,18 @@ export function useRunPrompt() {
   }, [
     activeSessionId,
     addBotMsg,
+    addTextBotMsg,
     addUserMsg,
     clearImages,
     config,
     images,
     isLoading,
+    modelGateEnabled,
+    modelGateUnlocked,
     options,
     replaceBotMessage,
     selectedIndices,
+    setDebugRawForSession,
     setLoading,
     setStatusForSession,
     submitServerRun,

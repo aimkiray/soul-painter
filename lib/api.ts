@@ -13,6 +13,7 @@ function getHeaders(config: AppConfig, kind: ProxyKind = 'image', isFormData = f
   if (!isFormData) headers['Content-Type'] = 'application/json';
   if (apiKey) headers['x-api-key'] = apiKey;
   if (baseUrl) headers['x-base-url'] = baseUrl;
+  if (config.serverAccessToken) headers['x-server-access-token'] = config.serverAccessToken;
   if (kind === 'chat') headers['x-chat-api-format'] = chatProvider?.format || config.chatApiFormat;
   return headers;
 }

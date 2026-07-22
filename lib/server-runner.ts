@@ -1,5 +1,5 @@
 import type { AppConfig, AppOptions, ImageHit } from '@/types';
-import type { ChatApiFormat } from '@/lib/chat-config';
+import { getChatProviderConfig, type ChatApiFormat } from '@/lib/chat-config';
 import type { ChatReferenceImage, ChatTurnSnapshot } from '@/contexts/ChatContext';
 import type { RequestBody } from '@/lib/request-helpers';
 import type { ServerRunRecord, ServerRunResult } from '@/lib/server-runs';
@@ -8,7 +8,9 @@ import { isValidChatAssetId, readChatAsset } from '@/lib/chat-assets';
 import { extractImage } from '@/lib/image-extract';
 import {
   buildChatMessages,
+  extractChatResponseText,
   extractChatResponseParts,
+  normalizeGeneratedTitle,
   parseResponseBody,
 } from '@/lib/api-parsers';
 import {
@@ -24,6 +26,7 @@ import {
 import { readServerRun, updateServerRun } from '@/lib/server-run-store';
 import { processChatStream } from '@/lib/stream-utils';
 import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from '@/lib/upstream-url';
+import { isSameUpstreamBaseUrl, validateUpstreamBaseUrl } from '@/lib/upstream-security';
 
 type UpstreamAuthMode = 'bearer' | 'anthropic';
 
@@ -31,6 +34,7 @@ interface UpstreamTarget {
   baseUrl: string;
   apiKey: string;
   authMode: UpstreamAuthMode;
+  trustedBaseUrls: string[];
 }
 
 const globalForServerRuns = globalThis as unknown as {
@@ -50,6 +54,7 @@ interface ServerRunRuntimeSecrets {
     | 'claudeBaseUrl'
   >>;
   assetSessionId: string;
+  allowServerDefaults: boolean;
 }
 
 const activeRuns = globalForServerRuns.serverRunPromises ?? new Map<string, Promise<void>>();
@@ -76,6 +81,10 @@ function runAssetSessionId(runId: string) {
   return runtimeSecrets.get(runId)?.assetSessionId || '';
 }
 
+function runAllowsServerDefaults(runId: string) {
+  return runtimeSecrets.get(runId)?.allowServerDefaults === true;
+}
+
 function validateBaseUrl(value: string) {
   const baseUrl = normalizeUpstreamBaseUrl(value);
   if (!baseUrl) {
@@ -84,27 +93,43 @@ function validateBaseUrl(value: string) {
   return baseUrl;
 }
 
-function imageTarget(config: AppConfig): UpstreamTarget {
+function imageTarget(config: AppConfig, allowServerDefaults: boolean): UpstreamTarget {
+  const defaultBaseUrl = process.env.DEFAULT_BASE_URL || '';
+  if (!config.apiKey && config.baseUrl && !isSameUpstreamBaseUrl(config.baseUrl, defaultBaseUrl)) {
+    throw new Error('自定义 Base URL 必须同时提供 API Key。');
+  }
   return {
-    apiKey: config.apiKey || process.env.DEFAULT_API_KEY || '',
-    baseUrl: validateBaseUrl(config.baseUrl || process.env.DEFAULT_BASE_URL || ''),
+    apiKey: config.apiKey || (allowServerDefaults ? process.env.DEFAULT_API_KEY : '') || '',
+    baseUrl: validateBaseUrl(config.baseUrl || defaultBaseUrl),
     authMode: 'bearer',
+    trustedBaseUrls: allowServerDefaults ? [defaultBaseUrl] : [],
   };
 }
 
-function chatTarget(config: AppConfig, format: ChatApiFormat): UpstreamTarget {
+function chatTarget(config: AppConfig, format: ChatApiFormat, allowServerDefaults: boolean): UpstreamTarget {
   if (format === 'claude') {
+    const defaultBaseUrl = process.env.DEFAULT_CLAUDE_BASE_URL || process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL || '';
+    if (!config.claudeApiKey && config.claudeBaseUrl && !isSameUpstreamBaseUrl(config.claudeBaseUrl, defaultBaseUrl)) {
+      throw new Error('自定义 Claude Base URL 必须同时提供 API Key。');
+    }
     return {
-      apiKey: config.claudeApiKey || process.env.DEFAULT_CLAUDE_API_KEY || process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY || '',
-      baseUrl: validateBaseUrl(config.claudeBaseUrl || process.env.DEFAULT_CLAUDE_BASE_URL || process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL || ''),
+      apiKey: config.claudeApiKey || (allowServerDefaults ? process.env.DEFAULT_CLAUDE_API_KEY || process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY : '') || '',
+      baseUrl: validateBaseUrl(config.claudeBaseUrl || defaultBaseUrl),
       authMode: 'anthropic',
+      trustedBaseUrls: allowServerDefaults ? [defaultBaseUrl] : [],
     };
   }
 
+  const defaultBaseUrl = process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL || '';
+  const suppliedApiKey = config.chatApiKey || config.apiKey;
+  if (!suppliedApiKey && config.chatBaseUrl && !isSameUpstreamBaseUrl(config.chatBaseUrl, defaultBaseUrl)) {
+    throw new Error('自定义 Chat Base URL 必须同时提供 API Key。');
+  }
   return {
-    apiKey: config.chatApiKey || config.apiKey || process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY || '',
-    baseUrl: validateBaseUrl(config.chatBaseUrl || process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL || ''),
+    apiKey: suppliedApiKey || (allowServerDefaults ? process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY : '') || '',
+    baseUrl: validateBaseUrl(config.chatBaseUrl || defaultBaseUrl),
     authMode: 'bearer',
+    trustedBaseUrls: allowServerDefaults ? [defaultBaseUrl] : [],
   };
 }
 
@@ -223,11 +248,13 @@ async function fetchUpstreamResponse<T>(
   signal.addEventListener('abort', abort, { once: true });
 
   try {
-    const response = await fetch(buildUpstreamUrl(target.baseUrl, path), {
+    const safeBaseUrl = await validateUpstreamBaseUrl(target.baseUrl, target.trustedBaseUrls);
+    const response = await fetch(buildUpstreamUrl(safeBaseUrl, path), {
       method: 'POST',
       headers: upstreamHeaders(target, contentType),
       body,
       signal: controller.signal,
+      redirect: 'error',
     });
     if (!response.ok) {
       const text = await response.text();
@@ -310,6 +337,43 @@ function chatResultFromParts(
     statusText,
     statusType,
   };
+}
+
+async function generateRunTitle(run: ServerRunRecord, assistantText: string, signal: AbortSignal) {
+  if (run.historyMessages.some((message) => message.role === 'user' && message.prompt.trim())) return '';
+  if (!assistantText.trim()) return '';
+
+  const config = runConfig(run);
+  const format = run.request.chatApiFormat || config.chatApiFormat;
+  const provider = getChatProviderConfig(config, format);
+  const titleModel = provider.titleModel || provider.model;
+  if (!titleModel) return '';
+
+  const target = chatTarget(config, format, runAllowsServerDefaults(run.id));
+  const body = {
+    model: titleModel,
+    messages: [
+      {
+        role: 'system',
+        content: 'Summarize this conversation into a concise Chinese chat title. Return only the final title without quotes, punctuation, markdown, or reasoning.',
+      },
+      {
+        role: 'user',
+        content: `User: ${run.prompt}\nAssistant: ${assistantText.slice(0, 1200)}`,
+      },
+    ],
+    stream: false,
+  };
+  const upstreamBody = format === 'claude' ? toClaudeMessagesBody(body) : body;
+  const text = await fetchUpstreamText(
+    target,
+    format === 'claude' ? '/messages' : '/chat/completions',
+    JSON.stringify(upstreamBody),
+    { ...run.options, streaming: false, timeout: Math.min(20, Math.max(1, run.options.timeout)) },
+    signal,
+    'application/json',
+  );
+  return normalizeGeneratedTitle(extractChatResponseText(parseResponseBody(text), format));
 }
 
 function createPartialChatRunWriter(runId: string) {
@@ -432,6 +496,9 @@ async function buildEditsForm(
   if (request.size && request.size !== 'auto') form.append('size', request.size);
 
   const imageBlobs = await Promise.all(references.map((reference) => imageHitToBlob(reference.image, assetSessionId, signal)));
+  if (imageBlobs.length === 0 || imageBlobs.some((blob) => !blob)) {
+    throw new Error('参考图加载失败，请重新上传后重试。');
+  }
   imageBlobs.forEach((blob, index) => {
     if (blob) form.append('image[]', blob, `image-${index + 1}.${blobExt(blob)}`);
   });
@@ -445,7 +512,7 @@ async function buildEditsForm(
 async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<ServerRunResult> {
   const config = runConfig(run);
   const format = run.request.chatApiFormat || run.config.chatApiFormat;
-  const target = chatTarget(config, format);
+  const target = chatTarget(config, format, runAllowsServerDefaults(run.id));
   const streaming = Boolean(run.request.streaming && run.options.streaming);
   const body = {
     model: run.request.chatModel || config.chatModel,
@@ -482,7 +549,7 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
 
 async function runSingleImage(run: ServerRunRecord, body: Record<string, unknown>, signal: AbortSignal) {
   const text = await fetchUpstreamText(
-    imageTarget(runConfig(run)),
+    imageTarget(runConfig(run), runAllowsServerDefaults(run.id)),
     '/images/generations',
     JSON.stringify(body),
     run.options,
@@ -528,7 +595,7 @@ async function runImageGeneration(run: ServerRunRecord, signal: AbortSignal): Pr
 
 async function runSingleEdit(run: ServerRunRecord, form: FormData, signal: AbortSignal) {
   const text = await fetchUpstreamText(
-    imageTarget(runConfig(run)),
+    imageTarget(runConfig(run), runAllowsServerDefaults(run.id)),
     '/images/edits',
     form,
     run.options,
@@ -639,13 +706,22 @@ async function executeServerRun(id: string, controller: AbortController) {
     if (!latest) throw new Error('任务不存在');
     const result = latest.request.mode === 'chat'
       ? await runChat(latest, controller.signal)
-      : latest.request.mode === 'edits' && latest.request.referenceImages.length > 0
+      : latest.request.mode === 'edits'
         ? await runImageEdit(latest, controller.signal)
         : await runImageGeneration(latest, controller.signal);
 
+    let completedResult = result;
+    try {
+      const titleSource = result.text || (result.images.length > 0 ? `生成完成 ${result.images.length} 张图片` : '');
+      const generatedTitle = await generateRunTitle(latest, titleSource, controller.signal);
+      if (generatedTitle) completedResult = { ...result, generatedTitle };
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+    }
+
     await updateServerRun(id, {
       status: 'completed',
-      result,
+      result: completedResult,
       error: undefined,
       completedAt: Date.now(),
     });
@@ -679,7 +755,7 @@ export function ensureServerRunStarted(id: string) {
   activeControllers.set(id, controller);
   const promise = (async () => {
     const run = await readServerRun(id);
-    if (run?.status === 'running' && !runtimeSecrets.has(id)) {
+    if ((run?.status === 'queued' || run?.status === 'running') && !runtimeSecrets.has(id)) {
       const message = '后台任务因服务进程重启已中断，请重新发送。';
       await updateServerRun(id, {
         status: 'failed',

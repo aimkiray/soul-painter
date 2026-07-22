@@ -6,6 +6,8 @@ import {
 } from './model-gate';
 import { isModelGateEnabled } from './model-gate-env';
 import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from './upstream-url';
+import { assertServerDefaultAccess, serverDefaultAccessAuthorized } from './server-access';
+import { isSameUpstreamBaseUrl, validateUpstreamBaseUrl } from './upstream-security';
 
 export const TIMEOUT_SEC = 600;
 export const MAX_BODY_SIZE = 32 * 1024 * 1024;
@@ -23,6 +25,33 @@ interface UpstreamProxyOptions {
 }
 
 type RequestKind = 'image' | 'chat' | 'claude';
+
+function isAllowedCorsOrigin(origin: string) {
+  if (!origin) return false;
+  return new Set(
+    (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  ).has(origin);
+}
+
+export function corsPreflightResponse(request: NextRequest) {
+  const origin = request.headers.get('origin') || '';
+  if (!isAllowedCorsOrigin(origin)) {
+    return NextResponse.json({ error: { message: 'Origin 不在允许列表中。' } }, { status: 403 });
+  }
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, X-Base-URL, X-Chat-API-Format, X-Server-Access-Token',
+      'Access-Control-Max-Age': '600',
+      Vary: 'Origin',
+    },
+  });
+}
 
 /** Validate API key, base URL, and body size. Returns validated values or an error Response.
  *  Chat requests can use OpenAI-compatible or Claude-specific defaults. */
@@ -46,7 +75,38 @@ export async function validateRequest(request: NextRequest, kind: RequestKind = 
       ? (process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL)
       : process.env.DEFAULT_BASE_URL;
 
-  const apiKey = request.headers.get('x-api-key') || keyEnv;
+  const suppliedApiKey = request.headers.get('x-api-key') || '';
+  const requestedBaseUrl = request.headers.get('x-base-url') || '';
+  const serverAccessToken = request.headers.get('x-server-access-token');
+  const baseUrl = normalizeUpstreamBaseUrl(requestedBaseUrl || urlEnv || '');
+  if (!baseUrl) {
+    return NextResponse.json(
+      { error: { message: 'Base URL 无效或未配置。仅允许 http/https 协议。' } },
+      { status: 400 },
+    );
+  }
+  const usesServerDefault = !suppliedApiKey;
+  if (usesServerDefault && !isSameUpstreamBaseUrl(baseUrl, urlEnv || '')) {
+    return NextResponse.json(
+      { error: { message: '自定义 Base URL 必须同时提供 API Key。' } },
+      { status: 401 },
+    );
+  }
+  if (usesServerDefault) {
+    try {
+      assertServerDefaultAccess(serverAccessToken);
+    } catch (error) {
+      return NextResponse.json({ error: { message: (error as Error).message } }, { status: 401 });
+    }
+  }
+  try {
+    const trustedBaseUrls = serverDefaultAccessAuthorized(serverAccessToken) ? [urlEnv || ''] : [];
+    await validateUpstreamBaseUrl(baseUrl, trustedBaseUrls);
+  } catch (error) {
+    return NextResponse.json({ error: { message: (error as Error).message } }, { status: 400 });
+  }
+
+  const apiKey = suppliedApiKey || keyEnv;
   if (!apiKey) {
     const envName = kind === 'claude'
       ? 'DEFAULT_CLAUDE_API_KEY、DEFAULT_CHAT_API_KEY 或 DEFAULT_API_KEY'
@@ -56,14 +116,6 @@ export async function validateRequest(request: NextRequest, kind: RequestKind = 
     return NextResponse.json(
       { error: { message: `未配置 API Key。请在设置中填写，或在服务端 .env 中设置 ${envName}。` } },
       { status: 401 }
-    );
-  }
-
-  const baseUrl = normalizeUpstreamBaseUrl(request.headers.get('x-base-url') || urlEnv || '');
-  if (!baseUrl) {
-    return NextResponse.json(
-      { error: { message: 'Base URL 无效或未配置。仅允许 http/https 协议。' } },
-      { status: 400 }
     );
   }
 
@@ -127,10 +179,8 @@ async function proxyUpstreamBodyStream(
           headers,
           body,
           signal: upstreamController.signal,
+          redirect: 'error',
         });
-
-        clearInterval(keepalive);
-        clearTimeout(timeoutId);
 
         if (!res.ok || !res.body) {
           const text = await res.text();
@@ -155,8 +205,6 @@ async function proxyUpstreamBodyStream(
         }
         ctrl.close();
       } catch (err: unknown) {
-        clearInterval(keepalive);
-        clearTimeout(timeoutId);
         if (requestSignal?.aborted) {
           try { ctrl.close(); } catch { /* already closed */ }
           return;
@@ -169,6 +217,8 @@ async function proxyUpstreamBodyStream(
           ctrl.close();
         } catch { /* already closed */ }
       } finally {
+        clearInterval(keepalive);
+        clearTimeout(timeoutId);
         if (requestSignal) {
           requestSignal.removeEventListener('abort', abortUpstream);
         }
@@ -176,15 +226,20 @@ async function proxyUpstreamBodyStream(
     },
   });
 
+  const responseHeaders: Record<string, string> = {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  };
+  if (isAllowedCorsOrigin(origin)) {
+    responseHeaders['Access-Control-Allow-Origin'] = origin;
+    responseHeaders.Vary = 'Origin';
+  }
+
   return new Response(stream, {
     status: 200,
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'Access-Control-Allow-Origin': origin,
-    },
+    headers: responseHeaders,
   });
 }
 

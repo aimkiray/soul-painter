@@ -48,6 +48,11 @@ npm run dev
 | `DEFAULT_CHAT_BASE_URL` | Optional OpenAI-compatible chat base URL; falls back to `DEFAULT_BASE_URL` |
 | `DEFAULT_CLAUDE_API_KEY` | Optional Claude-specific API key; falls back to `DEFAULT_CHAT_API_KEY` |
 | `DEFAULT_CLAUDE_BASE_URL` | Optional Claude Compatible base URL; normally `https://api.anthropic.com/v1` |
+| `SERVER_ACCESS_TOKEN` | Required in production when a browser uses server-default API keys; enter the same value in Connection Settings |
+| `ALLOW_ANONYMOUS_DEFAULT_API_KEY` | Explicitly allows anonymous use of server-default keys; disabled by default |
+| `UPSTREAM_HOST_ALLOWLIST` | Comma-separated private hosts allowed as custom upstreams; configured default Base URLs are trusted automatically |
+| `ALLOW_PRIVATE_UPSTREAMS` | Disables private-address SSRF blocking globally; use only on a trusted network |
+| `ALLOWED_ORIGINS` | Comma-separated origins allowed to read proxy responses cross-origin; same-origin requests need no entry |
 | `MODEL_GATE_ENABLED` | Enables the header-tap gate for model access |
 | `MODEL_GATE_SECRET` | Secret used to sign the model-gate unlock cookie |
 | `CHAT_ASSET_MAX_IMAGE_BYTES` | Maximum size of a single server-stored chat image; defaults to 8 MB |
@@ -66,7 +71,7 @@ The app supports four ways to provide API credentials, in priority order:
 
 1. **URL query params** — `?apiKey=sk-xxx&baseurl=https://...`
 2. **User input** — Enter in Settings modal (saved to localStorage)
-3. **Server default** — Set in `.env.local` as `DEFAULT_API_KEY`
+3. **Server default** — Set `DEFAULT_API_KEY` and `SERVER_ACCESS_TOKEN` in `.env.local`, then enter the access token in Connection Settings
 4. **None** — Requests return a 401 error until configured
 
 Chat settings can save separate OpenAI Compatible and Claude Compatible credentials at the same time. The selected chat model automatically chooses the matching API format. To use Claude directly, select a Claude model, set **Claude Base URL** to `https://api.anthropic.com/v1`, and use an Anthropic API key.

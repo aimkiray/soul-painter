@@ -10,6 +10,7 @@ import {
   setChatAssetSession,
 } from '@/lib/chat-asset-session';
 import { prepareDatabase, prisma } from '@/lib/prisma';
+import { decodeSyncMessageMetadata, encodeSyncMessageMetadata } from '@/lib/chat-sync-message';
 
 const CHAT_SYNC_MAX_BODY_BYTES = 5 * 1024 * 1024;
 const CHAT_SYNC_WRITE_RETRIES = 4;
@@ -244,7 +245,7 @@ export async function POST(request: NextRequest) {
           const text = cleanString(rawMsg.text);
           const prompt = cleanString(rawMsg.prompt);
           const code = cleanString(rawMsg.code);
-          const extra = cleanString(rawMsg.extra);
+          const extra = encodeSyncMessageMetadata(rawMsg);
           const images = Array.isArray(rawMsg.images) ? JSON.stringify(rawMsg.images.slice(0, 10)) : '[]';
 
           if (existingMessage) {
@@ -354,6 +355,7 @@ export async function POST(request: NextRequest) {
           if (m.deletedAt) {
             newTombstones.push({ type: 'message', id: m.id, sessionId: m.sessionId, deletedAt: m.deletedAt.getTime() });
           } else {
+            const metadata = decodeSyncMessageMetadata(m.extra);
             msgs.push({
               id: m.id,
               role: m.role,
@@ -362,7 +364,11 @@ export async function POST(request: NextRequest) {
               text: m.text,
               prompt: m.prompt,
               code: m.code,
-              extra: m.extra,
+              extra: metadata.extra,
+              thinking: metadata.thinking,
+              thinkingDone: metadata.thinkingDone,
+              request: metadata.request,
+              editedAt: metadata.editedAt,
               images: parseImages(m.images),
             });
           }

@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateRequest, proxyUpstreamStream } from '@/lib/server-proxy';
+import { corsPreflightResponse, validateRequest, proxyUpstreamStream } from '@/lib/server-proxy';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+export const OPTIONS = corsPreflightResponse;
 
 type ChatApiFormat = 'openai' | 'claude';
 
