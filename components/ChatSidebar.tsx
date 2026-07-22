@@ -56,8 +56,7 @@ export default function ChatSidebar({
   const {
     sessions,
     activeSessionId,
-    loadingSessionId,
-    isLoading,
+    isSessionLoading,
     createChatSession,
     switchChatSession,
     renameChatSession,
@@ -195,7 +194,7 @@ export default function ChatSidebar({
         <div className="space-y-1">
           {orderedSessions.map((session) => {
             const active = session.id === activeSessionId;
-            const loading = isLoading && loadingSessionId === session.id;
+            const loading = isSessionLoading(session.id);
 
             return (
               <div
@@ -288,7 +287,7 @@ export default function ChatSidebar({
             {(() => {
               const session = sessions.find((item) => item.id === menuState.sessionId);
               if (!session) return null;
-              const loading = isLoading && loadingSessionId === session.id;
+              const loading = isSessionLoading(session.id);
               const canClear = session.messages.length > 0 && !loading;
               const canDelete = !loading;
 

@@ -40,9 +40,19 @@ function isFinishedServerRun(run: ServerRunPublicRecord) {
   return run.status === 'completed' || run.status === 'failed' || run.status === 'canceled';
 }
 
+function hasTrackedPendingRunForSession(activeRunIds: Set<string>, sessionId: string) {
+  const pendingRuns = readPendingServerRuns();
+  const pendingIds = new Set(pendingRuns.map((item) => item.id));
+  for (const runId of [...activeRunIds]) {
+    if (!pendingIds.has(runId)) activeRunIds.delete(runId);
+  }
+  return pendingRuns.some((run) => run.sessionId === sessionId && activeRunIds.has(run.id));
+}
+
 function createRestoredMessages(run: ServerRunPublicRecord): ChatMessage[] {
   const createdAt = run.createdAt || Date.now();
   const running = isRunningServerRun(run);
+  const failed = run.status === 'failed' || run.status === 'canceled';
   const result = run.result;
   const errorText = run.error || '请求失败';
 
@@ -64,13 +74,13 @@ function createRestoredMessages(run: ServerRunPublicRecord): ChatMessage[] {
     {
       id: run.botMessageId,
       role: 'bot',
-      prompt: result?.prompt ?? (run.status === 'failed' || run.status === 'canceled' ? errorText : ''),
+      prompt: failed ? (result?.prompt || errorText) : result?.prompt ?? '',
       images: result?.images ?? [],
       text: result?.text ?? '',
       thinking: result?.thinking,
       thinkingDone: result?.thinkingDone,
       code: result?.code ?? '',
-      extra: result?.extra ?? (run.status === 'failed' || run.status === 'canceled' ? 'error' : ''),
+      extra: failed ? (result?.extra || 'error') : result?.extra ?? '',
       createdAt: createdAt + 1,
       updatedAt: run.updatedAt,
       syncDirty: true,
@@ -135,6 +145,7 @@ export function useRunPrompt() {
   const { images, selectedIndices, clearAll: clearImages } = useImages();
 
   const sessionsRef = useRef(sessions);
+  const activeSessionIdRef = useRef(activeSessionId);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollPendingRunsRef = useRef<() => Promise<void>>(async () => undefined);
   const activeRunIdsRef = useRef<Set<string>>(new Set());
@@ -142,6 +153,19 @@ export function useRunPrompt() {
   const applyRunToChatRef = useRef<(run: ServerRunPublicRecord) => void>(() => undefined);
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+
+  const setStatusForSession = useCallback((
+    sessionId: string,
+    text: string,
+    type: '' | 'ok' | 'err' | 'warn' = '',
+  ) => {
+    if (activeSessionIdRef.current === sessionId) setStatus(text, type);
+  }, [setStatus]);
+
+  const setDebugRawForSession = useCallback((sessionId: string, text: string) => {
+    if (activeSessionIdRef.current === sessionId) setDebugRaw(text);
+  }, [setDebugRaw]);
 
   const closeRunEvents = useCallback((runId: string) => {
     const controller = runEventControllersRef.current.get(runId);
@@ -218,7 +242,11 @@ export function useRunPrompt() {
       activeRunIdsRef.current.add(run.id);
       setLoading(true, run.sessionId);
       subscribeRunEvents(run.id);
-      setStatus(run.error || run.result?.statusText || '后台任务运行中...', run.error ? 'warn' : run.result?.statusType || 'warn');
+      setStatusForSession(
+        run.sessionId,
+        run.error || run.result?.statusText || '后台任务运行中...',
+        run.error ? 'warn' : run.result?.statusType || 'warn',
+      );
       return;
     }
 
@@ -227,13 +255,23 @@ export function useRunPrompt() {
     removePendingServerRun(run.id);
     if (run.botMessageId === pendingRegenerateMessageId) setPendingRegenerateMessageId(null);
 
-    if (run.result?.debugRaw) setDebugRaw(run.result.debugRaw);
-    if (run.result?.statusText) setStatus(run.result.statusText, run.result.statusType || '');
-    else if (run.status === 'completed') setStatus('任务完成', 'ok');
-    else setStatus(run.error || '请求失败', run.status === 'canceled' ? 'warn' : 'err');
+    if (run.result?.debugRaw) setDebugRawForSession(run.sessionId, run.result.debugRaw);
+    if (run.result?.statusText) setStatusForSession(run.sessionId, run.result.statusText, run.result.statusType || '');
+    else if (run.status === 'completed') setStatusForSession(run.sessionId, '任务完成', 'ok');
+    else setStatusForSession(run.sessionId, run.error || '请求失败', run.status === 'canceled' ? 'warn' : 'err');
 
-    if (activeRunIdsRef.current.size === 0) setLoading(false, run.sessionId);
-  }, [closeRunEvents, pendingRegenerateMessageId, setDebugRaw, setLoading, setStatus, subscribeRunEvents, upsertMessages]);
+    if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, run.sessionId)) {
+      setLoading(false, run.sessionId);
+    }
+  }, [
+    closeRunEvents,
+    pendingRegenerateMessageId,
+    setDebugRawForSession,
+    setLoading,
+    setStatusForSession,
+    subscribeRunEvents,
+    upsertMessages,
+  ]);
 
   useEffect(() => {
     applyRunToChatRef.current = applyRunToChat;
@@ -275,12 +313,15 @@ export function useRunPrompt() {
             extra: 'error',
             serverRunId: undefined,
           }, item.sessionId);
-          setStatus('后台任务未成功提交', 'err');
+          setStatusForSession(item.sessionId, '后台任务未成功提交', 'err');
+          if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, item.sessionId)) {
+            setLoading(false, item.sessionId);
+          }
           continue;
         }
         subscribeRunEvents(item.id);
         setLoading(true, item.sessionId);
-        setStatus('后台任务提交中...', 'warn');
+        setStatusForSession(item.sessionId, '后台任务提交中...', 'warn');
       }
 
       if (readPendingServerRuns().length > 0) {
@@ -288,11 +329,22 @@ export function useRunPrompt() {
         pollTimerRef.current = setTimeout(() => { void pollPendingRunsRef.current(); }, 2000);
       }
     } catch (error) {
-      setStatus((error as Error).message || '后台任务同步失败', 'err');
+      const activePendingRun = readPendingServerRuns().find((item) => item.sessionId === activeSessionIdRef.current);
+      if (activePendingRun) {
+        setStatusForSession(activePendingRun.sessionId, (error as Error).message || '后台任务同步失败', 'err');
+      }
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
       pollTimerRef.current = setTimeout(() => { void pollPendingRunsRef.current(); }, 4000);
     }
-  }, [applyRunToChat, closeAllRunEvents, closeRunEvents, replaceBotMessage, setLoading, setStatus, subscribeRunEvents]);
+  }, [
+    applyRunToChat,
+    closeAllRunEvents,
+    closeRunEvents,
+    replaceBotMessage,
+    setLoading,
+    setStatusForSession,
+    subscribeRunEvents,
+  ]);
 
   useEffect(() => {
     pollPendingRunsRef.current = pollPendingRuns;
@@ -318,7 +370,7 @@ export function useRunPrompt() {
     });
     activeRunIdsRef.current.add(payload.id);
     setLoading(true, payload.sessionId);
-    setStatus('后台任务已提交...', 'warn');
+    setStatusForSession(payload.sessionId, '后台任务已提交...', 'warn');
 
     const body = JSON.stringify(payload);
     const response = await fetch('/api/runs', {
@@ -330,7 +382,7 @@ export function useRunPrompt() {
     const data = await readRunResponse(response);
     if (data.run) applyRunToChat(data.run);
     void pollPendingRuns();
-  }, [applyRunToChat, pollPendingRuns, setLoading, setStatus]);
+  }, [applyRunToChat, pollPendingRuns, setLoading, setStatusForSession]);
 
   const runPrompt = useCallback(async (
     prompt: string,
@@ -444,8 +496,10 @@ export function useRunPrompt() {
           serverRunId: undefined,
         }, sessionId);
       }
-      setStatus(message, 'err');
-      if (activeRunIdsRef.current.size === 0) setLoading(false, sessionId);
+      setStatusForSession(sessionId, message, 'err');
+      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, sessionId)) {
+        setLoading(false, sessionId);
+      }
     }
   }, [
     activeSessionId,
@@ -459,31 +513,54 @@ export function useRunPrompt() {
     replaceBotMessage,
     selectedIndices,
     setLoading,
-    setStatus,
+    setStatusForSession,
     submitServerRun,
     truncateChatAfterMessage,
     updateUserMessage,
   ]);
 
   const handleCancel = useCallback(() => {
-    const pending = readPendingServerRuns().filter((item) => activeRunIdsRef.current.has(item.id));
+    const sessionId = activeSessionId;
+    const pending = readPendingServerRuns().filter((item) => (
+      item.sessionId === sessionId && activeRunIdsRef.current.has(item.id)
+    ));
     if (pending.length === 0) return;
-    setStatus('正在取消后台任务...', 'warn');
+    setStatusForSession(sessionId, '正在取消后台任务...', 'warn');
     void Promise.allSettled(pending.map((item) => fetch(`/api/runs/${encodeURIComponent(item.id)}`, {
       method: 'DELETE',
       headers: { 'x-run-access-token': item.accessToken },
-    })))
-      .finally(() => {
-        pending.forEach((item) => {
+    }).then(readRunResponse).then(() => item)))
+      .then((results) => {
+        const canceled = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+        canceled.forEach((item) => {
           closeRunEvents(item.id);
           removePendingServerRun(item.id);
+          activeRunIdsRef.current.delete(item.id);
+          replaceBotMessage(item.botMessageId, {
+            prompt: '用户已取消本次请求。',
+            images: [],
+            text: '',
+            code: '',
+            extra: 'error',
+            serverRunId: undefined,
+          }, item.sessionId);
         });
-        activeRunIdsRef.current.clear();
-        setLoading(false);
-        setStatus('已取消', 'warn');
+        setPendingRegenerateMessageId((current) => (
+          canceled.some((item) => item.botMessageId === current) ? null : current
+        ));
+        if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, sessionId)) {
+          setLoading(false, sessionId);
+        }
+        if (canceled.length === pending.length) {
+          setStatusForSession(sessionId, '已取消', 'warn');
+        } else if (canceled.length > 0) {
+          setStatusForSession(sessionId, `已取消 ${canceled.length} 个任务，${pending.length - canceled.length} 个任务仍在运行`, 'warn');
+        } else {
+          setStatusForSession(sessionId, '取消失败，后台任务仍在运行', 'err');
+        }
         void pollPendingRuns();
       });
-  }, [closeRunEvents, pollPendingRuns, setLoading, setStatus]);
+  }, [activeSessionId, closeRunEvents, pollPendingRuns, replaceBotMessage, setLoading, setStatusForSession]);
 
   const handleSend = useCallback((prompt: string) => {
     void runPrompt(prompt);

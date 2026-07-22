@@ -30,10 +30,9 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
     messages,
     isLoading,
     activeSessionId,
-    loadingSessionId,
     deleteMessage,
   } = useChat();
-  const isActiveSessionLoading = isLoading && loadingSessionId === activeSessionId;
+  const isActiveSessionLoading = isLoading;
   const bottomRef = useRef<HTMLDivElement>(null);
   const lastUserIndex = messages.findLastIndex((message) => message.role === 'user');
   const hasAssistantForCurrentTurn = lastUserIndex >= 0
@@ -76,7 +75,7 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
         {messages.map((msg, i) => {
           const isRegeneratingMessage = msg.id === pendingMessageId;
           const isServerRunPending = !!msg.serverRunId && isPendingBotMessage(msg);
-          const isMessagePending = isRegeneratingMessage || isServerRunPending || (isActiveSessionLoading && isPendingBotMessage(msg));
+          const isMessagePending = isRegeneratingMessage || isServerRunPending;
           const canRegenerate = msg.role === 'bot'
             && messages.slice(0, i).some((message) => message.role === 'user' && message.prompt.trim());
           return (

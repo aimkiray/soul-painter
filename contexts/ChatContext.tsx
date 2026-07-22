@@ -97,9 +97,9 @@ export interface ChatSyncTombstone {
 interface ChatContextValue {
   sessions: ChatSession[];
   activeSessionId: string;
-  loadingSessionId: string | null;
   messages: ChatMessage[];
   isLoading: boolean;
+  isSessionLoading: (sessionId: string) => boolean;
   statusText: string;
   statusType: '' | 'ok' | 'err' | 'warn';
   debugRaw: string;
@@ -151,8 +151,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [initialState, setInitialState] = useState(createFallbackChatState);
   const [sessions, setSessions] = useState<ChatSession[]>(initialState.sessions);
   const [activeSessionId, setActiveSessionId] = useState(initialState.activeSessionId);
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
+  const [loadingSessionIds, setLoadingSessionIds] = useState<string[]>([]);
   const [statusText, setStatusText] = useState('');
   const [statusType, setStatusType] = useState<'' | 'ok' | 'err' | 'warn'>('');
   const [debugRaw, setDebugRaw] = useState('（尚未请求）');
@@ -182,6 +181,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     [sessions, activeSessionId],
   );
   const messages = useMemo(() => activeSession?.messages || EMPTY_MESSAGES, [activeSession]);
+  const isSessionLoading = useCallback((sessionId: string) => (
+    loadingSessionIds.includes(sessionId)
+  ), [loadingSessionIds]);
+  const isLoading = isSessionLoading(activeSessionId);
 
   const markLocalMutation = useCallback(() => {
     localMutationRevisionRef.current += 1;
@@ -261,7 +264,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [markLocalMutation]);
 
   const deleteChatSession = useCallback((sessionId: string) => {
-    if (isLoading && loadingSessionId === sessionId) return;
+    if (isSessionLoading(sessionId)) return;
 
     const index = sessions.findIndex((session) => session.id === sessionId);
     if (index < 0) return;
@@ -283,10 +286,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     if (activeSessionId === sessionId) {
       setActiveSessionId(nextSessions[Math.min(index, nextSessions.length - 1)]?.id || nextSessions[0].id);
     }
-  }, [sessions, activeSessionId, isLoading, loadingSessionId, addSyncTombstones, markLocalMutation]);
+  }, [sessions, activeSessionId, isSessionLoading, addSyncTombstones, markLocalMutation]);
 
   const clearChatSession = useCallback((sessionId: string) => {
-    if (isLoading && loadingSessionId === sessionId) return;
+    if (isSessionLoading(sessionId)) return;
     const now = Date.now();
     const target = sessions.find((session) => session.id === sessionId);
     addSyncTombstones((target?.messages || []).map((message) => ({
@@ -313,7 +316,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setStatusType('');
     setDebugRaw('（尚未请求）');
     setDebugVisible(false);
-  }, [sessions, activeSessionId, isLoading, loadingSessionId, addSyncTombstones, markLocalMutation]);
+  }, [sessions, activeSessionId, isSessionLoading, addSyncTombstones, markLocalMutation]);
 
   const { getSyncSnapshot, applySyncedSessions, syncChatHistory } = useChatSync({
     sessions,
@@ -559,9 +562,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     )));
   }, [activeSessionId, updateSessionMessages]);
 
-  const setLoading = useCallback((value: boolean, sessionId = activeSessionId) => {
-    setIsLoading(value);
-    setLoadingSessionId(value ? sessionId : null);
+  const setLoading = useCallback((value: boolean, sessionId?: string) => {
+    if (!value && !sessionId) {
+      setLoadingSessionIds([]);
+      return;
+    }
+
+    const targetSessionId = sessionId || activeSessionId;
+    setLoadingSessionIds((current) => {
+      if (value) {
+        return current.includes(targetSessionId) ? current : [...current, targetSessionId];
+      }
+      return current.filter((id) => id !== targetSessionId);
+    });
   }, [activeSessionId]);
 
   const setStatus = useCallback((text: string, type: '' | 'ok' | 'err' | 'warn' = '') => {
@@ -659,9 +672,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(() => ({
     sessions,
     activeSessionId,
-    loadingSessionId,
     messages,
     isLoading,
+    isSessionLoading,
     statusText,
     statusType,
     debugRaw,
@@ -699,9 +712,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }), [
     sessions,
     activeSessionId,
-    loadingSessionId,
     messages,
     isLoading,
+    isSessionLoading,
     statusText,
     statusType,
     debugRaw,
