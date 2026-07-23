@@ -4,8 +4,6 @@ import React, { createContext, useContext, useState, useCallback, useMemo, useEf
 import { AppConfig, AppOptions } from '@/types';
 import {
   CHAT_API_FORMAT_OPTIONS,
-  CHAT_MODEL_PRESETS,
-  CLAUDE_MODEL_PRESETS,
   DEFAULT_CONFIG,
   DEFAULT_OPTIONS,
   IMAGE_MODEL_PRESETS,
@@ -13,8 +11,38 @@ import {
   CFG_STORAGE_KEY,
   OPTS_STORAGE_KEY,
 } from '@/lib/constants';
+import { getClaudeChatModelOptions, getOpenAIChatModelOptions } from '@/lib/chat-config';
 import { mergeModelOptions, normalizeModelList } from '@/lib/model-options';
 import { clear } from 'idb-keyval';
+
+interface PublicServerConfig {
+  defaultBaseUrl: string;
+  hasDefaultKey: boolean;
+  hasDefaultChatKey: boolean;
+  hasDefaultClaudeKey: boolean;
+  serverAccessRequired: boolean;
+  serverAccessConfigured: boolean;
+  modelGateEnabled: boolean;
+  openAIChatModels: string[];
+  defaultOpenAIChatModel: string;
+  defaultOpenAITitleModel: string;
+  claudeChatModels: string[];
+  defaultClaudeChatModel: string;
+  defaultClaudeTitleModel: string;
+}
+
+interface InitialConfigResult {
+  config: AppConfig;
+  options: AppOptions;
+  hasUrlKey: boolean;
+}
+
+interface ChatModelDefaults {
+  openAIChatModel: string;
+  openAITitleModel: string;
+  claudeChatModel: string;
+  claudeTitleModel: string;
+}
 
 interface ConfigContextValue {
   config: AppConfig;
@@ -36,9 +64,82 @@ interface ConfigContextValue {
   modelGateEnabled: boolean;
   modelGateUnlocked: boolean;
   setModelGateUnlocked: (unlocked: boolean) => void;
+  modelDefaults: ChatModelDefaults;
 }
 
 const ConfigContext = createContext<ConfigContextValue | undefined>(undefined);
+
+const FALLBACK_MODEL_DEFAULTS: ChatModelDefaults = {
+  openAIChatModel: DEFAULT_CONFIG.chatModel,
+  openAITitleModel: DEFAULT_CONFIG.titleModel,
+  claudeChatModel: DEFAULT_CONFIG.claudeModel,
+  claudeTitleModel: DEFAULT_CONFIG.claudeTitleModel,
+};
+
+const FALLBACK_SERVER_CONFIG: PublicServerConfig = {
+  defaultBaseUrl: '',
+  hasDefaultKey: false,
+  hasDefaultChatKey: false,
+  hasDefaultClaudeKey: false,
+  serverAccessRequired: false,
+  serverAccessConfigured: false,
+  modelGateEnabled: false,
+  openAIChatModels: [...DEFAULT_CONFIG.openAIChatModels],
+  defaultOpenAIChatModel: FALLBACK_MODEL_DEFAULTS.openAIChatModel,
+  defaultOpenAITitleModel: FALLBACK_MODEL_DEFAULTS.openAITitleModel,
+  claudeChatModels: [...DEFAULT_CONFIG.claudeChatModels],
+  defaultClaudeChatModel: FALLBACK_MODEL_DEFAULTS.claudeChatModel,
+  defaultClaudeTitleModel: FALLBACK_MODEL_DEFAULTS.claudeTitleModel,
+};
+
+function normalizedString(value: unknown, fallback: string) {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeServerConfig(value: unknown): PublicServerConfig {
+  if (!value || typeof value !== 'object') return FALLBACK_SERVER_CONFIG;
+  const raw = value as Record<string, unknown>;
+  const configuredOpenAIModels = normalizeModelList(raw.openAIChatModels);
+  const configuredClaudeModels = normalizeModelList(raw.claudeChatModels);
+  const defaultOpenAIChatModel = normalizedString(raw.defaultOpenAIChatModel, FALLBACK_SERVER_CONFIG.defaultOpenAIChatModel);
+  const defaultOpenAITitleModel = normalizedString(raw.defaultOpenAITitleModel, FALLBACK_SERVER_CONFIG.defaultOpenAITitleModel);
+  const defaultClaudeChatModel = normalizedString(raw.defaultClaudeChatModel, FALLBACK_SERVER_CONFIG.defaultClaudeChatModel);
+  const defaultClaudeTitleModel = normalizedString(raw.defaultClaudeTitleModel, FALLBACK_SERVER_CONFIG.defaultClaudeTitleModel);
+
+  return {
+    defaultBaseUrl: typeof raw.defaultBaseUrl === 'string' ? raw.defaultBaseUrl : '',
+    hasDefaultKey: !!raw.hasDefaultKey,
+    hasDefaultChatKey: !!raw.hasDefaultChatKey,
+    hasDefaultClaudeKey: !!raw.hasDefaultClaudeKey,
+    serverAccessRequired: !!raw.serverAccessRequired,
+    serverAccessConfigured: !!raw.serverAccessConfigured,
+    modelGateEnabled: !!raw.modelGateEnabled,
+    openAIChatModels: normalizeModelList([
+      ...(configuredOpenAIModels.length > 0 ? configuredOpenAIModels : FALLBACK_SERVER_CONFIG.openAIChatModels),
+      defaultOpenAIChatModel,
+      defaultOpenAITitleModel,
+    ]),
+    defaultOpenAIChatModel,
+    defaultOpenAITitleModel,
+    claudeChatModels: normalizeModelList([
+      ...(configuredClaudeModels.length > 0 ? configuredClaudeModels : FALLBACK_SERVER_CONFIG.claudeChatModels),
+      defaultClaudeChatModel,
+      defaultClaudeTitleModel,
+    ]),
+    defaultClaudeChatModel,
+    defaultClaudeTitleModel,
+  };
+}
+
+async function fetchServerConfig(): Promise<PublicServerConfig> {
+  try {
+    const response = await fetch('/api/config');
+    if (!response.ok) return FALLBACK_SERVER_CONFIG;
+    return normalizeServerConfig(await response.json());
+  } catch {
+    return FALLBACK_SERVER_CONFIG;
+  }
+}
 
 function normalizeChatApiFormat(value: unknown): AppConfig['chatApiFormat'] {
   return CHAT_API_FORMAT_OPTIONS.some((option) => option.value === value)
@@ -46,7 +147,7 @@ function normalizeChatApiFormat(value: unknown): AppConfig['chatApiFormat'] {
     : DEFAULT_CONFIG.chatApiFormat;
 }
 
-async function loadInitialConfig(): Promise<{ config: AppConfig; options: AppOptions; hasUrlKey: boolean }> {
+function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResult {
   const urlConfig: Partial<AppConfig> = {};
   let hasUrlKey = false;
   if (typeof window !== 'undefined') {
@@ -89,24 +190,36 @@ async function loadInitialConfig(): Promise<{ config: AppConfig; options: AppOpt
     storedOpts = JSON.parse(localStorage.getItem(OPTS_STORAGE_KEY) || '{}');
   } catch { /* ignore */ }
 
-  const config: AppConfig = {
+  const runtimeDefaults = {
     ...DEFAULT_CONFIG,
+    chatModel: serverConfig.defaultOpenAIChatModel,
+    titleModel: serverConfig.defaultOpenAITitleModel,
+    openAIChatModels: serverConfig.openAIChatModels,
+    claudeModel: serverConfig.defaultClaudeChatModel,
+    claudeTitleModel: serverConfig.defaultClaudeTitleModel,
+    claudeChatModels: serverConfig.claudeChatModels,
+  };
+
+  const config: AppConfig = {
+    ...runtimeDefaults,
     ...storedConfig,
     ...urlConfig,
+    openAIChatModels: [...serverConfig.openAIChatModels],
+    claudeChatModels: [...serverConfig.claudeChatModels],
     customImageModels: normalizeModelList(storedConfig.customImageModels),
     customChatModels: normalizeModelList(storedConfig.customChatModels),
     chatApiFormat: normalizeChatApiFormat(urlConfig.chatApiFormat ?? storedConfig.chatApiFormat),
     claudeBaseUrl: urlConfig.claudeBaseUrl ?? storedConfig.claudeBaseUrl ?? (
-      storedConfig.chatApiFormat === 'claude' ? storedConfig.chatBaseUrl || '' : DEFAULT_CONFIG.claudeBaseUrl
+      storedConfig.chatApiFormat === 'claude' ? storedConfig.chatBaseUrl || '' : runtimeDefaults.claudeBaseUrl
     ),
     claudeApiKey: urlConfig.claudeApiKey ?? storedConfig.claudeApiKey ?? (
-      storedConfig.chatApiFormat === 'claude' ? storedConfig.chatApiKey || '' : DEFAULT_CONFIG.claudeApiKey
+      storedConfig.chatApiFormat === 'claude' ? storedConfig.chatApiKey || '' : runtimeDefaults.claudeApiKey
     ),
     claudeModel: urlConfig.claudeModel ?? storedConfig.claudeModel ?? (
-      storedConfig.chatApiFormat === 'claude' && storedConfig.chatModel ? storedConfig.chatModel : DEFAULT_CONFIG.claudeModel
+      storedConfig.chatApiFormat === 'claude' && storedConfig.chatModel ? storedConfig.chatModel : runtimeDefaults.claudeModel
     ),
     claudeTitleModel: urlConfig.claudeTitleModel ?? storedConfig.claudeTitleModel ?? (
-      storedConfig.chatApiFormat === 'claude' && storedConfig.titleModel ? storedConfig.titleModel : DEFAULT_CONFIG.claudeTitleModel
+      storedConfig.chatApiFormat === 'claude' && storedConfig.titleModel ? storedConfig.titleModel : runtimeDefaults.claudeTitleModel
     ),
     customClaudeModels: normalizeModelList(storedConfig.customClaudeModels),
     n: urlConfig.n ?? storedConfig.n ?? (DEFAULT_CONFIG.n as number),
@@ -124,8 +237,8 @@ async function loadInitialConfig(): Promise<{ config: AppConfig; options: AppOpt
   }
 
   const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
-  const chatModelOptions = mergeModelOptions(CHAT_MODEL_PRESETS, config.customChatModels);
-  const claudeModelOptions = mergeModelOptions(CLAUDE_MODEL_PRESETS, config.customClaudeModels);
+  const chatModelOptions = getOpenAIChatModelOptions(config);
+  const claudeModelOptions = getClaudeChatModelOptions(config);
   const modelIsImageOption = imageModelOptions.some((m) => m.value === config.model);
   const modelIsKnownClaudeModel = claudeModelOptions.some((m) => m.value === config.model);
   const modelIsKnownChatModel =
@@ -155,10 +268,12 @@ async function loadInitialConfig(): Promise<{ config: AppConfig; options: AppOpt
   return { config, options, hasUrlKey };
 }
 
-function createFallbackInitialConfig(): { config: AppConfig; options: AppOptions; hasUrlKey: boolean } {
+function createFallbackInitialConfig(): InitialConfigResult {
   return {
     config: {
       ...DEFAULT_CONFIG,
+      openAIChatModels: [...DEFAULT_CONFIG.openAIChatModels],
+      claudeChatModels: [...DEFAULT_CONFIG.claudeChatModels],
       customImageModels: [],
       customChatModels: [],
       customClaudeModels: [],
@@ -185,44 +300,40 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [serverAccessConfigured, setServerAccessConfigured] = useState(false);
   const [modelGateEnabled, setModelGateEnabled] = useState(false);
   const [modelGateUnlocked, setModelGateUnlocked] = useState(false);
+  const [modelDefaults, setModelDefaults] = useState(FALLBACK_MODEL_DEFAULTS);
   const [ready, setReady] = useState(false);
-  const [serverConfigReady, setServerConfigReady] = useState(false);
   const [modelGateReady, setModelGateReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    const timeoutId = window.setTimeout(() => {
-      loadInitialConfig()
-        .then((loaded) => {
-          if (cancelled) return;
-          setInitial(loaded);
-          setConfig(loaded.config);
-          setOptions(loaded.options);
-        })
-        .finally(() => {
-          if (!cancelled) setReady(true);
+    void fetchServerConfig()
+      .then((serverConfig) => {
+        if (cancelled) return;
+        setHasDefaultKey(serverConfig.hasDefaultKey);
+        setDefaultBaseUrl(serverConfig.defaultBaseUrl);
+        setHasDefaultChatKey(serverConfig.hasDefaultChatKey);
+        setHasDefaultClaudeKey(serverConfig.hasDefaultClaudeKey);
+        setServerAccessRequired(serverConfig.serverAccessRequired);
+        setServerAccessConfigured(serverConfig.serverAccessConfigured);
+        setModelGateEnabled(serverConfig.modelGateEnabled);
+        setModelDefaults({
+          openAIChatModel: serverConfig.defaultOpenAIChatModel,
+          openAITitleModel: serverConfig.defaultOpenAITitleModel,
+          claudeChatModel: serverConfig.defaultClaudeChatModel,
+          claudeTitleModel: serverConfig.defaultClaudeTitleModel,
         });
-    }, 0);
+
+        const loaded = loadInitialConfig(serverConfig);
+        setInitial(loaded);
+        setConfig(loaded.config);
+        setOptions(loaded.options);
+      })
+      .finally(() => {
+        if (!cancelled) setReady(true);
+      });
     return () => {
       cancelled = true;
-      window.clearTimeout(timeoutId);
     };
-  }, []);
-
-  useEffect(() => {
-    fetch('/api/config')
-      .then((r) => r.json())
-      .then((d) => {
-        setHasDefaultKey(!!d.hasDefaultKey);
-        setDefaultBaseUrl(typeof d.defaultBaseUrl === 'string' ? d.defaultBaseUrl : '');
-        setHasDefaultChatKey(!!d.hasDefaultChatKey);
-        setHasDefaultClaudeKey(!!d.hasDefaultClaudeKey);
-        setServerAccessRequired(!!d.serverAccessRequired);
-        setServerAccessConfigured(!!d.serverAccessConfigured);
-        setModelGateEnabled(!!d.modelGateEnabled);
-      })
-      .catch(() => { /* ignore */ })
-      .finally(() => setServerConfigReady(true));
   }, []);
 
   useEffect(() => {
@@ -302,29 +413,31 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({
     config, options, updateConfig, updateOption,
-    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, serverAccessRequired, serverAccessConfigured, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked,
-  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, serverAccessRequired, serverAccessConfigured, modelGateEnabled, modelGateUnlocked]);
+    saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, serverAccessRequired, serverAccessConfigured, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked, modelDefaults,
+  }), [config, options, updateConfig, updateOption, saveConfig, saveOptions, clearAll, keySource, hasDefaultKey, defaultBaseUrl, chatKeySource, hasDefaultChatKey, claudeKeySource, hasDefaultClaudeKey, serverAccessRequired, serverAccessConfigured, modelGateEnabled, modelGateUnlocked, modelDefaults]);
 
   // Auto-persist config & options on change (debounced)
   useEffect(() => {
+    if (!ready) return;
     const timer = setTimeout(() => {
       localStorage.setItem(CFG_STORAGE_KEY, JSON.stringify(config));
       localStorage.setItem(OPTS_STORAGE_KEY, JSON.stringify(options));
     }, 500);
     return () => clearTimeout(timer);
-  }, [config, options]);
+  }, [config, options, ready]);
 
   // Force-save on page unload (avoid losing last-second changes)
   useEffect(() => {
+    if (!ready) return;
     const handleUnload = () => {
       localStorage.setItem(CFG_STORAGE_KEY, JSON.stringify(config));
       localStorage.setItem(OPTS_STORAGE_KEY, JSON.stringify(options));
     };
     window.addEventListener('beforeunload', handleUnload);
     return () => window.removeEventListener('beforeunload', handleUnload);
-  }, [config, options]);
+  }, [config, options, ready]);
 
-  const hydrationReady = ready && serverConfigReady && modelGateReady;
+  const hydrationReady = ready && modelGateReady;
   return <ConfigContext.Provider value={value}>{hydrationReady ? children : null}</ConfigContext.Provider>;
 }
 

@@ -22,10 +22,12 @@ export interface AppConfig {
   chatModel: string;
   titleModel: string;
   chatApiFormat: 'openai' | 'claude';
+  openAIChatModels?: string[];
   customImageModels: string[];
   customChatModels: string[];
   claudeModel: string;
   claudeTitleModel: string;
+  claudeChatModels?: string[];
   customClaudeModels: string[];
   size: string;
   n: number;

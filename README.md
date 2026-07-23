@@ -46,8 +46,14 @@ npm run dev
 | `DEFAULT_BASE_URL` | OpenAI-compatible/image base URL; include the provider's version prefix when required, e.g. `https://api.openai.com/v1` |
 | `DEFAULT_CHAT_API_KEY` | Optional chat-specific API key; falls back to `DEFAULT_API_KEY` |
 | `DEFAULT_CHAT_BASE_URL` | Optional OpenAI-compatible chat base URL; falls back to `DEFAULT_BASE_URL` |
+| `OPENAI_CHAT_MODELS` | Comma-separated OpenAI Compatible chat models shown in the selector |
+| `DEFAULT_OPENAI_CHAT_MODEL` | Default OpenAI Compatible chat model; defaults to the first configured OpenAI model |
+| `DEFAULT_OPENAI_TITLE_MODEL` | OpenAI Compatible model used to generate chat titles; defaults to the last configured OpenAI model |
 | `DEFAULT_CLAUDE_API_KEY` | Optional Claude-specific API key; falls back to `DEFAULT_CHAT_API_KEY` |
 | `DEFAULT_CLAUDE_BASE_URL` | Optional Claude Compatible base URL; normally `https://api.anthropic.com/v1` |
+| `CLAUDE_CHAT_MODELS` | Comma-separated Claude Compatible chat models shown in the selector |
+| `DEFAULT_CLAUDE_CHAT_MODEL` | Default Claude Compatible chat model; defaults to the first configured Claude model |
+| `DEFAULT_CLAUDE_TITLE_MODEL` | Claude Compatible model used to generate chat titles; defaults to the last configured Claude model |
 | `SERVER_ACCESS_TOKEN` | Required in production when a browser uses server-default API keys; enter the same value in Connection Settings |
 | `ALLOW_ANONYMOUS_DEFAULT_API_KEY` | Explicitly allows anonymous use of server-default keys; disabled by default |
 | `UPSTREAM_HOST_ALLOWLIST` | Comma-separated private hosts allowed as custom upstreams; configured default Base URLs are trusted automatically |

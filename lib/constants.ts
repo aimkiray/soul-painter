@@ -23,15 +23,15 @@ export const IMAGE_MODEL_PRESETS = [
 ] as const;
 
 export const CHAT_MODEL_PRESETS = [
-  { label: 'gpt-5.5', value: 'gpt-5.5' },
-  { label: 'gpt-5.4', value: 'gpt-5.4' },
-  { label: 'gpt-5.4-mini', value: 'gpt-5.4-mini' },
+  { label: 'gpt-5.6-sol', value: 'gpt-5.6-sol' },
+  { label: 'gpt-5.6-terra', value: 'gpt-5.6-terra' },
+  { label: 'gpt-5.6-luna', value: 'gpt-5.6-luna' },
 ] as const;
 
 export const CLAUDE_MODEL_PRESETS = [
   { label: 'claude-fable-5', value: 'claude-fable-5' },
-  { label: 'claude-sonnet-4-6', value: 'claude-sonnet-4-6' },
   { label: 'claude-opus-4-8', value: 'claude-opus-4-8' },
+  { label: 'claude-sonnet-5', value: 'claude-sonnet-5' },
   { label: 'claude-haiku-4-5', value: 'claude-haiku-4-5' },
 ] as const;
 
@@ -55,13 +55,15 @@ export const DEFAULT_CONFIG = {
   serverAccessToken: '',
   mode: 'image',
   model: 'gpt-image-2',
-  chatModel: 'gpt-5.5',
-  titleModel: 'gpt-5.4-mini',
+  chatModel: 'gpt-5.6-sol',
+  titleModel: 'gpt-5.6-terra',
   chatApiFormat: 'openai',
+  openAIChatModels: CHAT_MODEL_PRESETS.map((option) => option.value),
   customImageModels: [],
   customChatModels: [],
-  claudeModel: 'claude-sonnet-4-6',
+  claudeModel: 'claude-sonnet-5',
   claudeTitleModel: 'claude-haiku-4-5',
+  claudeChatModels: CLAUDE_MODEL_PRESETS.map((option) => option.value),
   customClaudeModels: [],
   size: ORIGINAL_ASPECT_SIZE,
   n: 1,

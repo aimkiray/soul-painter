@@ -3,11 +3,9 @@
 import React, { useState } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import {
-  CHAT_MODEL_PRESETS,
-  CLAUDE_MODEL_PRESETS,
   IMAGE_MODEL_PRESETS,
 } from '@/lib/constants';
-import { addModelToList, mergeModelOptions, removeModelFromList } from '@/lib/model-options';
+import { addModelToList, getModelFallback, mergeModelOptions, removeModelFromList } from '@/lib/model-options';
 import {
   encodeChatModelChoice,
   getActiveChatModel,
@@ -28,7 +26,7 @@ export const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#A
 export const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
 
 export default function ModelSettings() {
-  const { config, updateConfig } = useConfig();
+  const { config, updateConfig, modelDefaults } = useConfig();
   const [newImageModel, setNewImageModel] = useState('');
   const [newChatModel, setNewChatModel] = useState('');
   const [newClaudeModel, setNewClaudeModel] = useState('');
@@ -96,21 +94,26 @@ export default function ModelSettings() {
 
   const deleteChatModel = (model: string) => {
     updateConfig('customChatModels', removeModelFromList(config.customChatModels, model));
+    const fallbackModel = getModelFallback(openAIChatModelOptions, modelDefaults.openAIChatModel, model);
     if (activeChatApiFormat === 'openai' && config.chatModel === model) {
       updateConfig('chatApiFormat', 'openai');
-      updateConfig('chatModel', CHAT_MODEL_PRESETS[0].value);
+      updateConfig('chatModel', fallbackModel);
     }
-    if (config.titleModel === model) updateConfig('titleModel', CHAT_MODEL_PRESETS[0].value);
+    if (config.titleModel === model) {
+      updateConfig('titleModel', getModelFallback(openAIChatModelOptions, modelDefaults.openAITitleModel, model));
+    }
   };
 
   const deleteClaudeModel = (model: string) => {
     updateConfig('customClaudeModels', removeModelFromList(config.customClaudeModels, model));
-    if (config.claudeModel === model) updateConfig('claudeModel', CLAUDE_MODEL_PRESETS[0].value);
+    const fallbackModel = getModelFallback(claudeModelOptions, modelDefaults.claudeChatModel, model);
+    const fallbackTitleModel = getModelFallback(claudeModelOptions, modelDefaults.claudeTitleModel, model);
+    if (config.claudeModel === model) updateConfig('claudeModel', fallbackModel);
     if (activeChatApiFormat === 'claude' && config.chatModel === model) {
       updateConfig('chatApiFormat', 'claude');
-      updateConfig('chatModel', CLAUDE_MODEL_PRESETS[0].value);
+      updateConfig('chatModel', fallbackModel);
     }
-    if (config.claudeTitleModel === model) updateConfig('claudeTitleModel', CLAUDE_MODEL_PRESETS[CLAUDE_MODEL_PRESETS.length - 1].value);
+    if (config.claudeTitleModel === model) updateConfig('claudeTitleModel', fallbackTitleModel);
   };
   return (
     <fieldset className={fieldsetClass}>

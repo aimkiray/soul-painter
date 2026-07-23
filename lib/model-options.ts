@@ -16,6 +16,10 @@ export function normalizeModelList(value: unknown): string[] {
     });
 }
 
+export function modelNamesToOptions(models: readonly string[]): ModelOption[] {
+  return normalizeModelList(models).map((value) => ({ label: value, value }));
+}
+
 export function mergeModelOptions(
   presets: readonly ModelOption[],
   customModels: readonly string[],
@@ -44,4 +48,15 @@ export function addModelToList(models: readonly string[], model: string): string
 
 export function removeModelFromList(models: readonly string[], model: string): string[] {
   return normalizeModelList(models).filter((item) => item !== model);
+}
+
+export function getModelFallback(
+  options: readonly ModelOption[],
+  preferredModel: string,
+  removedModel: string,
+) {
+  const remainingModels = options.filter((option) => option.value !== removedModel);
+  return remainingModels.some((option) => option.value === preferredModel)
+    ? preferredModel
+    : remainingModels[0]?.value || preferredModel;
 }

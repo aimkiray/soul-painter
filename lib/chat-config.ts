@@ -1,6 +1,6 @@
 import { AppConfig } from '@/types';
 import { CHAT_MODEL_PRESETS, CLAUDE_MODEL_PRESETS } from '@/lib/constants';
-import { mergeModelOptions, ModelOption } from '@/lib/model-options';
+import { mergeModelOptions, modelNamesToOptions, ModelOption, normalizeModelList } from '@/lib/model-options';
 
 export type ChatApiFormat = AppConfig['chatApiFormat'];
 
@@ -9,11 +9,19 @@ export type ChatProviderModelOption = ModelOption & {
 };
 
 export function getOpenAIChatModelOptions(config: AppConfig): ModelOption[] {
-  return mergeModelOptions(CHAT_MODEL_PRESETS, config.customChatModels);
+  const configuredModels = normalizeModelList(config.openAIChatModels);
+  const presets = configuredModels.length > 0
+    ? modelNamesToOptions(configuredModels)
+    : CHAT_MODEL_PRESETS;
+  return mergeModelOptions(presets, config.customChatModels);
 }
 
 export function getClaudeChatModelOptions(config: AppConfig): ModelOption[] {
-  return mergeModelOptions(CLAUDE_MODEL_PRESETS, config.customClaudeModels);
+  const configuredModels = normalizeModelList(config.claudeChatModels);
+  const presets = configuredModels.length > 0
+    ? modelNamesToOptions(configuredModels)
+    : CLAUDE_MODEL_PRESETS;
+  return mergeModelOptions(presets, config.customClaudeModels);
 }
 
 export function getAllChatModelOptions(config: AppConfig): ChatProviderModelOption[] {
