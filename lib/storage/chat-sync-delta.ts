@@ -31,16 +31,22 @@ export function buildIncrementalSyncPayload(
 ): IncrementalSyncPayload {
   const sessionsToSend = sessions
     .map((session) => {
-      const messages = session.messages.filter((message) => (
-        shouldSendSyncEntity(message, clientKnownUpdatedAt)
-      ));
+      const messages = session.messages
+        .filter((message) => shouldSendSyncEntity(message, clientKnownUpdatedAt))
+        // syncDirty is client-internal bookkeeping — strip it so the server
+        // never stores (and echoes back) a stale "pending" marker.
+        .map((message) => (message.syncDirty ? { ...message, syncDirty: undefined } : message));
       if (!shouldSendSyncEntity(session, clientKnownUpdatedAt) && messages.length === 0) return null;
-      return { ...session, messages };
+      return session.syncDirty
+        ? { ...session, syncDirty: undefined, messages }
+        : { ...session, messages };
     })
     .filter((session): session is ChatSession => session !== null);
 
   return {
     sessions: sessionsToSend,
-    tombstones: tombstones.filter((tombstone) => shouldSendSyncTombstone(tombstone, clientKnownUpdatedAt)),
+    tombstones: tombstones
+      .filter((tombstone) => shouldSendSyncTombstone(tombstone, clientKnownUpdatedAt))
+      .map((tombstone) => (tombstone.syncDirty ? { ...tombstone, syncDirty: undefined } : tombstone)),
   };
 }

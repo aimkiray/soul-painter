@@ -172,8 +172,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const loadingSessionIdsRef = useRef(loadingSessionIds);
   const storageLoadFailedRef = useRef(false);
   const sessionTitleCacheRef = useRef(new Map<string, { key: string; title: string }>());
-  const evictedMessageTombstonesRef = useRef<ChatSyncTombstone[]>([]);
-  const evictionFlushScheduledRef = useRef(false);
+
 
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
   useEffect(() => { loadingSessionIdsRef.current = loadingSessionIds; }, [loadingSessionIds]);
@@ -226,29 +225,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     ]));
   }, [markLocalMutation]);
 
-  // Messages pushed past CHAT_MESSAGES_MAX are deleted locally with no
-  // tombstone — queue them into the same mechanism deleteMessage uses so a
-  // later sync can't resurrect them. The queue is flushed on a timeout
-  // because setSessions updaters must stay free of direct setState calls.
-  const queueMessageEvictionTombstones = useCallback((sessionId: string, evicted: ChatMessage[]) => {
-    if (evicted.length === 0) return;
-    const deletedAt = Date.now();
-    evictedMessageTombstonesRef.current.push(...evicted.map((message) => ({
-      type: 'message' as const,
-      id: message.id,
-      sessionId,
-      deletedAt,
-    })));
-    if (evictionFlushScheduledRef.current) return;
-    evictionFlushScheduledRef.current = true;
-    window.setTimeout(() => {
-      evictionFlushScheduledRef.current = false;
-      const queued = evictedMessageTombstonesRef.current;
-      evictedMessageTombstonesRef.current = [];
-      addSyncTombstones(queued);
-    }, 0);
-  }, [addSyncTombstones]);
-
+  // Messages pushed past CHAT_MESSAGES_MAX are dropped from the local view
+  // only — NO sync tombstone is queued. Eviction is a local retention limit,
+  // not a user delete; broadcasting it would delete the messages server-side
+  // and on every other device. mergeSyncedMessages applies the same cap on
+  // the way in so the view stays bounded without oscillation.
   const updateSessionMessages = useCallback((
     sessionId: string,
     updater: (messages: ChatMessage[], session: ChatSession) => ChatMessage[],
@@ -259,9 +240,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
       const updated = updater(session.messages, session);
       const nextMessages = updated.slice(-CHAT_MESSAGES_MAX);
-      if (updated.length > nextMessages.length) {
-        queueMessageEvictionTombstones(session.id, updated.slice(0, updated.length - nextMessages.length));
-      }
       let title = session.title;
       if (isAutoManagedSessionTitle(session)) {
         const titleKey = sessionTitleCacheKey(nextMessages);
@@ -283,7 +261,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         syncDirty,
       };
     }));
-  }, [markLocalMutation, queueMessageEvictionTombstones]);
+  }, [markLocalMutation]);
 
   const createChatSession = useCallback(() => {
     markLocalMutation();
@@ -491,9 +469,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         const sortedMessages = [...byId.values()]
           .sort((a, b) => a.createdAt - b.createdAt);
         const nextMessages = sortedMessages.slice(-CHAT_MESSAGES_MAX);
-        if (sortedMessages.length > nextMessages.length) {
-          queueMessageEvictionTombstones(session.id, sortedMessages.slice(0, sortedMessages.length - nextMessages.length));
-        }
         const title = isAutoManagedSessionTitle(session)
           ? sessionTitleFromMessages(nextMessages, titleHint || DEFAULT_CHAT_TITLE)
           : session.title;
@@ -531,7 +506,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         ...prev,
       ].slice(0, CHAT_SESSIONS_MAX);
     });
-  }, [markLocalMutation, queueMessageEvictionTombstones]);
+  }, [markLocalMutation]);
 
   const updateUserMessage = useCallback((
     messageId: string,

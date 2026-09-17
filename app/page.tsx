@@ -142,7 +142,6 @@ function HomeInner() {
                 <ChatInput
                   onSend={handleSend}
                   isLoading={isLoading}
-                  onOpenSettings={() => setSettingsOpen(true)}
                   onCancel={handleCancel}
                 />
               </div>

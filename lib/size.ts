@@ -13,10 +13,11 @@ export interface Dimensions {
   naturalHeight: number;
 }
 
-// Custom WxH sizes use 2–5 digits per side. Shared with the custom-size
-// inputs (ChatInput, ImageParamSettings) so the form validation accepts
-// exactly what parseSize accepts.
-export const CUSTOM_SIZE_PATTERN = /^(\d{2,5})x(\d{2,5})$/i;
+// Custom WxH sizes use 2–5 digits per side with at least one nonzero digit
+// each — `00x00` must fail here because parseSize rejects zero dimensions.
+// Shared with the custom-size inputs (ChatInput, ImageParamSettings) so the
+// form validation accepts exactly what parseSize accepts.
+export const CUSTOM_SIZE_PATTERN = /^((?=\d*[1-9])\d{2,5})x((?=\d*[1-9])\d{2,5})$/i;
 
 export function parseSize(size: string): Dimensions | null {
   const match = CUSTOM_SIZE_PATTERN.exec((size || '').trim());

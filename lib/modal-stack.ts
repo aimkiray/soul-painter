@@ -3,6 +3,7 @@
 interface ModalLayer {
   id: string;
   close: () => void;
+  panel?: HTMLElement | null;
 }
 
 const modalStack: ModalLayer[] = [];
@@ -23,15 +24,25 @@ function ensureEscListener() {
 }
 
 // Push a layer onto the stack; returns the unregister function.
-// Only the topmost layer receives Escape.
-export function registerModalLayer(id: string, close: () => void): () => void {
+// Only the topmost layer receives Escape. `panel` lets a closing layer hand
+// focus back to the layer underneath instead of dropping it on <body>.
+export function registerModalLayer(id: string, close: () => void, panel?: HTMLElement | null): () => void {
   ensureEscListener();
-  const layer: ModalLayer = { id, close };
+  const layer: ModalLayer = { id, close, panel };
   modalStack.push(layer);
   return () => {
     const index = modalStack.indexOf(layer);
     if (index >= 0) modalStack.splice(index, 1);
   };
+}
+
+// Move focus to the panel of the topmost open layer (used when a nested
+// modal closes while a lower modal is still open).
+export function focusTopModalLayer() {
+  const panel = modalStack[modalStack.length - 1]?.panel;
+  if (panel && panel.isConnected && !panel.contains(document.activeElement)) {
+    panel.focus({ preventScroll: true });
+  }
 }
 
 export function modalLayerCount(): number {

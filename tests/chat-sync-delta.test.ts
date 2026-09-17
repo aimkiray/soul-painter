@@ -68,6 +68,39 @@ describe('chat-sync-delta', () => {
       syncDirty: true,
     }];
 
-    expect(buildIncrementalSyncPayload([], tombstones, 10_000).tombstones).toEqual(tombstones);
+    const sent = buildIncrementalSyncPayload([], tombstones, 10_000).tombstones;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ id: 'message-1', deletedAt: 1_000 });
+  });
+
+  it('strips the client-internal syncDirty flag from everything it uploads', () => {
+    const payload = buildIncrementalSyncPayload([
+      session({
+        syncDirty: true,
+        updatedAt: 12_000,
+        messages: [{
+          id: 'message-1',
+          role: 'user',
+          prompt: 'p',
+          images: [],
+          text: '',
+          code: '',
+          extra: '',
+          createdAt: 11_000,
+          updatedAt: 11_000,
+          syncDirty: true,
+        }],
+      }),
+    ], [{
+      type: 'message',
+      id: 'old',
+      sessionId: 'session-1',
+      deletedAt: 11_000,
+      syncDirty: true,
+    }], 10_000);
+
+    expect(payload.sessions[0].syncDirty).toBeUndefined();
+    expect(payload.sessions[0].messages[0].syncDirty).toBeUndefined();
+    expect(payload.tombstones[0].syncDirty).toBeUndefined();
   });
 });

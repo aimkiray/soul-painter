@@ -562,7 +562,10 @@ export async function POST(request: NextRequest) {
 
     const response = NextResponse.json({
       ok: true,
-      updatedAt: now.getTime(),
+      // Truncated merges must NOT advance the client cursor: unprocessed
+      // entities sit below the new stamp and would never be re-sent. Hold the
+      // cursor at the inbound value so the next incremental pass retries them.
+      updatedAt: requestTruncated ? responseStamp : now.getTime(),
       sessions: activeSessions,
       tombstones: newTombstones,
       activeSessionId: cleanString(body.activeSessionId),

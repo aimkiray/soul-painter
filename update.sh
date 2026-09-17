@@ -1,10 +1,13 @@
 #!/bin/bash
-# Update soul-painter: git pull → install → build → restart (LaunchDaemon)
+# Update soul-painter: git pull → install → build → restart (LaunchAgent)
 set -e
 cd ~/soul-painter
 
+SERVICE="gui/$(id -u)/com.meow.soul-painter"
+PLIST="$HOME/Library/LaunchAgents/com.meow.soul-painter.plist"
+
 # Stop existing service before update to avoid serving half-updated files
-sudo launchctl bootout system/com.meow.soul-painter 2>/dev/null || true
+launchctl bootout "$SERVICE" 2>/dev/null || true
 for i in $(seq 1 10); do
     if ! lsof -iTCP:3123 -sTCP:LISTEN 2>/dev/null | grep -q .; then
         break
@@ -21,11 +24,11 @@ npm install
 echo "🔨 Building..."
 npm run build
 
-echo "🔄 Starting LaunchDaemon..."
+echo "🔄 Starting LaunchAgent..."
 sleep 1
-if ! sudo launchctl bootstrap system /Library/LaunchDaemons/com.meow.soul-painter.plist 2>/dev/null; then
+if ! launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
     echo "⚠️  bootstrap failed, trying kickstart..."
-    sudo launchctl kickstart -k system/com.meow.soul-painter 2>/dev/null || true
+    launchctl kickstart -k "$SERVICE" 2>/dev/null || true
 fi
 sleep 3
 
@@ -33,6 +36,6 @@ sleep 3
 if curl -sk -o /dev/null -w "%{http_code}" http://127.0.0.1:3123/ | grep -q 200; then
     echo "✅ Updated. Verify: https://poi.boats:12306/"
 else
-    echo "❌ Health check failed! Check logs: sudo tail -20 /opt/homebrew/var/log/soul-painter.err"
+    echo "❌ Health check failed! Check logs: tail -20 ~/.hermes/logs/soul-painter-stderr.log"
     exit 1
 fi

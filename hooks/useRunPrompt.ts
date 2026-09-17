@@ -280,6 +280,12 @@ export function useRunPrompt() {
       closeRunEvents(run.id);
       removePendingServerRun(run.id);
       setPendingRegenerateMessageId((current) => (current === run.botMessageId ? null : current));
+      // A stale loading flag can outlive the session (e.g. clearAll wiped the
+      // session list but not the per-session loading map) — clear it here so
+      // no session is stuck on "generating" for a run we just dropped.
+      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, run.sessionId)) {
+        setLoading(false, run.sessionId);
+      }
       return;
     }
 
@@ -370,7 +376,9 @@ export function useRunPrompt() {
       if (orphaned.length > 0) {
         // Another tab's read-modify-write may have clobbered our pending
         // records — run one last batch query so a finished run still lands
-        // instead of leaving the session stuck on "generating".
+        // instead of leaving the session stuck on "generating". Runs that
+        // come back still-active keep their tracking and the poller re-arms;
+        // only resolved/lost orphans are torn down.
         try {
           const response = await fetch('/api/runs', {
             method: 'POST',
@@ -381,9 +389,43 @@ export function useRunPrompt() {
           });
           const data = await readRunResponse(response);
           const runs = Array.isArray(data.runs) ? data.runs : [];
+          const returnedById = new Map(runs.map((run) => [run.id, run]));
           for (const run of runs) applyRunToChat(run);
+          for (const item of orphaned) {
+            const run = returnedById.get(item.id);
+            if (run && isRunningServerRun(run)) {
+              subscribeRunEvents(item.id);
+              setLoading(true, item.sessionId);
+              continue;
+            }
+            if (!run) {
+              setPendingRegenerateMessageId((current) => (current === item.botMessageId ? null : current));
+              replaceBotMessage(item.botMessageId, {
+                prompt: '后台任务记录已丢失，请重新发送。',
+                images: [],
+                text: '',
+                code: '',
+                extra: 'error',
+                serverRunId: undefined,
+              }, item.sessionId);
+              setStatusForSession(item.sessionId, '后台任务记录已丢失', 'err');
+            }
+            ownedRunsRef.current.delete(item.id);
+            missingRunIdsRef.current.delete(item.id);
+            activeRunIdsRef.current.delete(item.id);
+            closeRunEvents(item.id);
+            if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, item.sessionId)) {
+              setLoading(false, item.sessionId);
+            }
+          }
         } catch {
-          // Nothing else will reconcile these runs — fall through and stop.
+          // The reconcile query failed — keep every orphan tracked so the
+          // next scheduled poll retries instead of abandoning live runs.
+        }
+        if (ownedRunsRef.current.size > 0) {
+          if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+          pollTimerRef.current = setTimeout(() => { void pollPendingRunsRef.current(); }, 4000);
+          return;
         }
       }
       ownedRunsRef.current.clear();

@@ -129,7 +129,18 @@ function ipv6BytesArePrivate(bytes: Uint8Array): boolean {
   if (bytesAllZero(bytes, 0, 15) && bytes[15] === 1) return true; // ::1 loopback
   if ((bytes[0] & 0xfe) === 0xfc) return true; // fc00::/7 unique-local
   if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true; // fe80::/10 link-local
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0xc0) return true; // fec0::/10 site-local (deprecated but still routable)
   if (bytes[0] === 0xff) return true; // ff00::/8 multicast
+
+  // ISATAP tunnel interface identifiers embed an IPv4 in the last 32 bits:
+  // `::0:5efe:a.b.c.d` (private form) or `::200:5efe:` (u/l-bit form). The
+  // tunneled target is the embedded v4 — a private one blocks outright, while
+  // a public one still defers to the outer-prefix checks below.
+  if ((bytes[8] === 0x00 || bytes[8] === 0x02) && bytes[9] === 0x00
+    && bytes[10] === 0x5e && bytes[11] === 0xfe
+    && ipv4BytesArePrivate(bytes[12], bytes[13], bytes[14])) {
+    return true;
+  }
 
   if (bytes[0] === 0x20 && bytes[1] === 0x01) {
     if (bytes[2] === 0x00 && bytes[3] === 0x00) return true; // 2001::/32 Teredo (v4 is XOR-encoded — block entirely)

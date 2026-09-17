@@ -14,6 +14,9 @@ const MAX_STORED_RUNS_BYTES = 64 * 1024 * 1024;
 // otherwise slice the retained history down to zero.
 const MIN_STORED_TERMINAL_RUNS = 50;
 const FLUSH_DEBOUNCE_MS = 500;
+// Failed flushes retry with exponential backoff (persistent ENOSPC would
+// otherwise re-serialize the whole store every 500ms forever).
+const FLUSH_RETRY_MAX_MS = 30_000;
 
 // Module state is pinned on globalThis so Next.js dev-mode HMR re-evaluation
 // shares one cache/write-queue instead of silently dropping pending writes.
@@ -28,6 +31,7 @@ interface RunStoreState {
   cacheMtimeMs: number;
   flushTimer: ReturnType<typeof setTimeout> | null;
   dirty: boolean;
+  flushFailures: number;
   exitHandlersInstalled: boolean;
 }
 
@@ -38,6 +42,7 @@ const state = ((globalThis as Record<string, unknown>).__soulPainterRunStore ??=
   cacheMtimeMs: 0,
   flushTimer: null,
   dirty: false,
+  flushFailures: 0,
   exitHandlersInstalled: false,
 }) as RunStoreState;
 
@@ -50,6 +55,16 @@ async function ensureDataFile() {
     await fs.writeFile(RUNS_FILE, '[]', 'utf8');
   }
   state.dataFileReady = true;
+}
+
+// An unwritable data dir must not take down reads — serve the cache so
+// run creation can still proceed in memory (writes retry via flush).
+async function ensureDataFileSoft() {
+  try {
+    await ensureDataFile();
+  } catch (error) {
+    console.error(`Failed to initialize ${RUNS_FILE}; serving in-memory cache`, error);
+  }
 }
 
 function isActiveRun(run: ServerRunRecord) {
@@ -67,7 +82,7 @@ function isRunRecord(item: unknown): item is ServerRunRecord {
 }
 
 async function readAllRunsUnsafe(): Promise<ServerRunRecord[]> {
-  await ensureDataFile();
+  await ensureDataFileSoft();
   if (state.runsCache) {
     try {
       const stat = await fs.stat(RUNS_FILE);
@@ -137,17 +152,18 @@ function slimTerminalRun(run: ServerRunRecord): ServerRunRecord | null {
 // Produces the exact records + payload to persist. The store is written as
 // compact JSON — pretty printing buys nothing for a server-side file — and
 // sizes are measured in UTF-8 bytes (string .length undercounts CJK ~3x).
+// Sizes are estimated per-record BEFORE serializing the array: a single
+// JSON.stringify over an oversized cache throws RangeError (V8 string limit)
+// and would wedge the store — the exact incident this budget exists to stop.
 // When over budget, terminal records are slimmed then evicted oldest-first.
 function prepareRunsForDisk(runs: ServerRunRecord[]) {
   let sorted = trimRuns(runs);
-  let out = JSON.stringify(sorted);
-  if (Buffer.byteLength(out, 'utf8') <= MAX_STORED_RUNS_BYTES) return { sorted, out };
-
-  // Over budget: precompute each record's serialized size once.
   const sizeCache = new Map<ServerRunRecord, number>();
   const recordBytes = (run: ServerRunRecord) => {
     let size = sizeCache.get(run);
     if (size === undefined) {
+      // Each record individually stays far below the V8 string limit
+      // (request bodies are capped at 32MB); the array join is what overflows.
       size = Buffer.byteLength(JSON.stringify(run), 'utf8');
       sizeCache.set(run, size);
     }
@@ -155,6 +171,9 @@ function prepareRunsForDisk(runs: ServerRunRecord[]) {
   };
   // Array brackets plus one comma per element.
   let total = sorted.reduce((sum, run) => sum + recordBytes(run) + 1, 0) + 2;
+  if (total <= MAX_STORED_RUNS_BYTES) {
+    return { sorted, out: JSON.stringify(sorted) };
+  }
   const active = sorted.filter(isActiveRun);
   const rest = sorted.filter((run) => !isActiveRun(run)); // newest first
 
@@ -180,12 +199,12 @@ function prepareRunsForDisk(runs: ServerRunRecord[]) {
   }
 
   sorted = [...active, ...rest];
+  const out = JSON.stringify(sorted);
   if (total > MAX_STORED_RUNS_BYTES) {
     // Only active runs remain and they alone exceed the budget — a losing
     // battle, but dropping in-flight work would be worse than a large file.
     console.error(`Active server runs alone need ~${total} bytes, over the ${MAX_STORED_RUNS_BYTES}-byte store budget; writing anyway`);
   }
-  out = JSON.stringify(sorted);
   return { sorted, out };
 }
 
@@ -215,7 +234,7 @@ async function writeAllRunsUnsafe(runs: ServerRunRecord[]) {
 
 // Streaming partial results update runs up to ~8x/sec; merging them into one
 // debounced write avoids rewriting the whole file on every chunk.
-function scheduleFlush() {
+function scheduleFlush(delayMs = FLUSH_DEBOUNCE_MS) {
   state.dirty = true;
   if (state.flushTimer) return;
   state.flushTimer = setTimeout(() => {
@@ -225,12 +244,19 @@ function scheduleFlush() {
       state.dirty = false;
       try {
         await writeAllRunsUnsafe(state.runsCache);
+        state.flushFailures = 0;
       } catch (error) {
-        state.dirty = true;
-        console.error(`Failed to persist server runs to ${RUNS_FILE}`, error);
+        state.flushFailures += 1;
+        // Re-arm so a transient failure (ENOSPC, rename lock) retries instead
+        // of waiting for the next mutation or process exit — with backoff so
+        // a persistent failure does not spin on a full re-serialize.
+        const delay = Math.min(FLUSH_DEBOUNCE_MS * 2 ** state.flushFailures, FLUSH_RETRY_MAX_MS);
+        state.flushTimer = null;
+        scheduleFlush(delay);
+        console.error(`Failed to persist server runs to ${RUNS_FILE} (retrying in ${delay}ms)`, error);
       }
     });
-  }, FLUSH_DEBOUNCE_MS);
+  }, delayMs);
 }
 
 // Terminal transitions bypass the debounce: a SIGTERM inside the 500ms window
@@ -271,6 +297,9 @@ function flushRunsOnExit() {
 if (!state.exitHandlersInstalled) {
   state.exitHandlersInstalled = true;
   process.on('beforeExit', flushRunsOnExit);
+  // beforeExit does not fire on uncaughtException or an explicit
+  // process.exit(); the sync flush is legal inside the exit event.
+  process.on('exit', flushRunsOnExit);
   // once() removes this listener before it runs, so re-raising the signal hits
   // the default termination behavior (or another handler) after the flush.
   const flushThenReraise = (signal: 'SIGINT' | 'SIGTERM') => {
@@ -324,23 +353,6 @@ export function createServerRun(run: ServerRunRecord) {
     }
     publishServerRunUpdate(run);
     return { created: true as const, run };
-  });
-}
-
-export function updateServerRun(id: string, patch: Partial<ServerRunRecord>) {
-  return enqueueWrite(async () => {
-    const runs = await readAllRunsUnsafe();
-    const index = runs.findIndex((item) => item.id === id);
-    if (index < 0) return null;
-    const next = {
-      ...runs[index],
-      ...patch,
-      updatedAt: Date.now(),
-    };
-    runs[index] = next;
-    await persistPatch(runs, patch);
-    publishServerRunUpdate(next);
-    return next;
   });
 }
 

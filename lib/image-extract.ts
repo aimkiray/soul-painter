@@ -69,7 +69,7 @@ export function extractImage(resp: unknown): ImageHit | null {
   if (resp && Array.isArray((resp as Record<string, unknown>).data)) {
     for (const item of (resp as Record<string, unknown[]>).data as (Record<string, string> | null)[]) {
       if (!item || typeof item !== 'object') continue;
-      if (item.url) return { url: item.url };
+      if (typeof item.url === 'string' && item.url) return { url: item.url };
       if (item.b64_json) {
         try { return { dataUrl: normalizeToDataUrl(item.b64_json).dataUrl }; } catch { /* ignore */ }
       }
@@ -107,8 +107,8 @@ export function extractImage(resp: unknown): ImageHit | null {
         for (const part of content as (Record<string, unknown> | null)[]) {
           if (!part || typeof part !== 'object') continue;
           if (part.type === 'image_url' && part.image_url) {
-            const u = typeof part.image_url === 'string' ? part.image_url : (part.image_url as Record<string, string>).url;
-            if (u) {
+            const u = typeof part.image_url === 'string' ? part.image_url : (part.image_url as Record<string, unknown>).url;
+            if (typeof u === 'string' && u) {
               if (u.startsWith('data:')) {
                 try { return { dataUrl: normalizeToDataUrl(u).dataUrl }; } catch { /* ignore */ }
               } else return { url: u };

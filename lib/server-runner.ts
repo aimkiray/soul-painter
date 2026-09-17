@@ -566,18 +566,29 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
   const response = JSON.parse(text);
   const parts = extractChatResponseParts(response, format);
   if (!parts.text.trim() && !parts.thinking.trim()) throw new Error('响应为空');
-  return chatResultFromParts(parts, '回复完成', 'ok', text);
+  return chatResultFromParts(parts, '回复完成', 'ok', debugRawFromResponse(text));
 }
 
 // debugRaw/code mirror the upstream image response, which embeds the same
 // base64 bytes that result.images[].dataUrl already stores (~3x the cost per
-// image). Deep-clone the response with every `b64_json` value or
-// `data:image/...` string replaced by a short placeholder.
+// image). Deep-clone the response replacing every inline image payload —
+// `b64_json`-style carrier fields, `data:image/...` strings, and data URLs
+// embedded inside larger text blobs — with a short placeholder.
+const BASE64_CARRIER_KEYS = new Set(['b64_json', 'result', 'image', 'src', 'data']);
+const LONG_BASE64_RE = /^[A-Za-z0-9+/=\r\n]+$/;
+const EMBEDDED_DATA_IMAGE_RE = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+/gi;
+
+function omitBase64(value: string) {
+  return `[base64 omitted: ${Buffer.byteLength(value, 'utf8')} bytes]`;
+}
+
 function stripInlineImageData(value: unknown, key?: string): unknown {
   if (typeof value === 'string') {
-    return key === 'b64_json' || /^data:image\//i.test(value)
-      ? `[base64 omitted: ${Buffer.byteLength(value, 'utf8')} bytes]`
-      : value;
+    if (/^data:image\//i.test(value)) return omitBase64(value);
+    if (key && BASE64_CARRIER_KEYS.has(key.toLowerCase()) && value.length >= 200 && LONG_BASE64_RE.test(value)) {
+      return omitBase64(value);
+    }
+    return value.replace(EMBEDDED_DATA_IMAGE_RE, (match) => omitBase64(match));
   }
   if (Array.isArray(value)) return value.map((item) => stripInlineImageData(item));
   if (value && typeof value === 'object') {
@@ -590,10 +601,17 @@ function stripInlineImageData(value: unknown, key?: string): unknown {
   return value;
 }
 
+const DEBUG_RAW_MAX_CHARS = 1024 * 1024;
+
 function debugRawFromResponse(response: unknown) {
-  return typeof response === 'string'
-    ? response
+  const out = typeof response === 'string'
+    ? stripInlineImageData(response) as string
     : JSON.stringify(stripInlineImageData(response), null, 2);
+  // Hard cap: any payload shape the stripper misses (e.g. a bare multi-MB
+  // base64 blob inside a text field) must not reach the persisted record.
+  return out.length > DEBUG_RAW_MAX_CHARS
+    ? `${out.slice(0, DEBUG_RAW_MAX_CHARS)}\n[debugRaw truncated at ${DEBUG_RAW_MAX_CHARS} chars]`
+    : out;
 }
 
 async function runSingleImage(run: ServerRunRecord, body: Record<string, unknown>, signal: AbortSignal) {
@@ -715,7 +733,7 @@ async function runChatStreamAttempt(
           const parsed = JSON.parse(text);
           return {
             parts: extractChatResponseParts(parsed, format),
-            debugRaw: text,
+            debugRaw: debugRawFromResponse(parsed),
           };
         }
 
@@ -845,7 +863,14 @@ export function ensureServerRunStarted(id: string) {
   activeControllers.set(id, controller);
   const promise = (async () => {
     const run = await readServerRun(id);
-    if ((run?.status === 'queued' || run?.status === 'running') && !runtimeSecrets.has(id)) {
+    // A persisted 'running' record reaching this point is orphaned — its
+    // executor died with the process (a live one would have returned from
+    // activeRuns above) and its request payload was stripped at the running
+    // transition, so it cannot resume even if a duplicate POST re-registered
+    // secrets. 'queued' records can only resume when secrets exist this boot.
+    const orphaned = run?.status === 'running'
+      || (run?.status === 'queued' && !runtimeSecrets.has(id));
+    if (run && orphaned) {
       const message = '后台任务因服务进程重启已中断，请重新发送。';
       // Conditional write: a cancel that landed first must not be flipped to
       // 'failed' by this restart-orphan sweep.

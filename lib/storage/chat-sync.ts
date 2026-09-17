@@ -1,7 +1,7 @@
 import { useCallback, type MutableRefObject } from 'react';
-import type { ChatMessage, ChatSession, ChatSyncTombstone, ChatTurnSnapshot } from '@/contexts/ChatContext';
+import type { ChatMessage, ChatReferenceImage, ChatSession, ChatSyncTombstone, ChatTurnSnapshot } from '@/contexts/ChatContext';
 import type { ImageHit } from '@/types';
-import { CHAT_SESSIONS_MAX } from '@/lib/constants';
+import { CHAT_MESSAGES_MAX, CHAT_SESSIONS_MAX } from '@/lib/constants';
 import {
   isPlaceholderSession,
   normalizeStoredSessions,
@@ -96,13 +96,35 @@ function syncedMessageStamp(message: ChatMessage) {
   return Math.max(message.updatedAt ?? 0, message.editedAt ?? 0, message.createdAt ?? 0);
 }
 
-// Merge synced images with the local copy by position: the sync payload only
-// carries uploaded asset URLs, so an un-uploaded local dataUrl is preserved.
-// Local trailing images that were never uploaded (no url) survive too — the
-// stored copy could never have known them.
+// A synced image has no stable id — pair it with the local copy by value:
+// the asset url for uploaded images, or the exact dataUrl for inline ones.
+// Index-based pairing would graft a dataUrl onto an unrelated image whenever
+// the server omitted an un-uploaded local entry and shifted the positions.
+function imageMergeKey(image: ImageHit): string | null {
+  if (image.url) return `u:${image.url}`;
+  if (image.dataUrl) return `d:${image.dataUrl}`;
+  return null;
+}
+
 function mergeSyncedImages(synced: ImageHit[], local: ImageHit[]): ImageHit[] {
-  const merged = synced.map((image, index) => {
-    const localImage = local[index];
+  const pool = new Map<string, ImageHit[]>();
+  for (const candidate of local) {
+    const key = imageMergeKey(candidate);
+    if (!key) continue;
+    const bucket = pool.get(key);
+    if (bucket) bucket.push(candidate);
+    else pool.set(key, [candidate]);
+  }
+  const take = (key: string | null) => {
+    if (!key) return undefined;
+    const bucket = pool.get(key);
+    const hit = bucket?.shift();
+    if (bucket && bucket.length === 0) pool.delete(key);
+    return hit;
+  };
+
+  const merged = synced.map((image) => {
+    const localImage = take(imageMergeKey(image));
     if (!localImage) return image;
     return {
       ...image,
@@ -110,50 +132,83 @@ function mergeSyncedImages(synced: ImageHit[], local: ImageHit[]): ImageHit[] {
       url: image.url ?? localImage.url,
     };
   });
-  return merged.concat(local.slice(synced.length).filter((image) => !image.url && !!image.dataUrl));
+  // Un-uploaded local-only images (dataUrl, no url) never reached the server —
+  // keep the ones not already matched, in their original relative order.
+  for (const candidate of local) {
+    if (candidate.url || !candidate.dataUrl) continue;
+    if (take(imageMergeKey(candidate))) merged.push(candidate);
+  }
+  return merged;
 }
 
 function mergeSyncedRequest(synced: ChatTurnSnapshot | undefined, local: ChatTurnSnapshot | undefined) {
   if (!synced) return local;
   if (!local) return synced;
+  const pool = new Map<string, ChatReferenceImage[]>();
+  for (const reference of local.referenceImages) {
+    const key = imageMergeKey(reference.image);
+    if (!key) continue;
+    const bucket = pool.get(key);
+    if (bucket) bucket.push(reference);
+    else pool.set(key, [reference]);
+  }
+  const take = (key: string | null) => {
+    if (!key) return undefined;
+    const bucket = pool.get(key);
+    const hit = bucket?.shift();
+    if (bucket && bucket.length === 0) pool.delete(key);
+    return hit;
+  };
+
+  const referenceImages = synced.referenceImages.map((reference) => {
+    const localReference = take(imageMergeKey(reference.image));
+    if (!localReference) return reference;
+    return {
+      ...reference,
+      image: { ...reference.image, dataUrl: reference.image.dataUrl ?? localReference.image.dataUrl },
+      mask: reference.mask
+        ? { ...reference.mask, dataUrl: reference.mask.dataUrl ?? localReference.mask?.dataUrl }
+        : localReference.mask,
+    };
+  });
+  for (const reference of local.referenceImages) {
+    if (reference.image.url || !reference.image.dataUrl) continue;
+    if (take(imageMergeKey(reference.image))) referenceImages.push(reference);
+  }
+
   return {
     ...synced,
-    referenceImages: synced.referenceImages.map((reference, index) => {
-      const localReference = local.referenceImages[index];
-      if (!localReference) return reference;
-      return {
-        ...reference,
-        image: { ...reference.image, dataUrl: reference.image.dataUrl ?? localReference.image.dataUrl },
-        mask: reference.mask
-          ? { ...reference.mask, dataUrl: reference.mask.dataUrl ?? localReference.mask?.dataUrl }
-          : reference.mask,
-      };
-    }),
+    referenceImages,
   };
 }
 
-// Per-message merge: a strictly-newer synced message wins, but client-only
-// fields the sync payload can't carry (code, serverRunId, un-uploaded image
-// dataUrls) are preserved from the local copy.
+// Per-message merge: an echoed message with a stamp at least as new as the
+// local copy means the server holds that version — the local mutation is
+// acknowledged, so syncDirty clears. (The echoed syncDirty flag itself is
+// client-controlled metadata the server stores verbatim; it is not proof of
+// a pending change and is never trusted.) A strictly-older echo keeps the
+// local copy dirty so it is re-uploaded next round.
 function mergeSyncedMessages(local: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
   const byId = new Map<string, ChatMessage>(local.map((message) => [message.id, message]));
   for (const synced of incoming) {
     const existing = byId.get(synced.id);
     if (!existing) {
-      byId.set(synced.id, synced);
+      byId.set(synced.id, synced.syncDirty ? { ...synced, syncDirty: false } : synced);
       continue;
     }
-    if (syncedMessageStamp(synced) <= syncedMessageStamp(existing)) continue;
+    if (syncedMessageStamp(synced) < syncedMessageStamp(existing)) continue;
     byId.set(synced.id, {
       ...synced,
       code: synced.code || existing.code,
       serverRunId: synced.serverRunId ?? existing.serverRunId,
       images: mergeSyncedImages(synced.images, existing.images),
       request: mergeSyncedRequest(synced.request, existing.request),
-      syncDirty: synced.syncDirty === true || existing.syncDirty === true,
+      syncDirty: false,
     });
   }
-  return [...byId.values()].sort((a, b) => a.createdAt - b.createdAt);
+  return [...byId.values()]
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .slice(-CHAT_MESSAGES_MAX);
 }
 
 export function mergeSyncedSessionList(
@@ -184,14 +239,22 @@ export function mergeSyncedSessionList(
   for (const synced of incoming) {
     const existing = byId.get(synced.id);
     if (!existing) {
-      byId.set(synced.id, synced);
+      byId.set(synced.id, {
+        ...synced,
+        syncDirty: false,
+        messages: synced.messages
+          .map((message) => (message.syncDirty ? { ...message, syncDirty: false } : message))
+          .slice(-CHAT_MESSAGES_MAX),
+      });
       continue;
     }
     const base = syncEntityStamp(synced) > syncEntityStamp(existing) ? synced : existing;
     byId.set(synced.id, {
       ...base,
       updatedAt: Math.max(synced.updatedAt, existing.updatedAt),
-      syncDirty: synced.syncDirty === true || existing.syncDirty === true,
+      // An echo at least as new as the local copy acknowledges the local
+      // mutation; a strictly-older echo keeps the session dirty for re-upload.
+      syncDirty: syncEntityStamp(synced) < syncEntityStamp(existing) && existing.syncDirty === true,
       messages: mergeSyncedMessages(existing.messages, synced.messages),
     });
   }

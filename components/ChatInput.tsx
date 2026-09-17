@@ -22,7 +22,6 @@ import {
 interface ChatInputProps {
   onSend: (prompt: string) => Promise<void> | void;
   isLoading: boolean;
-  onOpenSettings: () => void;
   onCancel?: () => void;
 }
 

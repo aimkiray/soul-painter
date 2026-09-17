@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
-import { registerModalLayer, modalLayerCount } from '@/lib/modal-stack';
+import { registerModalLayer, modalLayerCount, focusTopModalLayer } from '@/lib/modal-stack';
 
 interface ModalProps {
   id: string;
@@ -40,16 +40,19 @@ export default function Modal({
     restoreFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    const unregister = registerModalLayer(id, () => onCloseRef.current());
+    const unregister = registerModalLayer(id, () => onCloseRef.current(), panelRef.current);
     const panel = panelRef.current;
     if (panel && !panel.contains(document.activeElement)) panel.focus();
     return () => {
       unregister();
       const target = restoreFocusRef.current;
       restoreFocusRef.current = null;
-      // A lower modal layer is still open — leave focus where it is instead of
-      // yanking it back to a background element.
-      if (modalLayerCount() > 0) return;
+      // A lower modal layer is still open — hand focus to its panel; leaving
+      // it on a detached node or <body> would strand it outside the trap.
+      if (modalLayerCount() > 0) {
+        focusTopModalLayer();
+        return;
+      }
       if (target && target.isConnected) target.focus({ preventScroll: true });
     };
   }, [open, id]);
@@ -94,7 +97,7 @@ export default function Modal({
           if (!panel) return;
           const focusables = Array.from(
             panel.querySelectorAll<HTMLElement>(
-              'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+              'button, [href], input, select, textarea, summary, iframe, [contenteditable="true"], audio[controls], video[controls], [tabindex]:not([tabindex="-1"])',
             ),
           ).filter((el) => !el.hasAttribute('disabled') && el.getClientRects().length > 0);
           if (focusables.length === 0) {

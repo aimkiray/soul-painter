@@ -418,9 +418,14 @@ interface SessionDirSummary {
   bytes: number;
 }
 
-/** Session dirs sorted oldest-idle first — the same ordering the expired
- *  session cleanup applies via lastAccessedAt. */
-async function listSessionDirSummaries(): Promise<SessionDirSummary[]> {
+// While the store is over budget every upload would otherwise re-walk every
+// session dir (listSessionAssets + readSessionMeta per dir). A short-lived
+// single-flight result keeps eviction roughly current without rescanning.
+let sessionDirSummaryCache: { summaries: SessionDirSummary[]; measuredAt: number } | null = null;
+let sessionDirSummaryMeasure: Promise<SessionDirSummary[]> | null = null;
+const SESSION_SUMMARY_REFRESH_MS = 10_000;
+
+async function measureSessionDirSummaries(): Promise<SessionDirSummary[]> {
   let handle;
   try {
     handle = await opendir(CHAT_ASSET_DIR);
@@ -449,6 +454,23 @@ async function listSessionDirSummaries(): Promise<SessionDirSummary[]> {
   return summaries.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
 }
 
+/** Session dirs sorted oldest-idle first — the same ordering the expired
+ *  session cleanup applies via lastAccessedAt. */
+function listSessionDirSummaries(): Promise<SessionDirSummary[]> {
+  if (sessionDirSummaryCache && Date.now() - sessionDirSummaryCache.measuredAt < SESSION_SUMMARY_REFRESH_MS) {
+    return Promise.resolve(sessionDirSummaryCache.summaries);
+  }
+  sessionDirSummaryMeasure ??= measureSessionDirSummaries()
+    .then((summaries) => {
+      sessionDirSummaryCache = { summaries, measuredAt: Date.now() };
+      return summaries;
+    })
+    .finally(() => {
+      sessionDirSummaryMeasure = null;
+    });
+  return sessionDirSummaryMeasure;
+}
+
 /** Enforce the global store budget before a write: evict oldest-idle sessions
  *  until under budget, and fail when eviction cannot make room. */
 async function enforceGlobalStoreBudget(protectedSessionId: string) {
@@ -462,6 +484,12 @@ async function enforceGlobalStoreBudget(protectedSessionId: string) {
       .catch(() => undefined);
     total -= summary.bytes;
     noteStoredBytesDelta(-summary.bytes);
+    // Drop the evicted dir from the cached scan so a re-entry inside the TTL
+    // cannot double-subtract it.
+    if (sessionDirSummaryCache) {
+      sessionDirSummaryCache.summaries = sessionDirSummaryCache.summaries
+        .filter((item) => item.sessionId !== summary.sessionId);
+    }
   }
   if (total > CHAT_ASSETS_MAX_TOTAL_BYTES) throw new ChatAssetStoreFullError();
 }
