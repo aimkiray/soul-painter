@@ -35,7 +35,23 @@ export default function TabDecode() {
   };
 
   const handleOpen = () => {
-    if (imgSrc) window.open(imgSrc, '_blank');
+    if (!imgSrc) return;
+    try {
+      const commaIndex = imgSrc.indexOf(',');
+      const header = commaIndex >= 0 ? imgSrc.slice(0, commaIndex) : '';
+      const data = commaIndex >= 0 ? imgSrc.slice(commaIndex + 1) : '';
+      const mime = /^data:(.*?)(;|$)/.exec(header)?.[1] || 'application/octet-stream';
+      const isBase64 = /;base64/i.test(header);
+      const raw = isBase64 ? atob(data) : decodeURIComponent(data);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      // Chrome silently drops window.open(dataURL); a blob URL works.
+      const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      window.open(blobUrl, '_blank');
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch {
+      window.open(imgSrc, '_blank');
+    }
   };
 
   const ext = meta?.mime ? meta.mime.split('/')[1] : 'png';

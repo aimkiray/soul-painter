@@ -18,7 +18,6 @@ import {
   createEmptySession,
   createFallbackChatState,
   normalizeSyncTombstones,
-  isEmptyBotMessage,
 } from '@/lib/storage/chat-normalize';
 
 import {
@@ -33,6 +32,8 @@ import {
 } from '@/lib/storage/chat-store';
 
 import { useChatSync, type ChatSyncSnapshot, type ChatSyncResult } from '@/lib/storage/chat-sync';
+import { readPendingServerRuns } from '@/lib/server-runs';
+import { isLocalDataCleared } from '@/lib/local-data-cleared';
 
 export interface ChatMessage {
   id: string;
@@ -104,6 +105,8 @@ interface ChatContextValue {
   statusType: '' | 'ok' | 'err' | 'warn';
   debugRaw: string;
   debugVisible: boolean;
+  promptDrafts: Record<string, string>;
+  setPromptDraft: (sessionId: string, text: string) => void;
   createChatSession: () => string;
   switchChatSession: (sessionId: string) => void;
   renameChatSession: (sessionId: string, title: string) => void;
@@ -116,13 +119,7 @@ interface ChatContextValue {
   addUserMsg: (prompt: string, sessionId?: string, request?: ChatTurnSnapshot, serverRunId?: string) => string;
   addBotMsg: (images: ImageHit[], code: string, extra: string, sessionId?: string, serverRunId?: string) => string;
   addTextBotMsg: (text: string, code: string, sessionId?: string, thinking?: string, thinkingDone?: boolean) => string;
-  updateLastBotMsg: (images: ImageHit[], code?: string, sessionId?: string) => void;
-  updateLastBotText: (text: string, sessionId?: string) => void;
-  updateBotMsg: (messageId: string, images: ImageHit[], code?: string, sessionId?: string) => void;
-  updateBotText: (messageId: string, text: string, sessionId?: string, thinking?: string, thinkingDone?: boolean) => void;
-  addErrorMsg: (error: string, sessionId?: string) => void;
   deleteMessage: (messageId: string, sessionId?: string) => void;
-  restoreSessionMessages: (sessionId: string, messages: ChatMessage[]) => void;
   updateUserMessage: (
     messageId: string,
     prompt: string,
@@ -146,6 +143,12 @@ interface ChatContextValue {
   clearChat: () => void;
 }
 
+function sessionTitleCacheKey(messages: ChatMessage[]) {
+  const last = messages[messages.length - 1];
+  const firstUser = messages.find((message) => message.role === 'user');
+  return `${messages.map((message) => message.id).join('|')}|${last?.thinkingDone ?? ''}|${last?.images.length ?? 0}|${firstUser?.prompt.length ?? 0}`;
+}
+
 const ChatContext = createContext<ChatContextValue | undefined>(undefined);
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [initialState, setInitialState] = useState(createFallbackChatState);
@@ -156,13 +159,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [statusType, setStatusType] = useState<'' | 'ok' | 'err' | 'warn'>('');
   const [debugRaw, setDebugRaw] = useState('（尚未请求）');
   const [debugVisible, setDebugVisible] = useState(false);
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [syncTombstones, setSyncTombstones] = useState<ChatSyncTombstone[]>([]);
   const [storageReady, setStorageReady] = useState(false);
   const [autoSyncRetryTick, setAutoSyncRetryTick] = useState(0);
   const applyingSyncRef = useRef(false);
   const lastAutoSyncSignatureRef = useRef('');
   const autoSyncFailureCountRef = useRef(0);
+  const autoSyncRetryTimerRef = useRef<number | null>(null);
   const localMutationRevisionRef = useRef(0);
+  const activeSessionIdRef = useRef(activeSessionId);
+  const loadingSessionIdsRef = useRef(loadingSessionIds);
+  const storageLoadFailedRef = useRef(false);
+  const sessionTitleCacheRef = useRef(new Map<string, { key: string; title: string }>());
+
+  useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+  useEffect(() => { loadingSessionIdsRef.current = loadingSessionIds; }, [loadingSessionIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -171,12 +183,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         const loaded = await loadChatState();
         const tombstones = await loadSyncTombstones();
         if (cancelled) return;
+        if (loaded.loadFailed) storageLoadFailedRef.current = true;
         setInitialState(loaded);
         setSessions(loaded.sessions);
         setActiveSessionId(loaded.activeSessionId);
         setSyncTombstones(tombstones);
       } catch {
         // Keep the fallback session when IndexedDB is unavailable.
+        storageLoadFailedRef.current = true;
       } finally {
         if (!cancelled) setStorageReady(true);
       }
@@ -219,9 +233,17 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       if (session.id !== sessionId) return session;
 
       const nextMessages = updater(session.messages, session).slice(-CHAT_MESSAGES_MAX);
-      const title = isAutoManagedSessionTitle(session)
-        ? sessionTitleFromMessages(nextMessages, DEFAULT_CHAT_TITLE)
-        : session.title;
+      let title = session.title;
+      if (isAutoManagedSessionTitle(session)) {
+        const titleKey = sessionTitleCacheKey(nextMessages);
+        const cached = sessionTitleCacheRef.current.get(session.id);
+        if (cached && cached.key === titleKey) {
+          title = cached.title;
+        } else {
+          title = sessionTitleFromMessages(nextMessages, DEFAULT_CHAT_TITLE);
+          sessionTitleCacheRef.current.set(session.id, { key: titleKey, title });
+        }
+      }
       const syncDirty = session.syncDirty === true || title !== session.title;
 
       return {
@@ -250,6 +272,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     if (!sessions.some((session) => session.id === sessionId)) return;
     markLocalMutation();
     setActiveSessionId(sessionId);
+    setStatusText('');
+    setStatusType('');
+    setDebugRaw('（尚未请求）');
+    setDebugVisible(false);
   }, [sessions, markLocalMutation]);
 
   const renameChatSession = useCallback((sessionId: string, title: string) => {
@@ -274,12 +300,26 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     )));
   }, [markLocalMutation]);
 
+  const setPromptDraft = useCallback((sessionId: string, text: string) => {
+    setPromptDrafts((prev) => {
+      if (!text) {
+        if (!(sessionId in prev)) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      }
+      return prev[sessionId] === text ? prev : { ...prev, [sessionId]: text };
+    });
+  }, []);
+
   const deleteChatSession = useCallback((sessionId: string) => {
     if (isSessionLoading(sessionId)) return;
 
     const index = sessions.findIndex((session) => session.id === sessionId);
     if (index < 0) return;
     addSyncTombstones([{ type: 'session', id: sessionId, deletedAt: Date.now() }]);
+    sessionTitleCacheRef.current.delete(sessionId);
+    setPromptDraft(sessionId, '');
 
     if (sessions.length <= 1) {
       const replacement = createEmptySession();
@@ -297,7 +337,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     if (activeSessionId === sessionId) {
       setActiveSessionId(nextSessions[Math.min(index, nextSessions.length - 1)]?.id || nextSessions[0].id);
     }
-  }, [sessions, activeSessionId, isSessionLoading, addSyncTombstones, markLocalMutation]);
+  }, [sessions, activeSessionId, isSessionLoading, addSyncTombstones, markLocalMutation, setPromptDraft]);
 
   const clearChatSession = useCallback((sessionId: string) => {
     if (isSessionLoading(sessionId)) return;
@@ -385,83 +425,21 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     return message.id;
   }, [activeSessionId, updateSessionMessages]);
 
-  const updateLastBotMsg = useCallback((images: ImageHit[], code?: string, sessionId = activeSessionId) => {
-    updateSessionMessages(sessionId, (prev) => {
-      if (prev.length === 0) return prev;
-      const last = prev[prev.length - 1];
-      if (last.role !== 'bot') return prev;
-      const updated: ChatMessage = { ...last, images: [...images], code: code ?? last.code, updatedAt: Date.now(), syncDirty: true };
-      return [...prev.slice(0, -1), updated];
-    });
-  }, [activeSessionId, updateSessionMessages]);
-
-  const updateLastBotText = useCallback((text: string, sessionId = activeSessionId) => {
-    updateSessionMessages(sessionId, (prev) => {
-      if (prev.length === 0) return prev;
-      const last = prev[prev.length - 1];
-      if (last.role !== 'bot') return prev;
-      return [...prev.slice(0, -1), { ...last, text, updatedAt: Date.now(), syncDirty: true }];
-    });
-  }, [activeSessionId, updateSessionMessages]);
-
-  const updateBotMsg = useCallback((messageId: string, images: ImageHit[], code?: string, sessionId = activeSessionId) => {
-    updateSessionMessages(sessionId, (prev) => prev.map((message) => (
-      message.id === messageId && message.role === 'bot'
-        ? { ...message, images: [...images], code: code ?? message.code, updatedAt: Date.now(), syncDirty: true }
-        : message
-    )));
-  }, [activeSessionId, updateSessionMessages]);
-
-  const updateBotText = useCallback((
-    messageId: string,
-    text: string,
-    sessionId = activeSessionId,
-    thinking?: string,
-    thinkingDone?: boolean,
-  ) => {
-    updateSessionMessages(sessionId, (prev) => prev.map((message) => (
-      message.id === messageId && message.role === 'bot'
-        ? {
-          ...message,
-          text,
-          thinking: thinking ?? message.thinking,
-          thinkingDone: thinkingDone ?? message.thinkingDone,
-          updatedAt: Date.now(),
-          syncDirty: true,
-        }
-        : message
-    )));
-  }, [activeSessionId, updateSessionMessages]);
-
-  const addErrorMsg = useCallback((error: string, sessionId = activeSessionId) => {
-    updateSessionMessages(sessionId, (prev) => {
-      const errorMessage = createChatMessage({ role: 'bot', prompt: error, images: [], text: '', code: '', extra: 'error' });
-      if (isEmptyBotMessage(prev[prev.length - 1])) {
-        return [...prev.slice(0, -1), errorMessage];
-      }
-      return [...prev, errorMessage];
-    });
-  }, [activeSessionId, updateSessionMessages]);
-
   const deleteMessage = useCallback((messageId: string, sessionId = activeSessionId) => {
     const session = sessions.find((item) => item.id === sessionId);
+    const target = session?.messages.find((message) => message.id === messageId);
+    if (target?.serverRunId && readPendingServerRuns().some((run) => run.id === target.serverRunId)) {
+      if (sessionId === activeSessionId) {
+        setStatusText('任务进行中，无法删除');
+        setStatusType('warn');
+      }
+      return;
+    }
     if (session?.messages.some((message) => message.id === messageId)) {
       addSyncTombstones([{ type: 'message', id: messageId, sessionId, deletedAt: Date.now() }]);
     }
     updateSessionMessages(sessionId, (prev) => prev.filter((message) => message.id !== messageId));
   }, [sessions, activeSessionId, updateSessionMessages, addSyncTombstones]);
-
-  const restoreSessionMessages = useCallback((sessionId: string, messages: ChatMessage[]) => {
-    if (messages.length > 0) {
-      const restoredMessageIds = new Set(messages.map((message) => message.id));
-      setSyncTombstones((prev) => prev.filter((tombstone) => !(
-        tombstone.type === 'message'
-        && tombstone.sessionId === sessionId
-        && restoredMessageIds.has(tombstone.id)
-      )));
-    }
-    updateSessionMessages(sessionId, () => messages);
-  }, [updateSessionMessages]);
 
   const upsertMessages = useCallback((sessionId: string, incomingMessages: ChatMessage[], titleHint?: string) => {
     if (incomingMessages.length === 0) return;
@@ -602,23 +580,44 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!storageReady) return;
+    if (!storageReady || storageLoadFailedRef.current || isLocalDataCleared()) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void (async () => {
         const recentSessions = sessions.slice(0, CHAT_SESSIONS_MAX);
         const { storedSessions, memorySessions, changed } = await prepareSessionsForStorage(recentSessions);
 
-        if (cancelled) return;
+        if (cancelled || isLocalDataCleared()) return;
         if (changed) {
+          // prepareSessionsForStorage 只改写 messages 的 images/request（dataUrl→asset URL）；
+          // 按 id 逐条合并，避免用 await 前的旧快照整体覆盖流式新增的消息
+          const snapshotById = new Map(
+            recentSessions.flatMap((session) => session.messages.map((message) => [message.id, message] as const)),
+          );
           setSessions((current) => current.map((session) => {
             const replacement = memorySessions.find((item) => item.id === session.id);
-            return replacement ? { ...session, messages: replacement.messages } : session;
+            if (!replacement) return session;
+            const preparedById = new Map(replacement.messages.map((message) => [message.id, message]));
+            return {
+              ...session,
+              messages: session.messages.map((message) => {
+                const prepared = preparedById.get(message.id);
+                // Only adopt the prepared fields when the live message is the
+                // same object the snapshot was built from — a concurrent
+                // replaceBotMessage would otherwise be overwritten.
+                if (prepared && snapshotById.get(message.id) === message) {
+                  return { ...message, images: prepared.images, request: prepared.request };
+                }
+                return message;
+              }),
+            };
           }));
         }
 
-        persistStoredSessions(storedSessions, activeSessionId);
-      })();
+        if (!isLocalDataCleared()) {
+          persistStoredSessions(storedSessions, activeSessionIdRef.current);
+        }
+      })().catch(() => { /* storage write failures are non-fatal */ });
     }, 300);
     return () => {
       cancelled = true;
@@ -627,12 +626,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [sessions, activeSessionId, storageReady]);
 
   useEffect(() => {
-    if (!storageReady) return;
-    try {
-      import('idb-keyval').then(({ set }) => set(CHAT_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify(syncTombstones)));
-    } catch {
-      // ignore
-    }
+    if (!storageReady || storageLoadFailedRef.current || isLocalDataCleared()) return;
+    import('idb-keyval')
+      .then(({ set }) => set(CHAT_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify(syncTombstones)))
+      .catch(() => { /* ignore */ });
   }, [syncTombstones, storageReady]);
 
   useEffect(() => {
@@ -662,18 +659,27 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             autoSyncFailureCountRef.current = 0;
             lastAutoSyncSignatureRef.current = signature;
             persistSessionSyncAuth(auth, result.updatedAt);
-          } else {
+          } else if (loadingSessionIdsRef.current.length === 0) {
+            // run 进行中不重试：run 结束后的 localMutation 会让 signature 变化并自然触发下一次同步
             setAutoSyncRetryTick((value) => value + 1);
           }
         } catch {
           autoSyncFailureCountRef.current += 1;
-          window.setTimeout(() => {
+          if (autoSyncRetryTimerRef.current) window.clearTimeout(autoSyncRetryTimerRef.current);
+          autoSyncRetryTimerRef.current = window.setTimeout(() => {
+            autoSyncRetryTimerRef.current = null;
             setAutoSyncRetryTick((value) => value + 1);
           }, Math.min(30_000, 2_000 * autoSyncFailureCountRef.current));
         }
       })();
     }, 1500);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (autoSyncRetryTimerRef.current) {
+        window.clearTimeout(autoSyncRetryTimerRef.current);
+        autoSyncRetryTimerRef.current = null;
+      }
+    };
   }, [sessions, activeSessionId, syncTombstones, autoSyncRetryTick, getSyncSnapshot, syncChatHistory, storageReady]);
 
   const clearCurrentChat = useCallback(() => {
@@ -690,6 +696,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     statusType,
     debugRaw,
     debugVisible,
+    promptDrafts,
+    setPromptDraft,
     createChatSession,
     switchChatSession,
     renameChatSession,
@@ -702,13 +710,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     addUserMsg,
     addBotMsg,
     addTextBotMsg,
-    updateLastBotMsg,
-    updateLastBotText,
-    updateBotMsg,
-    updateBotText,
-    addErrorMsg,
     deleteMessage,
-    restoreSessionMessages,
     updateUserMessage,
     truncateChatAfterMessage,
     replaceBotMessage,
@@ -730,6 +732,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     statusType,
     debugRaw,
     debugVisible,
+    promptDrafts,
+    setPromptDraft,
     createChatSession,
     switchChatSession,
     renameChatSession,
@@ -742,13 +746,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     addUserMsg,
     addBotMsg,
     addTextBotMsg,
-    updateLastBotMsg,
-    updateLastBotText,
-    updateBotMsg,
-    updateBotText,
-    addErrorMsg,
     deleteMessage,
-    restoreSessionMessages,
     updateUserMessage,
     truncateChatAfterMessage,
     replaceBotMessage,

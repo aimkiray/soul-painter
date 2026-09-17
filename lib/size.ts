@@ -14,7 +14,7 @@ export interface Dimensions {
 }
 
 export function parseSize(size: string): Dimensions | null {
-  const match = /^(\d+)x(\d+)$/i.exec(size);
+  const match = /^(\d+)x(\d+)$/i.exec((size || '').trim());
   if (!match) return null;
   const naturalWidth = parseInt(match[1], 10);
   const naturalHeight = parseInt(match[2], 10);

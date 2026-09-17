@@ -66,6 +66,8 @@ export interface PendingServerRunRef {
   userMessageId: string;
   botMessageId: string;
   createdAt: number;
+  /** First time the server reported this run as missing; reset when seen again. */
+  missingSince?: number;
 }
 
 function isPendingServerRunRef(value: unknown): value is PendingServerRunRef {
@@ -85,14 +87,32 @@ export function createServerRunAccessToken() {
   return `${createServerRunId()}.${createServerRunId()}`;
 }
 
+function stripImageHitDataUrl(image: ImageHit | undefined) {
+  if (!image || typeof image !== 'object') return {};
+  // Reference image data URLs can be several MB and are re-sent with every
+  // poll/SSE payload; the client only needs the stored asset URL to restore.
+  return { url: image.url };
+}
+
 export function toPublicServerRun(run: ServerRunRecord): ServerRunPublicRecord {
+  const request = run.request && Array.isArray(run.request.referenceImages)
+    ? {
+        ...run.request,
+        referenceImages: run.request.referenceImages.map((reference) => {
+          const next = { ...reference, image: stripImageHitDataUrl(reference?.image) };
+          if (reference?.mask) next.mask = stripImageHitDataUrl(reference.mask);
+          else delete next.mask;
+          return next;
+        }),
+      }
+    : run.request;
   return {
     id: run.id,
     sessionId: run.sessionId,
     userMessageId: run.userMessageId,
     botMessageId: run.botMessageId,
     prompt: run.prompt,
-    request: run.request,
+    request,
     status: run.status,
     result: run.result,
     error: run.error,
@@ -130,4 +150,10 @@ export function addPendingServerRun(item: PendingServerRunRef) {
 
 export function removePendingServerRun(runId: string) {
   writePendingServerRuns(readPendingServerRuns().filter((item) => item.id !== runId));
+}
+
+export function updatePendingServerRun(id: string, patch: Partial<PendingServerRunRef>) {
+  writePendingServerRuns(
+    readPendingServerRuns().map((item) => (item.id === id ? { ...item, ...patch } : item)),
+  );
 }

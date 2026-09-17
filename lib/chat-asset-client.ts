@@ -3,6 +3,7 @@ import { ImageHit } from '@/types';
 const SAFE_REMOTE_IMAGE_URL = /^https?:\/\//i;
 const SAFE_LOCAL_CHAT_ASSET_URL = /^\/api\/chat-assets\/[a-f0-9]{64}\.(png|jpe?g|webp|gif)$/i;
 const SAFE_IMAGE_DATA_URL = /^data:image\/(png|jpe?g|webp|gif);base64,/i;
+const ASSET_RESOLVE_CACHE_MAX = 500;
 const assetResolveCache = new Map<string, Promise<string | null>>();
 
 export function normalizeChatImageUrl(value: unknown): string | null {
@@ -71,6 +72,10 @@ function cacheResolve(key: string, resolve: () => Promise<string | null>): Promi
     // but let failed attempts be retried after transient network errors.
   });
   assetResolveCache.set(key, pending);
+  if (assetResolveCache.size > ASSET_RESOLVE_CACHE_MAX) {
+    const oldestKey = assetResolveCache.keys().next().value;
+    if (oldestKey !== undefined) assetResolveCache.delete(oldestKey);
+  }
   void pending.then((url) => {
     if (!url) assetResolveCache.delete(key);
   });

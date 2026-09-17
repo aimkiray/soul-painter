@@ -6,6 +6,7 @@ import { useChat } from '@/contexts/ChatContext';
 import { useImages } from '@/contexts/ImageContext';
 import { IMAGE_MODEL_PRESETS, chatSessionPromptStorageKey, ORIGINAL_ASPECT_SIZE, REPEATER_MODEL_LABEL, SIZE_PRESETS } from '@/lib/constants';
 import { COMPOSER_FRAME_CLASS } from '@/lib/layout';
+import { isLocalDataCleared } from '@/lib/local-data-cleared';
 import { mergeModelOptions } from '@/lib/model-options';
 import { formatSizeDisplay } from '@/lib/size';
 import {
@@ -19,13 +20,15 @@ import {
 } from '@/lib/chat-config';
 
 interface ChatInputProps {
-  onSend: (prompt: string) => void;
+  onSend: (prompt: string) => Promise<void> | void;
   isLoading: boolean;
   onOpenSettings: () => void;
   onCancel?: () => void;
 }
 
 const composerSelectClass = 'composer-select h-8 cursor-pointer bg-black text-[#CCC] border-2 border-[#AAA] focus:border-[#00aaaa] text-xs sm:text-sm pl-2 pr-7 font-mono outline-none disabled:opacity-100 disabled:cursor-default';
+
+const CUSTOM_SIZE_RE = /^\d{2,5}x\d{2,5}$/i;
 
 function readStoredPrompt(sessionId: string) {
   try {
@@ -37,36 +40,33 @@ function readStoredPrompt(sessionId: string) {
 
 export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel }: ChatInputProps) {
   const { config, updateConfig, options, modelGateEnabled, modelGateUnlocked } = useConfig();
-  const { activeSessionId } = useChat();
+  // Drafts live in ChatContext so they survive tab switches / remounts.
+  const { activeSessionId, promptDrafts, setPromptDraft } = useChat();
   const { images, hasImages, selectedIndices, addFiles } = useImages();
-  const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [customSize, setCustomSize] = useState(false);
+  const [sizeInvalid, setSizeInvalid] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const submitLockRef = useRef(false);
   const prompt = promptDrafts[activeSessionId] ?? '';
-  const setPrompt = (nextPrompt: string) => {
-    setPromptDrafts((prev) => (
-      prev[activeSessionId] === nextPrompt
-        ? prev
-      : { ...prev, [activeSessionId]: nextPrompt }
-    ));
-  };
+  const promptDraftsRef = useRef(promptDrafts);
+  useEffect(() => { promptDraftsRef.current = promptDrafts; }, [promptDrafts]);
+  const setPrompt = (nextPrompt: string) => setPromptDraft(activeSessionId, nextPrompt);
 
   useEffect(() => {
+    if (!options.persistPrompt) return;
     const timeoutId = window.setTimeout(() => {
-      setPromptDrafts((prev) => {
-        if (prev[activeSessionId] !== undefined) return prev;
-        const storedPrompt = readStoredPrompt(activeSessionId);
-        return storedPrompt ? { ...prev, [activeSessionId]: storedPrompt } : prev;
-      });
+      if (promptDraftsRef.current[activeSessionId] !== undefined) return;
+      const storedPrompt = readStoredPrompt(activeSessionId);
+      if (storedPrompt) setPromptDraft(activeSessionId, storedPrompt);
     }, 0);
     return () => window.clearTimeout(timeoutId);
-  }, [activeSessionId]);
+  }, [activeSessionId, options.persistPrompt, setPromptDraft]);
 
   // Auto-save prompt while typing (debounced, only if persistPrompt enabled)
   useEffect(() => {
-    if (!options.persistPrompt) return;
+    if (!options.persistPrompt || isLocalDataCleared()) return;
     const timer = setTimeout(() => {
+      if (isLocalDataCleared()) return;
       try { localStorage.setItem(chatSessionPromptStorageKey(activeSessionId), prompt); } catch { /* ignore */ }
     }, 500);
     return () => clearTimeout(timer);
@@ -74,19 +74,33 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
 
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'F1') { e.preventDefault(); onOpenSettings(); } }; document.addEventListener('keydown', h); return () => document.removeEventListener('keydown', h); }, [onOpenSettings]);
 
-  useEffect(() => {
-    if (!isLoading) submitLockRef.current = false;
-  }, [isLoading]);
-
   const busy = isLoading;
   const send = () => {
     const nextPrompt = prompt.trim();
     if (!nextPrompt || busy || submitLockRef.current) return;
     submitLockRef.current = true;
-    onSend(nextPrompt);
+    // Clear the draft + stored copy up front so a slow onSend can't resurrect it.
     setPrompt('');
+    try { localStorage.removeItem(chatSessionPromptStorageKey(activeSessionId)); } catch { /* ignore */ }
+    try {
+      void Promise.resolve(onSend(nextPrompt))
+        .catch(() => undefined)
+        .finally(() => { submitLockRef.current = false; });
+    } catch {
+      submitLockRef.current = false;
+    }
   };
-  const kd = (e: React.KeyboardEvent) => { if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); send(); } else if (e.key === 'Enter' && !e.shiftKey && !e.repeat) { e.preventDefault(); send(); } };
+  const kd = (e: React.KeyboardEvent) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.ctrlKey && e.key === 'Enter') {
+      e.preventDefault();
+      send();
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.repeat) {
+      if (busy || submitLockRef.current) return;
+      e.preventDefault();
+      send();
+    }
+  };
   const imageModeActive = config.mode === 'image';
   const lockedRepeaterMode = modelGateEnabled && !modelGateUnlocked;
   const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
@@ -164,7 +178,19 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
                   <optgroup label="4K">{SIZE_PRESETS.filter(s=>s.group==='4K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
                   <option value="__custom__">自定义...</option>
                 </select>
-                {(customSize || !sizeIsPreset) && <input type="text" value={config.size} onChange={e=>updateConfig('size',e.target.value)} placeholder="WxH" className="h-8 min-w-[5.5rem] w-24 shrink-0 bg-black border-2 border-[#00aaaa] text-[#CCC] text-xs sm:text-sm px-2 font-mono outline-none" />}
+                {(customSize || !sizeIsPreset) && (
+                  <input
+                    type="text"
+                    value={config.size}
+                    onChange={e=>{updateConfig('size',e.target.value);setSizeInvalid(false)}}
+                    onBlur={e=>setSizeInvalid(!CUSTOM_SIZE_RE.test(e.target.value.trim()))}
+                    onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if(e.key==='Enter'){e.preventDefault();setSizeInvalid(!CUSTOM_SIZE_RE.test(e.currentTarget.value.trim()));e.currentTarget.blur()}}}
+                    placeholder="WxH"
+                    title={sizeInvalid ? '格式如 1024x1024' : undefined}
+                    aria-invalid={sizeInvalid || undefined}
+                    className={`h-8 min-w-[5.5rem] w-24 shrink-0 bg-black border-2 ${sizeInvalid ? 'border-[#ff5555]' : 'border-[#00aaaa]'} text-[#CCC] text-xs sm:text-sm px-2 font-mono outline-none`}
+                  />
+                )}
               </>
             ) : (
               <>
@@ -196,7 +222,7 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
       </div>
 
       <div className="w-full flex items-stretch gap-2 shrink-0">
-        <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={kd} rows={2} className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] font-mono text-sm sm:text-base p-2 sm:p-3 resize-none outline-none min-h-[60px] sm:min-h-0" placeholder={config.mode === 'chat' ? '输入聊天内容...' : hasImages ? '描述如何使用/修改参考图...' : '描述你要生成的画面内容...'} />
+        <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={kd} rows={2} aria-label="Prompt" className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] font-mono text-sm sm:text-base p-2 sm:p-3 resize-none outline-none min-h-[60px] sm:min-h-0" placeholder={config.mode === 'chat' ? '输入聊天内容...' : hasImages ? '描述如何使用/修改参考图...' : '描述你要生成的画面内容...'} />
         <div className="flex flex-col gap-2 w-10 sm:w-10 shrink-0">
           <button onClick={()=>fileInputRef.current?.click()} className="btn-retro bg-[#00aaaa] flex-1 flex items-center justify-center" aria-label="添加参考图"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" className="w-5 h-5"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" strokeLinecap="square" strokeWidth="2" d="m20.506 12.313l-7.778 7.778a6 6 0 0 1-8.485-8.485l7.778-7.778a4 4 0 1 1 5.657 5.657L9.9 17.263a2 2 0 1 1-2.829-2.829l7.071-7.07"/></svg></button>
           {busy && onCancel ? (

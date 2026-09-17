@@ -63,4 +63,43 @@ describe('stream-utils', () => {
     expect(result.text).toBe('hello world');
     expect(updates).toEqual(['hello', 'hello world']);
   });
+
+  it('processChatStream parses CRLF-delimited events', async () => {
+    const events =
+      'data: {"choices":[{"delta":{"content":"hello"}}]}\r\n\r\n' +
+      'data: {"choices":[{"delta":{"content":" world"}}]}\r\n\r\n' +
+      'data: [DONE]\r\n\r\n';
+
+    const result = await processChatStream(
+      streamFromText(events),
+      () => {},
+      'openai',
+      undefined,
+      { minEmitIntervalMs: 0 },
+    );
+
+    expect(result.text).toBe('hello world');
+  });
+
+  it('processChatStream throws the upstream message from error events', async () => {
+    const stream = streamFromText('event: error\ndata: {"message":"boom"}\n\n');
+
+    await expect(
+      processChatStream(stream, () => {}, 'openai', undefined, { minEmitIntervalMs: 0 }),
+    ).rejects.toThrow('boom');
+  });
+
+  it('processChatStream handles a trailing event without a blank-line terminator', async () => {
+    const stream = streamFromText('data: {"choices":[{"delta":{"content":"tail"}}]}');
+
+    const result = await processChatStream(
+      stream,
+      () => {},
+      'openai',
+      undefined,
+      { minEmitIntervalMs: 0 },
+    );
+
+    expect(result.text).toBe('tail');
+  });
 });

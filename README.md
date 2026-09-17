@@ -68,6 +68,7 @@ npm run dev
 | `CHAT_ASSET_MAX_BODY_BYTES` | Maximum JSON upload body accepted by the chat asset route |
 | `CHAT_ASSET_CACHE_MAX_AGE_SECONDS` | Browser cache lifetime for private chat asset responses; defaults to 3600 |
 | `CHAT_ASSET_COOKIE_SECURE` | `auto`, `true`, or `false`; controls whether chat asset cookies require HTTPS |
+| `CHAT_ASSET_SESSION_SECRET` | Secret used to sign anonymous chat asset session cookies; falls back to `SERVER_ACCESS_TOKEN`/`DEFAULT_API_KEY`; unsigned when none are set (local dev) |
 | `CHAT_ASSET_REMOTE_FETCH_TIMEOUT_MS` | Timeout for server-side remote image mirroring; defaults to 15000 |
 | `CHAT_ASSET_REMOTE_FETCH_MAX_REDIRECTS` | Maximum redirects followed while mirroring remote images; defaults to 3 |
 

@@ -1,37 +1,9 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { ImageRef } from '@/types';
-import { USER_ABORT_SENTINEL } from '@/lib/api';
 import { compressIfNeeded } from '@/lib/compress';
-import { imageRefToEditBlob } from '@/lib/image-edit';
 import { canvasHasStrokes } from '@/lib/mask';
-
-function canvasToBlob(canvas: HTMLCanvasElement, signal?: AbortSignal): Promise<Blob | null> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error(USER_ABORT_SENTINEL));
-      return;
-    }
-
-    let settled = false;
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener('abort', handleAbort);
-      fn();
-    };
-    const handleAbort = () => settle(() => reject(new Error(USER_ABORT_SENTINEL)));
-
-    signal?.addEventListener('abort', handleAbort, { once: true });
-    canvas.toBlob((blob) => {
-      settle(() => {
-        if (signal?.aborted) reject(new Error(USER_ABORT_SENTINEL));
-        else resolve(blob);
-      });
-    }, 'image/png');
-  });
-}
 
 interface ImageContextValue {
   images: ImageRef[];
@@ -45,18 +17,8 @@ interface ImageContextValue {
   closeEditor: () => void;
   clearAll: () => void;
   toggleSelect: (i: number) => void;
-  selectAll: () => void;
-  deselectAll: () => void;
   hasImages: boolean;
-  anyMasked: boolean;
   persistMask: (canvas: HTMLCanvasElement) => void;
-  buildEditsForm: (
-    imgs: ImageRef[],
-    prompt: string,
-    size: string | null,
-    model: string,
-    signal?: AbortSignal,
-  ) => Promise<FormData>;
 }
 
 const ImageContext = createContext<ImageContextValue | undefined>(undefined);
@@ -78,13 +40,21 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
   const [images, setImages] = useState<ImageRef[]>([]);
   const [editingIndex, setEditingIndex] = useState(-1);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
-  const [compressing, setCompressing] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [compressingCount, setCompressingCount] = useState(0);
+  const imagesRef = useRef<ImageRef[]>(images);
+  const pendingAppendedRef = useRef(0);
   const safeSelectedIndices = useMemo(
     () => pruneSelectedIndices(selectedIndices, images.length),
     [selectedIndices, images.length],
   );
   const safeEditingIndex = editingIndex >= 0 && editingIndex < images.length ? editingIndex : -1;
+  const compressing = compressingCount > 0;
+
+  useEffect(() => {
+    imagesRef.current = images;
+    pendingAppendedRef.current = 0;
+  }, [images]);
 
   const addFiles = useCallback(async (fileList: FileList | File[]) => {
     const candidates = Array.from(fileList).filter(
@@ -92,32 +62,34 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
     );
     if (candidates.length === 0) return;
 
-    setPendingCount(candidates.length);
-    setCompressing(true);
-    const results = await Promise.all(candidates.map(compressIfNeeded));
-    const newImages: ImageRef[] = results.map(({ file, originalSize, compressed, naturalWidth, naturalHeight }) => ({
-      file,
-      objectUrl: URL.createObjectURL(file),
-      naturalWidth,
-      naturalHeight,
-      maskCanvas: null,
-      compressed,
-      originalSize,
-    }));
+    setPendingCount((count) => count + candidates.length);
+    setCompressingCount((count) => count + 1);
+    try {
+      const results = await Promise.all(candidates.map(compressIfNeeded));
+      const newImages: ImageRef[] = results.map(({ file, originalSize, compressed, naturalWidth, naturalHeight }) => ({
+        file,
+        objectUrl: URL.createObjectURL(file),
+        naturalWidth,
+        naturalHeight,
+        maskCanvas: null,
+        compressed,
+        originalSize,
+      }));
 
-    setImages((prev) => {
-      const updated = [...prev, ...newImages];
-      const newIndices = new Set<number>();
-      for (let i = prev.length; i < updated.length; i++) newIndices.add(i);
+      const startIndex = imagesRef.current.length + pendingAppendedRef.current;
+      pendingAppendedRef.current += newImages.length;
+      setImages((prev) => [...prev, ...newImages]);
       setSelectedIndices((prevSel) => {
-        const merged = new Set(pruneSelectedIndices(prevSel, prev.length));
-        newIndices.forEach((idx) => merged.add(idx));
+        const merged = new Set(pruneSelectedIndices(prevSel, startIndex));
+        for (let i = startIndex; i < startIndex + newImages.length; i++) merged.add(i);
         return merged;
       });
-      return updated;
-    });
-    setPendingCount(0);
-    setCompressing(false);
+    } catch (error) {
+      console.warn('图片处理失败，已丢弃本批次文件', error);
+    } finally {
+      setPendingCount((count) => Math.max(0, count - candidates.length));
+      setCompressingCount((count) => Math.max(0, count - 1));
+    }
   }, []);
 
   const toggleSelect = useCallback((i: number) => {
@@ -129,14 +101,6 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, [images.length]);
-
-  const selectAll = useCallback(() => {
-    setSelectedIndices(new Set(images.map((_, i) => i)));
-  }, [images]);
-
-  const deselectAll = useCallback(() => {
-    setSelectedIndices(new Set());
-  }, []);
 
   const removeImage = useCallback((i: number) => {
     if (i < 0 || i >= images.length) return;
@@ -180,56 +144,35 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
 
   const persistMask = useCallback((canvas: HTMLCanvasElement) => {
     if (editingIndex < 0) return;
+    const img = imagesRef.current[editingIndex];
+    if (!img) return;
+    if (!img.naturalWidth) {
+      console.warn('persistMask: 图片缺少 naturalWidth，已丢弃本次蒙版');
+      return;
+    }
+    const out = document.createElement('canvas');
+    out.width = img.naturalWidth;
+    out.height = img.naturalHeight;
+    out.getContext('2d')!.drawImage(canvas, 0, 0, out.width, out.height);
+    const hasStrokes = canvasHasStrokes(out);
     setImages((prev) => {
       const updated = [...prev];
-      const img = updated[editingIndex];
-      if (!img || !img.naturalWidth) return prev;
-      const out = document.createElement('canvas');
-      out.width = img.naturalWidth;
-      out.height = img.naturalHeight;
-      out.getContext('2d')!.drawImage(canvas, 0, 0, out.width, out.height);
-      updated[editingIndex] = { ...img, maskCanvas: canvasHasStrokes(out) ? out : null };
+      const target = updated[editingIndex];
+      if (!target) return prev;
+      updated[editingIndex] = { ...target, maskCanvas: hasStrokes ? out : null, maskHasStrokes: hasStrokes };
       return updated;
     });
   }, [editingIndex]);
 
-  const buildEditsForm = useCallback(async (
-    imgs: ImageRef[], prompt: string, size: string | null, model: string, signal?: AbortSignal
-  ): Promise<FormData> => {
-    const form = new FormData();
-    form.append('model', model);
-    form.append('prompt', prompt);
-    if (size) form.append('size', size);
-
-    if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
-    const imageBlobs = await Promise.all(imgs.map((image) => imageRefToEditBlob(image, signal)));
-    if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
-    imageBlobs.forEach((blob, i) => {
-      if (!blob) return;
-      const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
-      form.append('image[]', blob, `image-${i + 1}.${ext}`);
-    });
-
-    const first = imgs[0];
-    if (first?.maskCanvas && first.naturalWidth && canvasHasStrokes(first.maskCanvas)) {
-      const mask = await canvasToBlob(first.maskCanvas, signal);
-      if (mask) form.append('mask', mask, 'mask.png');
-    }
-    return form;
-  }, []);
-
   const hasImages = images.length > 0 || pendingCount > 0;
-  const anyMasked = images.some((im) => im.maskCanvas && canvasHasStrokes(im.maskCanvas));
 
   const value = useMemo(() => ({
     images, editingIndex: safeEditingIndex, selectedIndices: safeSelectedIndices, compressing, pendingCount,
-    addFiles, removeImage, openEditor, closeEditor, clearAll, toggleSelect, selectAll, deselectAll,
-    hasImages, anyMasked, persistMask,
-    buildEditsForm,
+    addFiles, removeImage, openEditor, closeEditor, clearAll, toggleSelect,
+    hasImages, persistMask,
   }), [images, safeEditingIndex, safeSelectedIndices, compressing, pendingCount,
-    addFiles, removeImage, openEditor, closeEditor, clearAll, toggleSelect, selectAll, deselectAll,
-    hasImages, anyMasked, persistMask,
-    buildEditsForm]);
+    addFiles, removeImage, openEditor, closeEditor, clearAll, toggleSelect,
+    hasImages, persistMask]);
 
   return <ImageContext.Provider value={value}>{children}</ImageContext.Provider>;
 }

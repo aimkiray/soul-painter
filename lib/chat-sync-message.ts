@@ -40,6 +40,7 @@ export function decodeSyncMessageMetadata(value: string): SyncMessageMetadata {
       editedAt: finiteNumber(parsed.editedAt),
     };
   } catch {
-    return { extra: '', thinking: '', thinkingDone: true };
+    // Corrupt payload: keep the raw string in extra rather than dropping it.
+    return { extra: value, thinking: '', thinkingDone: true };
   }
 }

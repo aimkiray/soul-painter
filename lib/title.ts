@@ -59,8 +59,16 @@ function looksLikeReasoning(value: string) {
     || lower.includes('concise chinese chat title');
 }
 
+function splitTitleGraphemes(value: string): string[] {
+  if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    return Array.from(segmenter.segment(value), (part) => part.segment);
+  }
+  return Array.from(value);
+}
+
 function truncateTitle(value: string, maxLength: number, appendEllipsis: boolean) {
-  const chars = Array.from(value);
+  const chars = splitTitleGraphemes(value);
   if (chars.length <= maxLength) return value;
   return `${chars.slice(0, maxLength).join('')}${appendEllipsis ? '...' : ''}`;
 }
@@ -80,7 +88,9 @@ export function normalizeChatTitle(value: unknown, options: NormalizeChatTitleOp
   const jsonTitle = extractJsonTitle(raw);
   const stripped = stripReasoningBlocks(jsonTitle || raw)
     .replace(/\uFEFF/g, '')
-    .replace(/[\u200B-\u200D\u2060]/g, '')
+    // Keep U+200D (ZWJ): removing it would break apart multi-person emoji
+    // before grapheme-aware truncation can keep them whole.
+    .replace(/[\u200B\u200C\u2060]/g, '')
     .trim();
 
   const candidates = stripped

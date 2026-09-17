@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -74,8 +76,11 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
-        code({ className, children, ...props }) {
-          const isBlock = /language-/.test(className || '') || extractText(children).includes('\n');
+        code({ className, children, node, ...props }) {
+          // A fenced block's code node spans multiple source lines even when
+          // its body is a single line; inline code never crosses lines.
+          const fenced = !!node?.position && node.position.start.line !== node.position.end.line;
+          const isBlock = /language-/.test(className || '') || extractText(children).includes('\n') || fenced;
           if (!isBlock) {
             return (
               <code className="bg-[#222] text-[#00ffaa] px-1 py-0.5 border border-[#444] text-xs" {...props}>
@@ -125,6 +130,9 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
         td({ children }) {
           return <td className="border border-[#666] px-2 py-1">{children}</td>;
+        },
+        img({ src, alt }) {
+          return <img src={typeof src === 'string' ? src : undefined} alt={alt || ''} className="max-w-full" />;
         },
         strong({ children }) { return <strong className="text-white font-bold">{children}</strong>; },
         em({ children }) { return <em className="italic">{children}</em>; },

@@ -69,25 +69,29 @@ export function persistSessionSyncAuth(auth: ChatSyncAuth, syncedAt: number) {
   }
 }
 
-export async function loadLegacyStoredMessages(): Promise<ChatMessage[]> {
-  try {
-    const raw = await get(CHAT_MESSAGES_STORAGE_KEY);
-    return normalizeStoredMessages(JSON.parse(raw || '[]'));
-  } catch {
-    return [];
-  }
-}
-
-export async function loadChatState(): Promise<{ sessions: ChatSession[]; activeSessionId: string }> {
+export async function loadChatState(): Promise<{ sessions: ChatSession[]; activeSessionId: string; loadFailed?: boolean }> {
   try {
     const rawSessions = await get(CHAT_SESSIONS_STORAGE_KEY);
     const storedSessions = normalizeStoredSessions(
       JSON.parse(rawSessions || '[]'),
     );
     const migratedFromLegacy = storedSessions.length === 0;
-    const sessions = migratedFromLegacy
-      ? [createEmptySession(await loadLegacyStoredMessages(), LEGACY_CHAT_TITLE)]
-      : storedSessions;
+    let loadFailed = false;
+    let sessions: ChatSession[];
+    if (migratedFromLegacy) {
+      // Read legacy messages inline so a transient read failure is surfaced
+      // via loadFailed instead of silently producing an empty session.
+      let legacyMessages: ChatMessage[] = [];
+      try {
+        const raw = await get(CHAT_MESSAGES_STORAGE_KEY);
+        legacyMessages = normalizeStoredMessages(JSON.parse(raw || '[]'));
+      } catch {
+        loadFailed = true;
+      }
+      sessions = [createEmptySession(legacyMessages, LEGACY_CHAT_TITLE)];
+    } else {
+      sessions = storedSessions;
+    }
 
     const storedActiveSessionId = await get(ACTIVE_CHAT_SESSION_STORAGE_KEY) || '';
     const activeSessionId = sessions.some((session) => session.id === storedActiveSessionId)
@@ -96,10 +100,10 @@ export async function loadChatState(): Promise<{ sessions: ChatSession[]; active
 
     await migrateLegacyPromptToSession(activeSessionId);
 
-    return { sessions, activeSessionId };
+    return loadFailed ? { sessions, activeSessionId, loadFailed } : { sessions, activeSessionId };
   } catch {
     const session = createEmptySession();
-    return { sessions: [session], activeSessionId: session.id };
+    return { sessions: [session], activeSessionId: session.id, loadFailed: true };
   }
 }
 

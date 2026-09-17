@@ -22,10 +22,13 @@ export const providerHeadingClass = 'flex items-center justify-between gap-2 pt-
 export const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer';
 export const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
 
+const CUSTOM_SIZE_RE = /^\d{2,5}x\d{2,5}$/i;
+
 export default function ImageParamSettings() {
   const { config, updateConfig } = useConfig();
   const { images, selectedIndices } = useImages();
   const [customSize, setCustomSize] = useState(false);
+  const [sizeInvalid, setSizeInvalid] = useState(false);
   const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
   const activeImages = selectedIndices.size > 0
     ? images.filter((_, i) => selectedIndices.has(i))
@@ -76,9 +79,20 @@ export default function ImageParamSettings() {
                     <input
                       type="text"
                       value={config.size}
-                      onChange={(e) => updateConfig('size', e.target.value)}
+                      onChange={(e) => { updateConfig('size', e.target.value); setSizeInvalid(false); }}
+                      onBlur={(e) => setSizeInvalid(!CUSTOM_SIZE_RE.test(e.target.value.trim()))}
+                      onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing) return;
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          setSizeInvalid(!CUSTOM_SIZE_RE.test(e.currentTarget.value.trim()));
+                          e.currentTarget.blur();
+                        }
+                      }}
                       placeholder="WxH"
-                      className={`${inputClass} mt-1`}
+                      title={sizeInvalid ? '格式如 1024x1024' : undefined}
+                      aria-invalid={sizeInvalid || undefined}
+                      className={`${inputClass} mt-1 ${sizeInvalid ? 'border-[#ff5555] focus:border-[#ff5555]' : ''}`}
                     />
                   )}
                 </div>

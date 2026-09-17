@@ -7,7 +7,9 @@ import {
 import { isModelGateEnabled } from './model-gate-env';
 import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from './upstream-url';
 import { assertServerDefaultAccess, serverDefaultAccessAuthorized } from './server-access';
-import { isSameUpstreamBaseUrl, validateUpstreamBaseUrl } from './upstream-security';
+import { isSameUpstreamBaseUrl, resolveUpstreamBaseUrl } from './upstream-security';
+import { fetchPinned, type ResolvedAddress } from './pinned-fetch';
+import { readLimitedText } from './limited-body';
 
 export const TIMEOUT_SEC = 600;
 export const MAX_BODY_SIZE = 32 * 1024 * 1024;
@@ -15,6 +17,8 @@ export const MAX_BODY_SIZE = 32 * 1024 * 1024;
 export interface ValidatedRequest {
   apiKey: string;
   baseUrl: string;
+  /** DNS-pinned addresses from SSRF validation; empty for trusted base URLs. */
+  addresses: ResolvedAddress[];
 }
 
 type UpstreamAuthMode = 'bearer' | 'anthropic';
@@ -22,6 +26,10 @@ type UpstreamAuthMode = 'bearer' | 'anthropic';
 interface UpstreamProxyOptions {
   authMode?: UpstreamAuthMode;
   contentType?: string;
+  /** Whether the caller consumes the response as an event stream; keepalive
+   *  comment lines are only emitted when true (they would corrupt JSON bodies). */
+  sseExpected?: boolean;
+  addresses?: ResolvedAddress[];
 }
 
 type RequestKind = 'image' | 'chat' | 'claude';
@@ -99,9 +107,10 @@ export async function validateRequest(request: NextRequest, kind: RequestKind = 
       return NextResponse.json({ error: { message: (error as Error).message } }, { status: 401 });
     }
   }
+  let addresses: ResolvedAddress[] = [];
   try {
     const trustedBaseUrls = serverDefaultAccessAuthorized(serverAccessToken) ? [urlEnv || ''] : [];
-    await validateUpstreamBaseUrl(baseUrl, trustedBaseUrls);
+    addresses = (await resolveUpstreamBaseUrl(baseUrl, trustedBaseUrls)).addresses;
   } catch (error) {
     return NextResponse.json({ error: { message: (error as Error).message } }, { status: 400 });
   }
@@ -127,7 +136,7 @@ export async function validateRequest(request: NextRequest, kind: RequestKind = 
     );
   }
 
-  return { apiKey, baseUrl };
+  return { apiKey, baseUrl, addresses };
 }
 
 async function proxyUpstreamBodyStream(
@@ -153,10 +162,19 @@ async function proxyUpstreamBodyStream(
         requestSignal.addEventListener('abort', abortUpstream, { once: true });
       }
 
-      const keepalive = setInterval(() => {
+      let keepalive: ReturnType<typeof setInterval> | null = null;
+      const stopKeepalive = () => {
+        if (keepalive) {
+          clearInterval(keepalive);
+          keepalive = null;
+        }
+      };
+      if (options.sseExpected) {
+        keepalive = setInterval(() => {
+          try { ctrl.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
+        }, 25_000);
         try { ctrl.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
-      }, 25_000);
-      try { ctrl.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
+      }
 
       try {
         const headers: HeadersInit = options.authMode === 'anthropic'
@@ -174,17 +192,22 @@ async function proxyUpstreamBodyStream(
           return;
         }
 
-        const res = await fetch(url, {
+        const res = await fetchPinned(url, {
           method: 'POST',
           headers,
           body,
           signal: upstreamController.signal,
           redirect: 'error',
-        });
+        }, options.addresses ?? []);
 
         if (!res.ok || !res.body) {
-          const text = await res.text();
-          ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ error: true, status: res.status, message: text })}\n\n`));
+          stopKeepalive();
+          const limited = await readLimitedText(res, 64 * 1024).catch(() => ({ text: '' }) as const);
+          const text = 'tooLarge' in limited ? '(upstream error body too large)' : limited.text;
+          const payload = JSON.stringify({ error: true, status: res.status, message: text });
+          // Non-SSE consumers expect a plain JSON body; an SSE frame would
+          // corrupt their parse.
+          ctrl.enqueue(encoder.encode(options.sseExpected ? `data: ${payload}\n\n` : payload));
           ctrl.close();
           return;
         }
@@ -197,6 +220,8 @@ async function proxyUpstreamBodyStream(
           }
           const { done, value } = await reader.read();
           if (done) break;
+          // First upstream byte received; keepalive is only needed while waiting.
+          stopKeepalive();
           if (requestSignal?.aborted) {
             await reader.cancel().catch(() => {});
             break;
@@ -213,11 +238,12 @@ async function proxyUpstreamBodyStream(
           ? `上游请求超时 (${TIMEOUT_SEC}s)`
           : `代理连接失败: ${(err as Error).message}`;
         try {
-          ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ error: true, status: 502, message: msg })}\n\n`));
+          const payload = JSON.stringify({ error: true, status: 502, message: msg });
+          ctrl.enqueue(encoder.encode(options.sseExpected ? `data: ${payload}\n\n` : payload));
           ctrl.close();
         } catch { /* already closed */ }
       } finally {
-        clearInterval(keepalive);
+        stopKeepalive();
         clearTimeout(timeoutId);
         if (requestSignal) {
           requestSignal.removeEventListener('abort', abortUpstream);
@@ -275,6 +301,7 @@ export async function proxyUpstreamFormDataStream(
   body: FormData,
   origin: string,
   requestSignal?: AbortSignal,
+  options: Pick<UpstreamProxyOptions, 'sseExpected' | 'addresses'> = {},
 ): Promise<Response> {
-  return proxyUpstreamBodyStream(baseUrl, apiKey, path, body, origin, requestSignal);
+  return proxyUpstreamBodyStream(baseUrl, apiKey, path, body, origin, requestSignal, options);
 }

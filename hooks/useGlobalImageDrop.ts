@@ -1,25 +1,42 @@
 import { useEffect } from 'react';
+import { useImages } from '@/contexts/ImageContext';
+import { modalLayerCount } from '@/lib/modal-stack';
 
-export function useGlobalImageDrop(addFiles: (files: File[] | FileList) => Promise<void>) {
+function isEditableTarget(target: EventTarget | null) {
+  const el = target as HTMLElement | null;
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+}
+
+export function useGlobalImageDrop(enabled: boolean) {
+  const { addFiles } = useImages();
+
   useEffect(() => {
+    if (!enabled) return;
     const hasFiles = (e: DragEvent) =>
       e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
 
     const handleDragOver = (e: DragEvent) => {
+      if (modalLayerCount() > 0) return;
       if (hasFiles(e)) e.preventDefault();
     };
     const handleDrop = (e: DragEvent) => {
-      if (!hasFiles(e) || !e.dataTransfer?.files?.length) return;
-      const hasImage = Array.from(e.dataTransfer.files).some(
+      if (modalLayerCount() > 0) return;
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      const files = e.dataTransfer?.files;
+      if (!files?.length) return;
+      const hasImage = Array.from(files).some(
         (f: File) => f.type && f.type.startsWith('image/')
       );
       if (!hasImage) return;
-      e.preventDefault();
-      addFiles(e.dataTransfer.files).catch(() => {});
+      addFiles(files).catch(() => {});
     };
     const handlePaste = (e: ClipboardEvent) => {
+      if (modalLayerCount() > 0) return;
       const items = e.clipboardData?.items;
       if (!items) return;
+      const hasText = Array.from(items).some((item) => item.kind === 'string');
+      if (hasText && isEditableTarget(e.target)) return;
       const picked: File[] = [];
       for (let i = 0; i < items.length; i++) {
         if (items[i].type?.startsWith('image/')) {
@@ -41,5 +58,5 @@ export function useGlobalImageDrop(addFiles: (files: File[] | FileList) => Promi
       document.removeEventListener('drop', handleDrop);
       document.removeEventListener('paste', handlePaste);
     };
-  }, [addFiles]);
+  }, [addFiles, enabled]);
 }

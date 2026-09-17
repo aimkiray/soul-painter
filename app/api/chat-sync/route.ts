@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { CHAT_MESSAGES_MAX, CHAT_SESSIONS_MAX } from '@/lib/constants';
+import { checkRateLimit, clientIp, isRateLimited } from '@/lib/rate-limit';
 import {
   copyChatAssetsBetweenSessions,
 } from '@/lib/chat-assets';
@@ -11,9 +12,19 @@ import {
 } from '@/lib/chat-asset-session';
 import { prepareDatabase, prisma } from '@/lib/prisma';
 import { decodeSyncMessageMetadata, encodeSyncMessageMetadata } from '@/lib/chat-sync-message';
+import { readLimitedText } from '@/lib/limited-body';
 
 const CHAT_SYNC_MAX_BODY_BYTES = 5 * 1024 * 1024;
 const CHAT_SYNC_WRITE_RETRIES = 4;
+const CHAT_SYNC_TX_OPTIONS = { timeout: 15_000, maxWait: 10_000 } as const;
+const CHAT_SYNC_SESSION_LIMIT = 200;
+const CHAT_SYNC_MESSAGE_LIMIT = 2000;
+const CHAT_SYNC_TOMBSTONE_LIMIT = 500;
+const CHAT_SYNC_NEW_SECRET_MIN = 6;
+const CHAT_SYNC_AUTH_RATE_LIMIT = 10;
+const CHAT_SYNC_AUTH_RATE_WINDOW_MS = 60_000;
+const CHAT_SYNC_CREATE_RATE_LIMIT = 10;
+const CHAT_SYNC_CREATE_RATE_WINDOW_MS = 60 * 60 * 1000;
 const TITLE_SOURCES = new Set(['auto', 'manual', 'generated']);
 
 export const runtime = 'nodejs';
@@ -21,6 +32,11 @@ export const dynamic = 'force-dynamic';
 
 function cleanString(value: unknown, fallback = '') {
   return typeof value === 'string' ? value.trim() : fallback;
+}
+
+/** Message content keeps its original text (leading/trailing whitespace included). */
+function rawString(value: unknown, fallback = '') {
+  return typeof value === 'string' ? value : fallback;
 }
 
 function normalizeUsername(value: unknown) {
@@ -70,13 +86,7 @@ async function findUsersByNormalizedUsername(username: string) {
   `;
 }
 
-async function getOrCreateChatSyncUser(username: string, secretHash: string): Promise<ChatSyncUser> {
-  const existingUsers = await findUsersByNormalizedUsername(username);
-  if (existingUsers.length === 1) return existingUsers[0];
-  if (existingUsers.length > 1) {
-    throw new ChatSyncHttpError('用户名大小写冲突，请使用最初创建时的名字大小写登录', 409);
-  }
-
+async function createChatSyncUser(username: string, secretHash: string): Promise<ChatSyncUser> {
   return withWriteRetry(() => prisma.user.upsert({
     where: { username },
     update: {},
@@ -85,16 +95,36 @@ async function getOrCreateChatSyncUser(username: string, secretHash: string): Pr
   }));
 }
 
+function safeSecretEqual(actual: string, expected: string) {
+  const a = Buffer.from(actual);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 function entityStamp(value: Record<string, unknown>) {
   return cleanNumber(value.updatedAt, cleanNumber(value.createdAt, 0));
 }
 
-function shouldAcceptClientEntity(value: Record<string, unknown>, clientKnownUpdatedAt: number) {
-  return value.syncDirty === true || entityStamp(value) > clientKnownUpdatedAt;
+/** Dirty entities bypass the incremental gate but still lose to a strictly newer
+ *  server record; equal stamps go to the client so both sides converge. */
+function shouldAcceptClientEntity(
+  value: Record<string, unknown>,
+  clientKnownUpdatedAt: number,
+  serverStamp?: number | null,
+) {
+  const clientStamp = entityStamp(value);
+  if (value.syncDirty === true) return serverStamp == null || clientStamp >= serverStamp;
+  return clientStamp > clientKnownUpdatedAt;
 }
 
-function shouldAcceptClientTombstone(value: Record<string, unknown>, clientKnownUpdatedAt: number) {
-  return value.syncDirty === true || cleanNumber(value.deletedAt, 0) > clientKnownUpdatedAt;
+function shouldAcceptClientTombstone(
+  value: Record<string, unknown>,
+  clientKnownUpdatedAt: number,
+  serverStamp?: number | null,
+) {
+  const clientStamp = cleanNumber(value.deletedAt, 0);
+  if (value.syncDirty === true) return serverStamp == null || clientStamp >= serverStamp;
+  return clientStamp > clientKnownUpdatedAt;
 }
 
 function parseImages(value: string) {
@@ -112,6 +142,8 @@ function isRetryableWriteError(error: unknown) {
     : '';
   const message = error instanceof Error ? error.message : String(error);
   return code === 'P1008'
+    || code === 'P2002'
+    || code === 'P2028'
     || code === 'P2034'
     || /SQLITE_BUSY|database is locked|write conflict|deadlock|timed out/i.test(message);
 }
@@ -136,10 +168,11 @@ async function withWriteRetry<T>(task: () => Promise<T>) {
 
 export async function POST(request: NextRequest) {
   try {
-    const rawBody = await request.text().catch(() => '');
-    if (new TextEncoder().encode(rawBody).length > CHAT_SYNC_MAX_BODY_BYTES) {
+    const limited = await readLimitedText(request, CHAT_SYNC_MAX_BODY_BYTES);
+    if ('tooLarge' in limited) {
       return NextResponse.json({ error: '同步数据过大' }, { status: 413 });
     }
+    const rawBody = limited.text;
 
     let body: Record<string, unknown> = {};
     try {
@@ -155,19 +188,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '请输入玩家名和至少 4 位同步密钥' }, { status: 400 });
     }
 
+    const authRateKey = `chat-sync:${clientIp(request)}:${username}`;
+    if (isRateLimited(authRateKey, CHAT_SYNC_AUTH_RATE_LIMIT, CHAT_SYNC_AUTH_RATE_WINDOW_MS)) {
+      return NextResponse.json({ error: '玩家名或同步密钥错误' }, { status: 401 });
+    }
+
     await prepareDatabase();
 
     const secretHash = hashSecret(username, secret);
-    const user = await getOrCreateChatSyncUser(username, secretHash);
+    const existingUsers = await findUsersByNormalizedUsername(username);
+    if (existingUsers.length > 1) {
+      throw new ChatSyncHttpError('用户名大小写冲突，请使用最初创建时的名字大小写登录', 409);
+    }
+    if (existingUsers.length === 0 && secret.length < CHAT_SYNC_NEW_SECRET_MIN) {
+      return NextResponse.json({ error: '新账号同步密钥至少需要 6 位' }, { status: 400 });
+    }
+    const user = existingUsers[0] ?? await (async () => {
+      if (!checkRateLimit(`chat-sync-create:${clientIp(request)}`, CHAT_SYNC_CREATE_RATE_LIMIT, CHAT_SYNC_CREATE_RATE_WINDOW_MS)) {
+        throw new ChatSyncHttpError('账号创建过于频繁，请稍后再试', 429);
+      }
+      return createChatSyncUser(username, secretHash);
+    })();
 
-    if (user.secret !== secretHash) {
-      return NextResponse.json({ error: '同步密钥错误' }, { status: 401 });
+    if (!safeSecretEqual(user.secret, secretHash)) {
+      checkRateLimit(authRateKey, CHAT_SYNC_AUTH_RATE_LIMIT, CHAT_SYNC_AUTH_RATE_WINDOW_MS);
+      return NextResponse.json({ error: '玩家名或同步密钥错误' }, { status: 401 });
     }
 
     const clientKnownUpdatedAt = cleanNumber(body.clientKnownUpdatedAt, 0);
     const responseDate = cleanDate(clientKnownUpdatedAt, 0);
-    const clientSessions = Array.isArray(body.sessions) ? body.sessions : [];
-    const clientTombstones = Array.isArray(body.tombstones) ? body.tombstones : [];
+    // Cap inbound entity counts so a hostile client cannot make the transaction
+    // walk unbounded arrays.
+    const clientSessions = (Array.isArray(body.sessions) ? body.sessions : []).slice(0, CHAT_SYNC_SESSION_LIMIT);
+    const clientTombstones = (Array.isArray(body.tombstones) ? body.tombstones : []).slice(0, CHAT_SYNC_TOMBSTONE_LIMIT);
     const now = new Date();
 
     await withWriteRetry(() => prisma.$transaction(async (tx) => {
@@ -181,13 +234,15 @@ export async function POST(request: NextRequest) {
         if (!sessionId) continue;
 
         const rawMessages = Array.isArray(rawSession.messages)
-          ? rawSession.messages.map(asRecord).filter((item): item is Record<string, unknown> => item !== null)
+          ? rawSession.messages.slice(0, CHAT_SYNC_MESSAGE_LIMIT)
+              .map(asRecord).filter((item): item is Record<string, unknown> => item !== null)
           : [];
+        // Pre-filter: dirty entities always pass here and are re-checked against
+        // the existing server row below before any write happens.
         const changedMessages = rawMessages.filter((message) => (
           shouldAcceptClientEntity(message, clientKnownUpdatedAt)
         ));
-        const sessionChanged = shouldAcceptClientEntity(rawSession, clientKnownUpdatedAt);
-        if (!sessionChanged && changedMessages.length === 0) continue;
+        if (!shouldAcceptClientEntity(rawSession, clientKnownUpdatedAt) && changedMessages.length === 0) continue;
 
         const title = cleanString(rawSession.title, '新聊天').slice(0, 24);
         const titleSource = TITLE_SOURCES.has(String(rawSession.titleSource))
@@ -207,9 +262,23 @@ export async function POST(request: NextRequest) {
         if (existingSession && existingSession.userId !== user.id) continue;
         if (existingSession?.deletedAt && existingSession.updatedAt > responseDate) continue;
 
+        const sessionChanged = shouldAcceptClientEntity(
+          rawSession,
+          clientKnownUpdatedAt,
+          existingSession ? existingSession.updatedAt.getTime() : null,
+        );
+
         if (!existingSession) {
-          await tx.session.create({
-            data: { id: sessionId, userId: user.id, title, titleSource, createdAt, updatedAt: now },
+          const sessionCount = await tx.session.count({
+            where: { userId: user.id, deletedAt: null },
+          });
+          if (sessionCount >= CHAT_SYNC_SESSION_LIMIT) {
+            throw new ChatSyncHttpError(`会话数量已达上限（${CHAT_SYNC_SESSION_LIMIT}），请删除旧会话后再同步`, 400);
+          }
+          await tx.session.upsert({
+            where: { id: sessionId },
+            update: {},
+            create: { id: sessionId, userId: user.id, title, titleSource, createdAt, updatedAt: now },
           });
           touchedSessionIds.add(sessionId);
         } else if (sessionChanged) {
@@ -233,18 +302,26 @@ export async function POST(request: NextRequest) {
             where: { id: msgId },
             select: {
               sessionId: true,
+              updatedAt: true,
               session: { select: { userId: true } },
             },
           });
           if (existingMessage && (existingMessage.session.userId !== user.id || existingMessage.sessionId !== sessionId)) {
             continue;
           }
+          if (!shouldAcceptClientEntity(
+            rawMsg,
+            clientKnownUpdatedAt,
+            existingMessage ? existingMessage.updatedAt.getTime() : null,
+          )) {
+            continue;
+          }
 
           const role = rawMsg.role === 'user' ? 'user' : 'bot';
           const msgCreatedAt = cleanDate(rawMsg.createdAt, now.getTime());
-          const text = cleanString(rawMsg.text);
-          const prompt = cleanString(rawMsg.prompt);
-          const code = cleanString(rawMsg.code);
+          const text = rawString(rawMsg.text);
+          const prompt = rawString(rawMsg.prompt);
+          const code = rawString(rawMsg.code);
           const extra = encodeSyncMessageMetadata(rawMsg);
           const images = Array.isArray(rawMsg.images) ? JSON.stringify(rawMsg.images.slice(0, 10)) : '[]';
 
@@ -254,8 +331,16 @@ export async function POST(request: NextRequest) {
               data: { text, prompt, code, extra, images, deletedAt: null, updatedAt: now },
             });
           } else {
-            await tx.message.create({
-              data: {
+            const messageCount = await tx.message.count({
+              where: { sessionId, deletedAt: null },
+            });
+            if (messageCount >= CHAT_SYNC_MESSAGE_LIMIT) {
+              throw new ChatSyncHttpError(`单会话消息数量已达上限（${CHAT_SYNC_MESSAGE_LIMIT}），无法继续同步`, 400);
+            }
+            await tx.message.upsert({
+              where: { id: msgId },
+              update: {},
+              create: {
                 id: msgId,
                 sessionId,
                 role,
@@ -286,7 +371,9 @@ export async function POST(request: NextRequest) {
             where: { id: tombId },
             select: { userId: true, updatedAt: true },
           });
-          if (!existingSession || existingSession.userId !== user.id || existingSession.updatedAt > responseDate) continue;
+          if (!existingSession || existingSession.userId !== user.id) continue;
+          if (!shouldAcceptClientTombstone(tomb, clientKnownUpdatedAt, existingSession.updatedAt.getTime())) continue;
+          if (tomb.syncDirty !== true && existingSession.updatedAt > responseDate) continue;
           await tx.session.update({
             where: { id: tombId },
             data: { deletedAt: now, updatedAt: now },
@@ -305,7 +392,8 @@ export async function POST(request: NextRequest) {
             !existingMessage
             || existingMessage.session.userId !== user.id
             || (sessionId && existingMessage.sessionId !== sessionId)
-            || existingMessage.updatedAt > responseDate
+            || !shouldAcceptClientTombstone(tomb, clientKnownUpdatedAt, existingMessage.updatedAt.getTime())
+            || (tomb.syncDirty !== true && existingMessage.updatedAt > responseDate)
           ) {
             continue;
           }
@@ -328,17 +416,19 @@ export async function POST(request: NextRequest) {
         where: { id: user.id },
         data: { updatedAt: now },
       });
-    }));
+    }, CHAT_SYNC_TX_OPTIONS));
 
     const updatedSessions = await prisma.session.findMany({
       where: {
         userId: user.id,
+        // gte (not gt) so rows sharing the client's known millisecond are not
+        // missed; the client merges by id so re-sends are deduplicated.
         OR: [
-          { updatedAt: { gt: responseDate } },
-          { messages: { some: { updatedAt: { gt: responseDate } } } },
+          { updatedAt: { gte: responseDate } },
+          { messages: { some: { updatedAt: { gte: responseDate } } } },
         ],
       },
-      include: { messages: { orderBy: { createdAt: 'asc' } } },
+      include: { messages: { orderBy: { createdAt: 'desc' }, take: CHAT_MESSAGES_MAX } },
       orderBy: { updatedAt: 'desc' },
       take: CHAT_SESSIONS_MAX,
     });
@@ -351,7 +441,8 @@ export async function POST(request: NextRequest) {
         newTombstones.push({ type: 'session', id: s.id, deletedAt: s.deletedAt.getTime() });
       } else {
         const msgs = [];
-        for (const m of s.messages) {
+        // take:CHAT_MESSAGES_MAX above fetched the newest first; flip back to asc.
+        for (const m of [...s.messages].reverse()) {
           if (m.deletedAt) {
             newTombstones.push({ type: 'message', id: m.id, sessionId: m.sessionId, deletedAt: m.deletedAt.getTime() });
           } else {

@@ -4,11 +4,19 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useImages } from '@/contexts/ImageContext';
+import type { ImageRef } from '@/types';
 import { COMPOSER_FRAME_CLASS } from '@/lib/layout';
 import { canvasHasStrokes } from '@/lib/mask';
 
 interface ImageGridProps {
   layout: 'strip' | 'sidebar';
+}
+
+// maskHasStrokes is persisted by persistMask; for refs written before that
+// field existed, fall back to a single canvas scan.
+function imageHasMaskStrokes(img: ImageRef): boolean {
+  if (!img.maskCanvas) return false;
+  return img.maskHasStrokes ?? canvasHasStrokes(img.maskCanvas);
 }
 
 const Placeholder = ({ className }: { className?: string }) => (
@@ -133,7 +141,7 @@ export default function ImageGrid({ layout }: ImageGridProps) {
           <div className="grid grid-cols-2 gap-1">
             {images.map((img, i) => {
               const isSelected = selectedIndices.has(i);
-              const hasMask = img.maskCanvas && canvasHasStrokes(img.maskCanvas);
+              const hasMask = imageHasMaskStrokes(img);
               const showCompressedBadge = compressedBadgeUrls.has(img.objectUrl);
               return (
                 <div
@@ -199,7 +207,7 @@ export default function ImageGrid({ layout }: ImageGridProps) {
                   className={`w-16 h-16 object-cover cursor-pointer border-2 ${isSelected ? 'border-[#00aaaa]' : 'border-[#AAA]'}`}
                   loading="lazy" decoding="async"
                 />
-                {img.maskCanvas && canvasHasStrokes(img.maskCanvas) && (
+                {img.maskCanvas && imageHasMaskStrokes(img) && (
                   <canvas
                     ref={(el) => { if (!el || !img.maskCanvas) return; el.width = img.maskCanvas.width; el.height = img.maskCanvas.height; el.getContext('2d')!.drawImage(img.maskCanvas, 0, 0, img.maskCanvas.width, img.maskCanvas.height); }}
                     className="absolute inset-0 w-full h-full object-cover opacity-50 pointer-events-none"

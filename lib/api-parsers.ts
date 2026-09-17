@@ -6,7 +6,12 @@ import { ChatContentParts, composeChatContentParts } from '@/lib/chat-thinking';
 export function parseErrorDetail(probeText: string): string {
   try {
     const j = JSON.parse(probeText);
-    return j?.error?.message || j?.message || JSON.stringify(j).slice(0, 300);
+    const err = isRecord(j) ? j.error : undefined;
+    const detail = isRecord(err) ? err.message : typeof err === 'string' ? err : undefined;
+    const message = detail ?? (isRecord(j) ? j.message : undefined);
+    if (typeof message === 'string' && message) return message;
+    if (message != null) return String(message).slice(0, 300);
+    return JSON.stringify(j).slice(0, 300);
   } catch {
     return (probeText || '').slice(0, 300);
   }
@@ -40,7 +45,9 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function stringifyTextContent(value: unknown): string {
   if (typeof value === 'string') return value;
-  if (!Array.isArray(value)) return value == null ? '' : String(value);
+  if (!Array.isArray(value)) {
+    return isRecord(value) && typeof value.text === 'string' ? value.text : '';
+  }
 
   return value
     .map((part) => {
@@ -51,8 +58,23 @@ export function stringifyTextContent(value: unknown): string {
     .join('');
 }
 
+function extractUpstreamErrorMessage(response: Record<string, unknown>): string {
+  const error = response.error;
+  if (error == null || error === false) return response.type === 'error' ? '上游返回错误' : '';
+  if (typeof error === 'string') return error.trim() || '上游返回错误';
+  if (isRecord(error)) {
+    if (typeof error.message === 'string' && error.message.trim()) return error.message;
+    if (error.message != null) return String(error.message) || '上游返回错误';
+    if (typeof error.type === 'string' && error.type.trim()) return error.type;
+    return '上游返回错误';
+  }
+  return `上游返回错误: ${String(error).slice(0, 200)}`;
+}
+
 export function extractChatResponseParts(response: unknown, format: ChatApiFormat): ChatContentParts {
   if (!isRecord(response)) return composeChatContentParts('');
+  const upstreamError = extractUpstreamErrorMessage(response);
+  if (upstreamError) throw new Error(upstreamError);
 
   if (format === 'claude') {
     if (typeof response.content === 'string') return composeChatContentParts(response.content);

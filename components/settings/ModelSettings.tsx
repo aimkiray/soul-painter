@@ -139,7 +139,7 @@ export default function ModelSettings() {
                         type="text"
                         value={newImageModel}
                         onChange={(e) => setNewImageModel(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addImageModel(); } }}
+                        onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addImageModel(); } }}
                         placeholder="添加图片模型"
                         className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                       />
@@ -210,7 +210,7 @@ export default function ModelSettings() {
                         type="text"
                         value={newChatModel}
                         onChange={(e) => setNewChatModel(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChatModel(); } }}
+                        onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addChatModel(); } }}
                         placeholder="添加 OpenAI Compatible 模型"
                         className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                       />
@@ -257,7 +257,7 @@ export default function ModelSettings() {
                         type="text"
                         value={newClaudeModel}
                         onChange={(e) => setNewClaudeModel(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addClaudeModel(); } }}
+                        onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addClaudeModel(); } }}
                         placeholder="添加 Claude 模型"
                         className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
                       />

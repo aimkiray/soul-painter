@@ -5,6 +5,7 @@ import { isAnonymousChatAssetSessionId } from '@/lib/chat-asset-session-id';
 import { prisma } from '@/lib/prisma';
 
 const USER_SESSION_TOKEN_PATTERN = /^usr_([a-f0-9]{32})\.([a-f0-9-]{1,64})\.([a-f0-9]{64})$/;
+const ANONYMOUS_SIGNED_SESSION_PATTERN = /^([a-f0-9]{32})\.([a-f0-9]{64})$/;
 
 export {
   isAnonymousChatAssetSessionId,
@@ -18,9 +19,37 @@ export interface ChatAssetSession {
 
 export type ChatAssetUserSecretResolver = (userId: string) => Promise<string | null>;
 
+function anonymousSessionSecret() {
+  return (
+    process.env.CHAT_ASSET_SESSION_SECRET
+    || process.env.SERVER_ACCESS_TOKEN
+    || process.env.DEFAULT_API_KEY
+    || ''
+  ).trim();
+}
+
+function signAnonymousSessionId(sessionId: string, secret: string) {
+  return createHmac('sha256', secret)
+    .update(`chat-asset-session:${sessionId}`)
+    .digest('hex');
+}
+
+function anonymousCookieValue(sessionId: string) {
+  const secret = anonymousSessionSecret();
+  return secret ? `${sessionId}.${signAnonymousSessionId(sessionId, secret)}` : sessionId;
+}
+
+function readAnonymousSessionId(value: string): string | null {
+  const secret = anonymousSessionSecret();
+  if (!secret) return isAnonymousChatAssetSessionId(value) ? value : null;
+  const match = ANONYMOUS_SIGNED_SESSION_PATTERN.exec(value);
+  if (!match || !safeEqualHex(match[2], signAnonymousSessionId(match[1], secret))) return null;
+  return match[1];
+}
+
 export function getAnonymousChatAssetSessionId(request: NextRequest) {
   const value = request.cookies.get(CHAT_ASSET_SESSION_COOKIE)?.value || '';
-  return isAnonymousChatAssetSessionId(value) ? value : null;
+  return readAnonymousSessionId(value);
 }
 
 function userAssetSessionId(userId: string) {
@@ -81,13 +110,14 @@ export async function getChatAssetSession(
   const existing = request.cookies.get(CHAT_ASSET_SESSION_COOKIE)?.value || '';
   const signedSession = await readSignedUserChatAssetSession(existing, resolveUserSecret);
   if (signedSession) return signedSession;
-  if (isAnonymousChatAssetSessionId(existing)) return { id: existing, cookieValue: existing };
+  const anonymousId = readAnonymousSessionId(existing);
+  if (anonymousId) return { id: anonymousId, cookieValue: anonymousCookieValue(anonymousId) };
 
   const sessionId = randomBytes(16).toString('hex');
-  return { id: sessionId, cookieValue: sessionId };
+  return { id: sessionId, cookieValue: anonymousCookieValue(sessionId) };
 }
 
-function shouldUseSecureCookie(request: NextRequest) {
+export function shouldUseSecureCookie(request: NextRequest) {
   const configured = (process.env.CHAT_ASSET_COOKIE_SECURE || 'auto').trim().toLowerCase();
   if (configured === 'true') return true;
   if (configured === 'false') return false;

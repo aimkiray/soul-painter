@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useChat } from '@/contexts/ChatContext';
 import { CHAT_SYNC_AUTH_STORAGE_KEY, CHAT_SYNC_SESSION_AUTH_STORAGE_KEY } from '@/lib/constants';
+import Modal from './Modal';
 
 interface LoginModalProps {
   open: boolean;
@@ -58,12 +59,12 @@ function formatSyncTime(value?: number) {
 }
 
 function loginStatusBox(message: string) {
-  const status = message.toUpperCase().slice(0, 12).padEnd(12, ' ');
+  const status = message.toUpperCase().slice(0, 16).padEnd(16, ' ');
   return [
-    '╔══════════════════════╗',
-    '║ CHAT SYNC: READY     ║',
+    '╔══════════════════════════╗',
+    '║ CHAT SYNC: READY         ║',
     `║ STATUS: ${status} ║`,
-    '╚══════════════════════╝',
+    '╚══════════════════════════╝',
   ].join('\n');
 }
 
@@ -151,27 +152,36 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3">
-      <div className="w-full max-w-md border-2 border-[#00aaaa] bg-black font-mono text-[#CCC] shadow-[8px_8px_0_#001f1f]">
-        <div className="flex items-center justify-between border-b-2 border-[#00aaaa] bg-black px-2 py-1 font-bold text-[#CCC]">
-          <span>SYNC</span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="cursor-pointer text-[#CCC] hover:text-[#00aaaa]"
-            aria-label="关闭登录"
-          >
-            [X]
-          </button>
-        </div>
-
-        <form
-          className="space-y-4 p-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void syncHistory();
-          }}
+    <Modal
+      id="login"
+      onClose={onClose}
+      ariaLabel="同步登录"
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3"
+      panelClassName="w-full max-w-md border-2 border-[#00aaaa] bg-black font-mono text-[#CCC] shadow-[8px_8px_0_#001f1f]"
+    >
+      <div className="flex items-center justify-between border-b-2 border-[#00aaaa] bg-black px-2 py-1 font-bold text-[#CCC]">
+        <span>SYNC</span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="cursor-pointer text-[#CCC] hover:text-[#00aaaa]"
+          aria-label="关闭登录"
         >
+          [X]
+        </button>
+      </div>
+
+      <form
+        className="space-y-4 p-4"
+        onKeyDown={(event) => {
+          // Block implicit form submission while an IME composition is active.
+          if (event.nativeEvent.isComposing && event.key === 'Enter') event.preventDefault();
+        }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void syncHistory();
+        }}
+      >
           <pre className={`overflow-x-auto border-2 border-[#555] bg-[#000022] p-3 text-xs leading-5 ${loginStatusColor(message)}`}>{loginStatusBox(message)}</pre>
           <p className="text-xs leading-5 text-[#AAA]">
             第一次输入名字和同步密钥就会自动创建账号。之后用同样的信息登录，就能同步聊天记录。
@@ -229,8 +239,7 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
           <p className="text-[0.7rem] leading-5 text-[#777]">
             退出登录不会删除聊天记录，下次用同样的名字和同步密钥登录还能继续同步。
           </p>
-        </form>
-      </div>
-    </div>
+      </form>
+    </Modal>
   );
 }

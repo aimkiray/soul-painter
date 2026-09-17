@@ -4,6 +4,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useImages } from '@/contexts/ImageContext';
+import Modal from './Modal';
 
 interface ImageEditorProps {
   onClose: () => void;
@@ -41,17 +42,34 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
     const h = img.clientHeight;
     if (w === 0 || h === 0) return false;
 
-    canvas.width = w;
-    canvas.height = h;
+    const dpr = window.devicePixelRatio || 1;
+    const targetW = Math.round(w * dpr);
+    const targetH = Math.round(h * dpr);
+
+    // Preserve in-progress strokes when the canvas is re-created (resize).
+    let snapshot: HTMLCanvasElement | null = null;
+    if (canvas.width > 0 && canvas.height > 0 && (canvas.width !== targetW || canvas.height !== targetH)) {
+      snapshot = document.createElement('canvas');
+      snapshot.width = canvas.width;
+      snapshot.height = canvas.height;
+      snapshot.getContext('2d')?.drawImage(canvas, 0, 0);
+    }
+
+    canvas.width = targetW;
+    canvas.height = targetH;
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
 
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
 
-    if (image.maskCanvas) {
+    if (snapshot) {
+      ctx.drawImage(snapshot, 0, 0, w, h);
+    } else if (image.maskCanvas) {
       ctx.drawImage(image.maskCanvas, 0, 0, w, h);
     }
 
@@ -76,6 +94,17 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
       img.addEventListener('load', handleLoad);
       return () => img.removeEventListener('load', handleLoad);
     }
+  }, [image, setupCanvas]);
+
+  // Keep the overlay canvas aligned with the image across resizes/zoom.
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      requestAnimationFrame(() => setupCanvas());
+    });
+    observer.observe(img);
+    return () => observer.disconnect();
   }, [image, setupCanvas]);
 
   const getPos = useCallback((e: MouseEvent | TouchEvent) => {
@@ -113,6 +142,7 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
     if (!canvas) return;
 
     const startDraw = (e: MouseEvent | TouchEvent) => {
+      if (e instanceof MouseEvent && e.button !== 0) return;
       e.preventDefault();
       isDrawing.current = true;
       const pos = getPos(e);
@@ -135,7 +165,10 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
       lastPoint.current = null;
     };
 
+    const blockContextMenu = (e: Event) => e.preventDefault();
+
     canvas.addEventListener('mousedown', startDraw);
+    canvas.addEventListener('contextmenu', blockContextMenu);
     window.addEventListener('mousemove', moveDraw);
     window.addEventListener('mouseup', endDraw);
     canvas.addEventListener('touchstart', startDraw, { passive: false });
@@ -144,6 +177,7 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
 
     return () => {
       canvas.removeEventListener('mousedown', startDraw);
+      canvas.removeEventListener('contextmenu', blockContextMenu);
       window.removeEventListener('mousemove', moveDraw);
       window.removeEventListener('mouseup', endDraw);
       canvas.removeEventListener('touchstart', startDraw);
@@ -167,6 +201,11 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
     onClose();
   };
 
+  const handleCancel = () => {
+    closeEditor();
+    onClose();
+  };
+
   if (!image) return null;
 
   const imageSizeLabel = image.naturalWidth && image.naturalHeight
@@ -174,12 +213,17 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
     : '';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2">
-      <div className="absolute inset-0 bg-black/60" onClick={handleDone} />
-      <div className="relative bg-black w-full max-w-lg border-2 border-[#AAA] font-mono text-sm">
+    <Modal
+      id={`image-editor-${editingIndex}`}
+      onClose={handleCancel}
+      ariaLabel={`编辑第 ${editingIndex + 1} 张图片`}
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-2 bg-black/60"
+      panelClassName="relative bg-black w-full max-w-lg border-2 border-[#AAA] font-mono text-sm"
+      closeOnBackdropClick={false}
+    >
         <div className="bg-[#0A0] text-white px-2 py-1 flex items-center justify-between">
           <span>编辑第 {editingIndex + 1} 张{imageSizeLabel}</span>
-          <button onClick={handleDone} className="text-white hover:text-[#ff5555] cursor-pointer">
+          <button onClick={handleCancel} className="text-white hover:text-[#ff5555] cursor-pointer" aria-label="取消编辑">
             [X]
           </button>
         </div>
@@ -232,12 +276,14 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
             <button onClick={handleClear} className="btn-retro px-2.5 py-1 text-xs shrink-0">
               清除
             </button>
+            <button onClick={handleCancel} className="btn-retro px-2.5 py-1 text-xs shrink-0">
+              取消
+            </button>
             <button onClick={handleDone} className="btn-retro bg-[#00aaaa] text-xs px-3 py-1 shrink-0">
-              完成
+              保存
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

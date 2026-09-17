@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect } from 'react';
 import { ConfigProvider } from '@/contexts/ConfigContext';
 import { ChatProvider, useChat } from '@/contexts/ChatContext';
 import { ImageProvider, useImages } from '@/contexts/ImageContext';
@@ -20,6 +20,7 @@ import Footer from '@/components/Footer';
 import {
   CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY,
 } from '@/lib/constants';
+import { isLocalDataCleared } from '@/lib/local-data-cleared';
 import { readSyncUsername } from '@/lib/request-helpers';
 import { useGlobalImageDrop } from '@/hooks/useGlobalImageDrop';
 import { useRunPrompt } from '@/hooks/useRunPrompt';
@@ -35,24 +36,32 @@ function HomeInner() {
   const [chatSidebarCollapsedReady, setChatSidebarCollapsedReady] = useState(false);
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
 
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setSyncUsername(readSyncUsername());
-      try {
-        setChatSidebarCollapsed(localStorage.getItem(CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY) === '1');
-      } catch {
-        // ignore
-      } finally {
-        setChatSidebarCollapsedReady(true);
-      }
-    }, 0);
-    return () => window.clearTimeout(timeoutId);
+  // Read persisted UI state in a layout effect so the sidebar never paints in
+  // the wrong collapsed state (a setTimeout would flash after first paint).
+  /* eslint-disable react-hooks/set-state-in-effect -- syncing from localStorage before paint */
+  useLayoutEffect(() => {
+    setSyncUsername(readSyncUsername());
+    try {
+      setChatSidebarCollapsed(localStorage.getItem(CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY) === '1');
+    } catch {
+      // ignore
+    } finally {
+      setChatSidebarCollapsedReady(true);
+    }
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const { isLoading } = useChat();
-  const { editingIndex, addFiles, closeEditor } = useImages();
+  const { editingIndex, closeEditor } = useImages();
 
-  useGlobalImageDrop(addFiles);
+  // Contract: useGlobalImageDrop(enabled) — drop/paste only on the generate
+  // tab while no modal layer is open.
+  const imageDropEnabled = activeTab === 'generate'
+    && !settingsOpen
+    && !loginOpen
+    && editingIndex < 0
+    && !chatSidebarOpen;
+  useGlobalImageDrop(imageDropEnabled);
   const {
     handleSend,
     handleRegenerateMessage,
@@ -62,7 +71,7 @@ function HomeInner() {
   } = useRunPrompt();
 
   useEffect(() => {
-    if (!chatSidebarCollapsedReady) return;
+    if (!chatSidebarCollapsedReady || isLocalDataCleared()) return;
     try {
       localStorage.setItem(CHAT_SIDEBAR_COLLAPSED_STORAGE_KEY, chatSidebarCollapsed ? '1' : '0');
     } catch {

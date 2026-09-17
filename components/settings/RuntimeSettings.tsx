@@ -16,6 +16,13 @@ export const optionRowClass = 'flex items-center justify-between gap-3 bg-black 
 export default function RuntimeSettings() {
   const { options, updateOption } = useConfig();
 
+  const commitTimeout = (input: HTMLInputElement) => {
+    const parsed = parseInt(input.value, 10);
+    const clamped = Number.isFinite(parsed) ? Math.max(10, Math.min(3600, parsed)) : 600;
+    input.value = String(clamped);
+    updateOption('timeout', clamped);
+  };
+
 
   return (
     <fieldset className={`${fieldsetClass} lg:col-span-2`}>
@@ -25,9 +32,14 @@ export default function RuntimeSettings() {
                   <div className="min-h-[58px]">
                     <label className={labelClass}>请求超时（秒）</label>
                     <input
+                      key={options.timeout}
                       type="number"
-                      value={options.timeout}
-                      onChange={(e) => updateOption('timeout', Math.max(10, Math.min(3600, parseInt(e.target.value, 10) || 600)))}
+                      defaultValue={options.timeout}
+                      onBlur={(e) => commitTimeout(e.currentTarget)}
+                      onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing) return;
+                        if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+                      }}
                       className={inputClass}
                     />
                     <p className={hintClass}>10-3600</p>

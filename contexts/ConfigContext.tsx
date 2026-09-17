@@ -13,6 +13,7 @@ import {
 } from '@/lib/constants';
 import { getClaudeChatModelOptions, getOpenAIChatModelOptions } from '@/lib/chat-config';
 import { mergeModelOptions, normalizeModelList } from '@/lib/model-options';
+import { isLocalDataCleared, markLocalDataCleared } from '@/lib/local-data-cleared';
 import { clear } from 'idb-keyval';
 
 interface PublicServerConfig {
@@ -133,7 +134,7 @@ function normalizeServerConfig(value: unknown): PublicServerConfig {
 
 async function fetchServerConfig(): Promise<PublicServerConfig> {
   try {
-    const response = await fetch('/api/config');
+    const response = await fetch('/api/config', { signal: AbortSignal.timeout(8000) });
     if (!response.ok) return FALLBACK_SERVER_CONFIG;
     return normalizeServerConfig(await response.json());
   } catch {
@@ -171,12 +172,18 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
       if (sp.get('claudeTitleModel')) urlConfig.claudeTitleModel = sp.get('claudeTitleModel')!;
       if (sp.get('claudetitlemodel')) urlConfig.claudeTitleModel = sp.get('claudetitlemodel')!;
       if (sp.get('size')) urlConfig.size = sp.get('size')!;
-      if (sp.get('n')) urlConfig.n = parseInt(sp.get('n')!, 10) || 1;
+      if (sp.get('n')) {
+        const n = parseInt(sp.get('n')!, 10);
+        urlConfig.n = Number.isFinite(n) ? Math.min(20, Math.max(1, n)) : 1;
+      }
       if (sp.get('quality')) urlConfig.quality = sp.get('quality')!;
       if (sp.get('format')) urlConfig.format = sp.get('format')!;
       if (sp.get('background')) urlConfig.background = sp.get('background')!;
       if (sp.get('moderation')) urlConfig.moderation = sp.get('moderation')!;
-      if (sp.get('compression')) urlConfig.compression = parseInt(sp.get('compression')!, 10) || 80;
+      if (sp.get('compression')) {
+        const compression = parseInt(sp.get('compression')!, 10);
+        urlConfig.compression = Number.isFinite(compression) ? Math.min(100, Math.max(0, compression)) : 80;
+      }
     } catch { /* ignore */ }
   }
 
@@ -306,6 +313,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    try { sessionStorage.removeItem('sp-cleared'); } catch { /* ignore */ }
     void fetchServerConfig()
       .then((serverConfig) => {
         if (cancelled) return;
@@ -337,7 +345,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    fetch('/api/model-gate')
+    fetch('/api/model-gate', { signal: AbortSignal.timeout(8000) })
       .then((r) => r.json())
       .then((d) => {
         setModelGateUnlocked((prev) => prev || !!d.unlocked);
@@ -363,6 +371,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   }, [options]);
 
   const clearAll = useCallback(() => {
+    markLocalDataCleared();
     void (async () => {
       try { await clear(); } catch { /* ignore */ }
       try { localStorage.clear(); } catch { /* ignore */ }
@@ -418,8 +427,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
   // Auto-persist config & options on change (debounced)
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || isLocalDataCleared()) return;
     const timer = setTimeout(() => {
+      if (isLocalDataCleared()) return;
       localStorage.setItem(CFG_STORAGE_KEY, JSON.stringify(config));
       localStorage.setItem(OPTS_STORAGE_KEY, JSON.stringify(options));
     }, 500);
@@ -430,6 +440,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!ready) return;
     const handleUnload = () => {
+      if (isLocalDataCleared()) return;
       localStorage.setItem(CFG_STORAGE_KEY, JSON.stringify(config));
       localStorage.setItem(OPTS_STORAGE_KEY, JSON.stringify(options));
     };

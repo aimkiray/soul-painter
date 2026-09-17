@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 import { CHAT_ASSET_SESSION_COOKIE } from '@/lib/constants';
 import {
@@ -27,6 +27,10 @@ function tamperToken(token: string) {
 }
 
 describe('chat-asset-session', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('creates a valid signed user asset session', async () => {
     const session = createUserChatAssetSession(USER_ID, USER_SECRET_HASH);
     const resolvedUserIds: string[] = [];
@@ -61,6 +65,10 @@ describe('chat-asset-session', () => {
   });
 
   it('keeps anonymous sessions separate from forged user tokens', async () => {
+    // No signing secret: bare anonymous ids are accepted as-is (local dev mode).
+    vi.stubEnv('CHAT_ASSET_SESSION_SECRET', '');
+    vi.stubEnv('SERVER_ACCESS_TOKEN', '');
+    vi.stubEnv('DEFAULT_API_KEY', '');
     const anonymousSessionId = 'b'.repeat(32);
     const signedSession = createUserChatAssetSession(USER_ID, USER_SECRET_HASH);
 
@@ -79,5 +87,37 @@ describe('chat-asset-session', () => {
 
     expect(isAnonymousChatAssetSessionId(fallback.id)).toBe(true);
     expect(fallback.id).not.toBe(signedSession.id);
+  });
+
+  it('signs anonymous session cookies when a secret is configured', async () => {
+    vi.stubEnv('CHAT_ASSET_SESSION_SECRET', 'test-anonymous-secret');
+    const unsignedSessionId = 'b'.repeat(32);
+
+    // An unsigned cookie is rejected and rotated into a signed session.
+    const minted = await getChatAssetSession(
+      requestWithAssetSessionCookie(unsignedSessionId),
+      async () => USER_SECRET_HASH,
+    );
+    expect(isAnonymousChatAssetSessionId(minted.id)).toBe(true);
+    expect(minted.id).not.toBe(unsignedSessionId);
+    expect(minted.cookieValue).toMatch(/^[a-f0-9]{32}\.[a-f0-9]{64}$/);
+
+    // The signed cookie value round-trips back to the same session id.
+    await expect(getChatAssetSession(
+      requestWithAssetSessionCookie(minted.cookieValue),
+      async () => USER_SECRET_HASH,
+    )).resolves.toEqual({
+      id: minted.id,
+      cookieValue: minted.cookieValue,
+    });
+
+    // A tampered signature is rejected and a fresh anonymous session is issued.
+    const forged = await getChatAssetSession(
+      requestWithAssetSessionCookie(tamperToken(minted.cookieValue)),
+      async () => USER_SECRET_HASH,
+    );
+    expect(isAnonymousChatAssetSessionId(forged.id)).toBe(true);
+    expect(forged.id).not.toBe(minted.id);
+    expect(forged.cookieValue).toMatch(/^[a-f0-9]{32}\.[a-f0-9]{64}$/);
   });
 });

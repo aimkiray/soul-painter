@@ -91,31 +91,40 @@ export function createFallbackChatState(): { sessions: ChatSession[]; activeSess
   return { sessions: [session], activeSessionId: session.id };
 }
 
-export function normalizeStoredMessages(value: unknown): ChatMessage[] {
+export function normalizeStoredMessages(value: unknown, fallbackCreatedAt = 0): ChatMessage[] {
   if (!Array.isArray(value)) return [];
+  let lastCreatedAt = fallbackCreatedAt;
   return value
     .filter((message): message is Partial<ChatMessage> => !!message && typeof message === 'object')
-    .map((message): ChatMessage => ({
-      id: typeof message.id === 'string' && message.id.trim() ? message.id : createMessageId(),
-      role: message.role === 'user' ? 'user' : 'bot',
-      prompt: typeof message.prompt === 'string' ? message.prompt : '',
-      images: Array.isArray(message.images)
-        ? message.images
-            .map(normalizeChatImageHit)
-            .filter((image): image is ImageHit => image !== null)
-        : [],
-      text: typeof message.text === 'string' ? message.text : '',
-      thinking: typeof message.thinking === 'string' ? message.thinking : '',
-      thinkingDone: typeof message.thinkingDone === 'boolean' ? message.thinkingDone : true,
-      code: typeof message.code === 'string' ? message.code : '',
-      extra: typeof message.extra === 'string' ? message.extra : '',
-      request: normalizeStoredTurnSnapshot(message.request),
-      createdAt: typeof message.createdAt === 'number' && Number.isFinite(message.createdAt) ? message.createdAt : Date.now(),
-      updatedAt: typeof message.updatedAt === 'number' && Number.isFinite(message.updatedAt) ? message.updatedAt : undefined,
-      editedAt: typeof message.editedAt === 'number' && Number.isFinite(message.editedAt) ? message.editedAt : undefined,
-      syncDirty: message.syncDirty === true,
-      serverRunId: typeof message.serverRunId === 'string' && message.serverRunId.trim() ? message.serverRunId : undefined,
-    }))
+    .map((message): ChatMessage => {
+      // A missing createdAt inherits the previous message's stamp (or the
+      // session fallback) so backfilled messages keep their original order.
+      const createdAt = typeof message.createdAt === 'number' && Number.isFinite(message.createdAt)
+        ? message.createdAt
+        : lastCreatedAt;
+      lastCreatedAt = createdAt;
+      return {
+        id: typeof message.id === 'string' && message.id.trim() ? message.id : createMessageId(),
+        role: message.role === 'user' ? 'user' : 'bot',
+        prompt: typeof message.prompt === 'string' ? message.prompt : '',
+        images: Array.isArray(message.images)
+          ? message.images
+              .map(normalizeChatImageHit)
+              .filter((image): image is ImageHit => image !== null)
+          : [],
+        text: typeof message.text === 'string' ? message.text : '',
+        thinking: typeof message.thinking === 'string' ? message.thinking : '',
+        thinkingDone: typeof message.thinkingDone === 'boolean' ? message.thinkingDone : true,
+        code: typeof message.code === 'string' ? message.code : '',
+        extra: typeof message.extra === 'string' ? message.extra : '',
+        request: normalizeStoredTurnSnapshot(message.request),
+        createdAt,
+        updatedAt: typeof message.updatedAt === 'number' && Number.isFinite(message.updatedAt) ? message.updatedAt : undefined,
+        editedAt: typeof message.editedAt === 'number' && Number.isFinite(message.editedAt) ? message.editedAt : undefined,
+        syncDirty: message.syncDirty === true,
+        serverRunId: typeof message.serverRunId === 'string' && message.serverRunId.trim() ? message.serverRunId : undefined,
+      };
+    })
     .slice(-CHAT_MESSAGES_MAX);
 }
 
@@ -161,9 +170,9 @@ export function normalizeStoredSession(value: unknown): ChatSession | null {
   if (!value || typeof value !== 'object') return null;
   const raw = value as Partial<ChatSession>;
   const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id : createSessionId();
-  const messages = normalizeStoredMessages(raw.messages);
   const createdAt = typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now();
   const updatedAt = typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : createdAt;
+  const messages = normalizeStoredMessages(raw.messages, updatedAt);
 
   return {
     id,

@@ -3,6 +3,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useChat } from '@/contexts/ChatContext';
 import type { ChatMessage, ChatSession } from '@/contexts/ChatContext';
+import { registerModalLayer } from '@/lib/modal-stack';
+import Modal from './Modal';
 
 interface ChatSidebarProps {
   open: boolean;
@@ -97,16 +99,18 @@ export default function ChatSidebar({
       if (target instanceof Element && target.closest('[data-chat-sidebar-panel], [data-chat-sidebar-menu]')) return;
       closeTools();
     };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeTools();
-    };
 
     document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
     };
+  }, [closeTools, menuState, renamingSessionId]);
+
+  // Escape for open menus / rename flows through the modal stack so only the
+  // topmost layer responds.
+  useEffect(() => {
+    if (!menuState && !renamingSessionId) return;
+    return registerModalLayer('chat-sidebar-tools', closeTools);
   }, [closeTools, menuState, renamingSessionId]);
 
   useEffect(() => {
@@ -207,6 +211,7 @@ export default function ChatSidebar({
                       value={renameDraft}
                       onChange={(event) => setRenameDraft(event.target.value)}
                       onKeyDown={(event) => {
+                        if (event.nativeEvent.isComposing) return;
                         if (event.key === 'Enter') {
                           event.preventDefault();
                           commitRename();
@@ -347,16 +352,15 @@ export default function ChatSidebar({
   return (
     <>
       {open && (
-        <>
-          <div className="absolute inset-0 z-40 bg-black/70 lg:hidden" onClick={closeSidebar} />
-          <aside
-            className="absolute inset-y-0 left-0 z-50 overflow-hidden border-r-2 border-[#AAA] lg:hidden"
-            style={{ width: 'clamp(240px, 72vw, 280px)' }}
-            aria-label="聊天列表"
-          >
-            {panel(true)}
-          </aside>
-        </>
+        <Modal
+          id="chat-sidebar-drawer"
+          onClose={closeSidebar}
+          ariaLabel="聊天列表"
+          backdropClassName="absolute inset-0 z-40 bg-black/70 lg:hidden"
+          panelClassName="absolute inset-y-0 left-0 z-50 w-[clamp(240px,72vw,280px)] overflow-hidden border-r-2 border-[#AAA] bg-black lg:hidden"
+        >
+          {panel(true)}
+        </Modal>
       )}
 
       {collapsed ? (

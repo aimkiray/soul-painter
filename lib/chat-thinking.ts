@@ -48,7 +48,7 @@ export function splitThinkTaggedContent(value: string): ChatContentParts {
 
   if (!sawThinking) {
     return {
-      text: value,
+      text: textParts.join(''),
       thinking: '',
       thinkingDone: true,
     };

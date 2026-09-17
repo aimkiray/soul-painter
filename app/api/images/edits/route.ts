@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { corsPreflightResponse, validateRequest, proxyUpstreamFormDataStream } from '@/lib/server-proxy';
+import { corsPreflightResponse, validateRequest, proxyUpstreamFormDataStream, MAX_BODY_SIZE } from '@/lib/server-proxy';
+import { readLimitedBody } from '@/lib/limited-body';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -7,12 +8,12 @@ export const dynamic = 'force-dynamic';
 export const OPTIONS = corsPreflightResponse;
 
 function dataUrlToBlob(dataUrl: string): { blob: Blob; mime: string } {
-  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/);
+  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
   if (!match) throw new Error('图片数据格式无效');
 
   const mime = match[1] || 'image/png';
   const isBase64 = !!match[2];
-  const data = match[3] || '';
+  const data = (match[3] || '').replace(/\s+/g, '');
   const binary = isBase64 ? atob(data) : decodeURIComponent(data);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -65,16 +66,39 @@ export async function POST(request: NextRequest) {
   if (validated instanceof NextResponse) return validated;
 
   try {
+    const limited = await readLimitedBody(request, MAX_BODY_SIZE);
+    if ('tooLarge' in limited) {
+      return NextResponse.json(
+        { error: { message: '请求体超过上限 32MB' } },
+        { status: 413 },
+      );
+    }
     const origin = request.headers.get('origin') || '';
     const contentType = request.headers.get('content-type') || '';
-    const form = contentType.includes('multipart/form-data')
-      ? await request.formData()
-      : buildMultipartForm(await request.json());
+    let form: FormData;
+    if (contentType.includes('multipart/form-data')) {
+      form = await new Response(limited.body, { headers: { 'content-type': contentType } }).formData();
+    } else {
+      let body: unknown;
+      try {
+        body = JSON.parse(new TextDecoder().decode(limited.body));
+      } catch {
+        return NextResponse.json(
+          { error: { message: '请求 JSON 格式错误' } },
+          { status: 400 },
+        );
+      }
+      form = buildMultipartForm(body as Record<string, unknown>);
+    }
 
     return await proxyUpstreamFormDataStream(
       validated.baseUrl, validated.apiKey,
       '/images/edits', form, origin,
       request.signal,
+      {
+        addresses: validated.addresses,
+        sseExpected: form.get('stream') === 'true',
+      },
     );
   } catch (err: unknown) {
     return NextResponse.json(

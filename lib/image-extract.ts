@@ -10,9 +10,13 @@ function findImageInText(text: string): ImageHit | null {
       try { return { dataUrl: normalizeToDataUrl(u).dataUrl }; } catch { /* ignore */ }
     } else if (u.startsWith('http')) return { url: u };
   }
-  const dm = text.match(/(?:data:image\/[a-z]+;base64,)+([A-Za-z0-9+/=\s]+?)(?=["'\s<)]|$)/i);
+  const dm = text.match(/(?:data:image\/[a-z]+;base64,)+([A-Za-z0-9+/=\s]+)/i);
   if (dm) {
-    try { return { dataUrl: normalizeToDataUrl(dm[0]).dataUrl }; } catch { /* ignore */ }
+    const cleaned = dm[1].replace(/\s+/g, '');
+    const b64 = (/^[A-Za-z0-9+/]*={0,2}/.exec(cleaned) || [''])[0];
+    if (b64) {
+      try { return { dataUrl: normalizeToDataUrl(b64).dataUrl }; } catch { /* ignore */ }
+    }
   }
   const md = text.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/);
   if (md) return { url: md[1] };
@@ -52,7 +56,8 @@ export function extractImage(resp: unknown): ImageHit | null {
     }
   }
   if (resp && Array.isArray((resp as Record<string, unknown>).data)) {
-    for (const item of (resp as Record<string, unknown[]>).data as Record<string, string>[]) {
+    for (const item of (resp as Record<string, unknown[]>).data as (Record<string, string> | null)[]) {
+      if (!item || typeof item !== 'object') continue;
       if (item.url) return { url: item.url };
       if (item.b64_json) {
         try { return { dataUrl: normalizeToDataUrl(item.b64_json).dataUrl }; } catch { /* ignore */ }
@@ -60,8 +65,11 @@ export function extractImage(resp: unknown): ImageHit | null {
     }
   }
   if (resp && Array.isArray((resp as Record<string, unknown>).choices)) {
-    for (const c of (resp as Record<string, unknown[]>).choices as Record<string, unknown>[]) {
-      const msg = (c.message || c.delta) as Record<string, unknown>;
+    for (const c of (resp as Record<string, unknown[]>).choices as unknown[]) {
+      if (!c || typeof c !== 'object') continue;
+      const choice = c as Record<string, unknown>;
+      const msg = (choice.message ?? choice.delta) as Record<string, unknown> | undefined;
+      if (!msg || typeof msg !== 'object') continue;
       const sideChannels: unknown[] = [];
       if (Array.isArray(msg.images)) sideChannels.push(...(msg.images as unknown[]));
       if (msg.image) sideChannels.push(msg.image);
@@ -84,7 +92,8 @@ export function extractImage(resp: unknown): ImageHit | null {
         const hit = findImageInText(content);
         if (hit) return hit;
       } else if (Array.isArray(content)) {
-        for (const part of content as Record<string, unknown>[]) {
+        for (const part of content as (Record<string, unknown> | null)[]) {
+          if (!part || typeof part !== 'object') continue;
           if (part.type === 'image_url' && part.image_url) {
             const u = typeof part.image_url === 'string' ? part.image_url : (part.image_url as Record<string, string>).url;
             if (u) {

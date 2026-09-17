@@ -24,6 +24,7 @@ export default function StatusBar() {
   const modeLabel = config.mode === 'chat' ? '聊天' : '图片';
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };

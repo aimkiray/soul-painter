@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { corsPreflightResponse, validateRequest, proxyUpstreamStream } from '@/lib/server-proxy';
+import { corsPreflightResponse, validateRequest, proxyUpstreamStream, MAX_BODY_SIZE } from '@/lib/server-proxy';
+import { readLimitedText } from '@/lib/limited-body';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -69,7 +70,22 @@ export async function POST(request: NextRequest) {
   if (validated instanceof NextResponse) return validated;
 
   try {
-    const body = await request.json();
+    const limited = await readLimitedText(request, MAX_BODY_SIZE);
+    if ('tooLarge' in limited) {
+      return NextResponse.json(
+        { error: { message: '请求体超过上限 32MB' } },
+        { status: 413 },
+      );
+    }
+    let body: unknown;
+    try {
+      body = limited.text ? JSON.parse(limited.text) : {};
+    } catch {
+      return NextResponse.json(
+        { error: { message: '请求 JSON 格式错误' } },
+        { status: 400 },
+      );
+    }
     const origin = request.headers.get('origin') || '';
     const recordBody = body && typeof body === 'object' && !Array.isArray(body)
       ? body as Record<string, unknown>
@@ -83,7 +99,11 @@ export async function POST(request: NextRequest) {
       validated.baseUrl, validated.apiKey,
       upstreamPath, JSON.stringify(upstreamBody), origin,
       request.signal,
-      format === 'claude' ? { authMode: 'anthropic' } : undefined,
+      {
+        addresses: validated.addresses,
+        sseExpected: recordBody.stream === true,
+        ...(format === 'claude' ? { authMode: 'anthropic' as const } : {}),
+      },
     );
   } catch (err: unknown) {
     return NextResponse.json(

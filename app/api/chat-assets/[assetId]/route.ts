@@ -8,6 +8,7 @@ import {
   getChatAssetSession,
   setChatAssetSession,
 } from '@/lib/chat-asset-session';
+import { checkRateLimit, clientIp } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,9 @@ export async function GET(
   const { assetId } = await context.params;
   if (!isValidChatAssetId(assetId)) {
     return NextResponse.json({ error: 'Invalid asset id' }, { status: 404 });
+  }
+  if (!checkRateLimit(`chat-asset-get:${clientIp(request)}`, 240, 60_000)) {
+    return NextResponse.json({ error: '请求过于频繁' }, { status: 429 });
   }
 
   try {

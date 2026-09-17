@@ -4,6 +4,7 @@ export interface ImageRef {
   naturalWidth: number;
   naturalHeight: number;
   maskCanvas: HTMLCanvasElement | null;
+  maskHasStrokes?: boolean;
   compressed: boolean;
   originalSize: number;
 }

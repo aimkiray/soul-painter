@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import {
   getChatFormatForModel,
+  getChatProviderConfig,
   getClaudeChatModelOptions,
   getOpenAIChatModelOptions,
+  parseChatModelChoice,
 } from '@/lib/chat-config';
 import { getModelFallback } from '@/lib/model-options';
 import type { AppConfig } from '@/types';
@@ -37,6 +39,27 @@ describe('chat model configuration', () => {
 
   it('recognizes a configured Claude model without relying on its name', () => {
     expect(getChatFormatForModel(createConfig(), 'vendor/anthropic-model')).toBe('claude');
+  });
+
+  it('treats any model id containing "claude" as claude format', () => {
+    expect(getChatFormatForModel(createConfig(), 'anthropic.claude-3-5-sonnet')).toBe('claude');
+    expect(getChatFormatForModel(createConfig(), 'claude_x')).toBe('claude');
+  });
+
+  it('rejects a model choice with an empty model', () => {
+    expect(parseChatModelChoice('openai:')).toBeNull();
+    expect(parseChatModelChoice('claude:  ')).toBeNull();
+    expect(parseChatModelChoice('openai:gpt-x')).toEqual({ format: 'openai', model: 'gpt-x' });
+  });
+
+  it('falls back to chatApiKey and apiKey for the claude provider', () => {
+    const base = createConfig();
+    expect(getChatProviderConfig({ ...base, claudeApiKey: 'claude-key', chatApiKey: 'chat-key' }, 'claude').apiKey)
+      .toBe('claude-key');
+    expect(getChatProviderConfig({ ...base, claudeApiKey: '', chatApiKey: 'chat-key' }, 'claude').apiKey)
+      .toBe('chat-key');
+    expect(getChatProviderConfig({ ...base, claudeApiKey: '', chatApiKey: '', apiKey: 'main-key' }, 'claude').apiKey)
+      .toBe('main-key');
   });
 
   it('falls back to the configured default after removing a custom model', () => {

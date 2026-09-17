@@ -10,26 +10,30 @@ import {
   verifyModelGateUnlockToken,
 } from '@/lib/model-gate';
 import { isModelGateEnabled } from '@/lib/model-gate-env';
+import { shouldUseSecureCookie } from '@/lib/chat-asset-session';
+import { readLimitedText } from '@/lib/limited-body';
 
-export const runtime = 'edge';
+// Node runtime: shouldUseSecureCookie lives with the other cookie helpers which
+// use node:crypto and Prisma.
+export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const COOKIE_MAX_AGE = MODEL_GATE_UNLOCK_MAX_AGE_SEC;
 
-function cookieOptions(maxAge = COOKIE_MAX_AGE) {
+function cookieOptions(request: NextRequest, maxAge = COOKIE_MAX_AGE) {
   return {
     httpOnly: true,
     sameSite: 'lax' as const,
-    secure: process.env.NODE_ENV === 'production',
+    secure: shouldUseSecureCookie(request),
     path: '/',
     maxAge,
   };
 }
 
-function clearGateCookies(response: NextResponse) {
-  response.cookies.set(MODEL_GATE_ENABLED_COOKIE, '', cookieOptions(0));
-  response.cookies.set(MODEL_GATE_TAP_COOKIE, '', cookieOptions(0));
-  response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(0));
+function clearGateCookies(response: NextResponse, request: NextRequest) {
+  response.cookies.set(MODEL_GATE_ENABLED_COOKIE, '', cookieOptions(request, 0));
+  response.cookies.set(MODEL_GATE_TAP_COOKIE, '', cookieOptions(request, 0));
+  response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(request, 0));
 }
 
 async function readGateState(request: NextRequest) {
@@ -56,14 +60,23 @@ export async function GET(request: NextRequest) {
     message: current.enabled && !current.unlocked ? getRandomModelGateMessage() : '',
   });
   if (!current.enabled || !current.unlocked) {
-    response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(0));
+    response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(request, 0));
   }
-  if (!current.enabled) clearGateCookies(response);
+  if (!current.enabled) clearGateCookies(response, request);
   return response;
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => ({} as Record<string, unknown>));
+  const limited = await readLimitedText(request, 4096);
+  let body = {} as Record<string, unknown>;
+  if (!('tooLarge' in limited)) {
+    try {
+      const parsed = JSON.parse(limited.text || '{}');
+      if (parsed && typeof parsed === 'object') body = parsed as Record<string, unknown>;
+    } catch {
+      // Malformed JSON is treated as an empty action.
+    }
+  }
   const action = body?.action === 'tap' ? 'tap' : body?.action === 'clear' ? 'clear' : 'state';
   const current = await readGateState(request);
 
@@ -73,7 +86,7 @@ export async function POST(request: NextRequest) {
         enabled: false,
         unlocked: false,
       });
-      clearGateCookies(response);
+      clearGateCookies(response, request);
       return response;
     }
 
@@ -84,9 +97,9 @@ export async function POST(request: NextRequest) {
       unlocked,
     });
 
-    response.cookies.set(MODEL_GATE_TAP_COOKIE, String(nextTaps), cookieOptions());
+    response.cookies.set(MODEL_GATE_TAP_COOKIE, String(nextTaps), cookieOptions(request));
     if (unlocked) {
-      response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, await createModelGateUnlockToken(), cookieOptions());
+      response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, await createModelGateUnlockToken(), cookieOptions(request));
     }
 
     return response;
@@ -97,7 +110,7 @@ export async function POST(request: NextRequest) {
       enabled: current.enabled,
       unlocked: false,
     });
-    clearGateCookies(response);
+    clearGateCookies(response, request);
     return response;
   }
 
@@ -107,8 +120,8 @@ export async function POST(request: NextRequest) {
     message: current.enabled && !current.unlocked ? getRandomModelGateMessage() : '',
   });
   if (!current.enabled || !current.unlocked) {
-    response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(0));
+    response.cookies.set(MODEL_GATE_UNLOCKED_COOKIE, '', cookieOptions(request, 0));
   }
-  if (!current.enabled) clearGateCookies(response);
+  if (!current.enabled) clearGateCookies(response, request);
   return response;
 }

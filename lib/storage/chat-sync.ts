@@ -41,10 +41,75 @@ interface UseChatSyncParams {
   localMutationRevisionRef: MutableRefObject<number>;
   applyingSyncRef: MutableRefObject<boolean>;
   setSessions: (sessions: ChatSession[]) => void;
-  setSyncTombstones: (tombstones: ChatSyncTombstone[]) => void;
+  setSyncTombstones: (value: ChatSyncTombstone[] | ((prev: ChatSyncTombstone[]) => ChatSyncTombstone[])) => void;
   setActiveSessionId: (id: string) => void;
   setStatusText: (text: string) => void;
   setStatusType: (type: '' | 'ok' | 'err' | 'warn') => void;
+}
+
+function tombstoneKey(tombstone: ChatSyncTombstone) {
+  return `${tombstone.type}:${tombstone.sessionId || ''}:${tombstone.id}`;
+}
+
+export function mergeSyncTombstoneLists(
+  local: ChatSyncTombstone[],
+  incoming: ChatSyncTombstone[],
+): ChatSyncTombstone[] {
+  const incomingByKey = new Map(incoming.map((t) => [tombstoneKey(t), t]));
+  // Local tombstones the server did not echo must survive, otherwise a pending
+  // delete is silently undone. An echoed tombstone is acknowledged and loses
+  // syncDirty — unless its local deletedAt is strictly newer, in which case the
+  // server still needs to learn the newer stamp on the next sync.
+  const retained = local
+    .filter((t) => t.syncDirty === true || !incomingByKey.has(tombstoneKey(t)))
+    .map((t) => {
+      const echoed = incomingByKey.get(tombstoneKey(t));
+      if (!echoed || t.syncDirty !== true) return t;
+      return { ...t, syncDirty: t.deletedAt > echoed.deletedAt };
+    });
+  return normalizeSyncTombstones([...retained, ...incoming]);
+}
+
+export function mergeSyncedSessionList(
+  local: ChatSession[],
+  incoming: ChatSession[],
+  tombstones: ChatSyncTombstone[],
+): ChatSession[] {
+  const byId = new Map<string, ChatSession>();
+  for (const s of local) byId.set(s.id, s);
+  for (const s of incoming) byId.set(s.id, s);
+
+  const sessionDeletes = new Set<string>();
+  const messageDeletes = new Set<string>();
+  for (const t of tombstones) {
+    if (t.type === 'session') sessionDeletes.add(t.id);
+    else if (t.sessionId) messageDeletes.add(`${t.sessionId}:${t.id}`);
+  }
+
+  const merged = Array.from(byId.values())
+    .filter((s) => !sessionDeletes.has(s.id))
+    .map((s) => ({
+      ...s,
+      messages: s.messages.filter((m) => !messageDeletes.has(`${s.id}:${m.id}`)),
+    }))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, CHAT_SESSIONS_MAX);
+
+  return merged.length > 0 ? merged : [createEmptySession()];
+}
+
+export function resolveSyncedActiveSessionId(
+  sessions: ChatSession[],
+  incomingActiveSessionId: string | undefined,
+  currentActiveSessionId: string,
+): string {
+  if (incomingActiveSessionId && sessions.some((s) => s.id === incomingActiveSessionId)) {
+    return incomingActiveSessionId;
+  }
+  // The server dropped/never knew the incoming active id — keep the local one
+  // if it still exists, only then fall back to the first merged session.
+  if (sessions.some((s) => s.id === currentActiveSessionId)) return currentActiveSessionId;
+  return sessions[0]?.id || '';
 }
 
 export function useChatSync({
@@ -82,40 +147,16 @@ export function useChatSync({
     applyingSyncRef.current = true;
     const incomingSessions = normalizeStoredSessions(value);
     const incomingTombstones = normalizeSyncTombstones(tombstones);
-    
-    setSyncTombstones(incomingTombstones);
-    
-    const byId = new Map<string, ChatSession>();
-    for (const s of sessions) byId.set(s.id, s);
-    for (const s of incomingSessions) byId.set(s.id, s);
-    
-    const merged = Array.from(byId.values());
-    const sessionDeletes = new Set<string>();
-    const messageDeletes = new Set<string>();
-    
-    for (const t of incomingTombstones) {
-      if (t.type === 'session') sessionDeletes.add(t.id);
-      else if (t.sessionId) messageDeletes.add(`${t.sessionId}:${t.id}`);
-    }
-    
-    let nextSessions = merged
-      .filter(s => !sessionDeletes.has(s.id))
-      .map(s => ({
-         ...s,
-         messages: s.messages.filter(m => !messageDeletes.has(`${s.id}:${m.id}`))
-      }))
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, CHAT_SESSIONS_MAX);
-      
-    if (nextSessions.length === 0) nextSessions = [createEmptySession()];
-    
+
+    // Session filtering must use the merged tombstone list — a locally
+    // retained (not yet echoed) delete still applies to the UI.
+    const mergedTombstones = mergeSyncTombstoneLists(syncTombstones, incomingTombstones);
+    setSyncTombstones(mergedTombstones);
+
+    const nextSessions = mergeSyncedSessionList(sessions, incomingSessions, mergedTombstones);
     setSessions(nextSessions);
-    
-    setActiveSessionId(
-      nextSessions.some(session => session.id === nextActiveSessionId)
-        ? nextActiveSessionId as string
-        : nextSessions[0].id
-    );
+
+    setActiveSessionId(resolveSyncedActiveSessionId(nextSessions, nextActiveSessionId, activeSessionId));
 
     if (!applyOptions?.silent) {
       setStatusText('聊天记录已同步');
@@ -124,7 +165,7 @@ export function useChatSync({
     window.setTimeout(() => {
       applyingSyncRef.current = false;
     }, 0);
-  }, [sessions, setSessions, setSyncTombstones, setActiveSessionId, setStatusText, setStatusType, applyingSyncRef]);
+  }, [sessions, activeSessionId, syncTombstones, setSessions, setSyncTombstones, setActiveSessionId, setStatusText, setStatusType, applyingSyncRef]);
 
   const syncChatHistory = useCallback(async (
     auth: ChatSyncAuth,

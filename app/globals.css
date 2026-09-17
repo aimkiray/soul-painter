@@ -47,6 +47,18 @@
     box-shadow: none;
   }
 
+  /* Keyboard-focus visibility: the select reset above wipes the default
+     outline, so restore one for :focus-visible only (mouse users unaffected). */
+  select:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  summary:focus-visible,
+  [role='button']:focus-visible {
+    outline: 2px solid #00aaaa;
+    outline-offset: -1px;
+  }
+
   select option:checked {
     background-color: #aaaaaa;
     color: #000000;

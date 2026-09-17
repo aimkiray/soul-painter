@@ -4,7 +4,8 @@ import type { ChatReferenceImage, ChatTurnSnapshot } from '@/contexts/ChatContex
 import type { RequestBody } from '@/lib/request-helpers';
 import type { ServerRunRecord, ServerRunResult } from '@/lib/server-runs';
 import type { ChatContentParts } from '@/lib/chat-thinking';
-import { isValidChatAssetId, readChatAsset } from '@/lib/chat-assets';
+import { fetchRemoteImageBytes, isValidChatAssetId, readChatAsset } from '@/lib/chat-assets';
+import { fetchPinned } from '@/lib/pinned-fetch';
 import { extractImage } from '@/lib/image-extract';
 import {
   buildChatMessages,
@@ -23,10 +24,10 @@ import {
   isRetryableRequestError,
   setRequestParam,
 } from '@/lib/request-helpers';
-import { readServerRun, updateServerRun } from '@/lib/server-run-store';
+import { readServerRun, updateServerRun, updateServerRunIf } from '@/lib/server-run-store';
 import { processChatStream } from '@/lib/stream-utils';
 import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from '@/lib/upstream-url';
-import { isSameUpstreamBaseUrl, validateUpstreamBaseUrl } from '@/lib/upstream-security';
+import { isSameUpstreamBaseUrl, resolveUpstreamBaseUrl } from '@/lib/upstream-security';
 
 type UpstreamAuthMode = 'bearer' | 'anthropic';
 
@@ -216,7 +217,8 @@ async function retryable<T>(
 }
 
 async function updateServerRunStatus(runId: string, statusText: string) {
-  await updateServerRun(runId, { result: undefined, error: statusText });
+  // Keep any accumulated streaming result so retry status text does not blank it out.
+  await updateServerRun(runId, { error: statusText });
 }
 
 function upstreamHeaders(target: UpstreamTarget, contentType?: string): HeadersInit {
@@ -242,20 +244,23 @@ async function fetchUpstreamResponse<T>(
   handleResponse: (response: Response) => Promise<T>,
   contentType?: string,
 ) {
+  const timeoutSec = Math.min(3600, Math.max(1, Math.floor(Number(options.timeout) || 1)));
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), Math.max(1, options.timeout) * 1000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutSec * 1000);
   const abort = () => controller.abort();
   signal.addEventListener('abort', abort, { once: true });
+  // The signal may have fired between entry and listener registration.
+  if (signal.aborted) controller.abort();
 
   try {
-    const safeBaseUrl = await validateUpstreamBaseUrl(target.baseUrl, target.trustedBaseUrls);
-    const response = await fetch(buildUpstreamUrl(safeBaseUrl, path), {
+    const upstream = await resolveUpstreamBaseUrl(target.baseUrl, target.trustedBaseUrls);
+    const response = await fetchPinned(buildUpstreamUrl(upstream.baseUrl, path), {
       method: 'POST',
       headers: upstreamHeaders(target, contentType),
       body,
       signal: controller.signal,
       redirect: 'error',
-    });
+    }, upstream.addresses);
     if (!response.ok) {
       const text = await response.text();
       throw new RequestStatusError({ status: response.status, statusText: response.statusText, text });
@@ -265,7 +270,7 @@ async function fetchUpstreamResponse<T>(
     if (controller.signal.aborted) {
       throw signal.aborted
         ? new Error('任务已取消')
-        : new Error(`请求超时 (${options.timeout}s)。可在设置中调大超时秒数。`);
+        : new Error(`请求超时 (${timeoutSec}s)。可在设置中调大超时秒数。`);
     }
     throw error;
   } finally {
@@ -445,12 +450,13 @@ function applyImageParams(target: RequestBody, request: ChatTurnSnapshot) {
 }
 
 function dataUrlToBlob(dataUrl: string): Blob {
-  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/);
+  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
   if (!match) throw new Error('图片数据格式无效');
   const mime = match[1] || 'image/png';
+  const data = (match[3] || '').replace(/\s+/g, '');
   const binary = match[2]
-    ? Buffer.from(match[3] || '', 'base64')
-    : Buffer.from(decodeURIComponent(match[3] || ''), 'utf8');
+    ? Buffer.from(data, 'base64')
+    : Buffer.from(decodeURIComponent(data), 'utf8');
   return new Blob([binary], { type: mime });
 }
 
@@ -476,6 +482,14 @@ async function imageHitToBlob(image: ImageHit, assetSessionId: string, signal: A
   if (source.startsWith('data:')) return dataUrlToBlob(source);
 
   if (signal.aborted) throw new Error('任务已取消');
+  if (/^https?:\/\//i.test(source)) {
+    // Remote reference images go through the same SSRF validation + size/mime limits
+    // as the chat asset mirror endpoint.
+    const { bytes, mime } = await fetchRemoteImageBytes(source);
+    if (signal.aborted) throw new Error('任务已取消');
+    return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime });
+  }
+
   if (!assetSessionId) throw new Error('参考图会话无效，请重新上传参考图');
   const assetId = localChatAssetId(source);
   const { bytes, mime } = await readChatAsset(assetSessionId, assetId);
@@ -562,8 +576,14 @@ async function runSingleImage(run: ServerRunRecord, body: Record<string, unknown
   return { hit, debugRaw: typeof response === 'string' ? response : JSON.stringify(response, null, 2) };
 }
 
+function requestedImageCountFor(run: ServerRunRecord) {
+  const n = Math.floor(Number(run.request.n));
+  // Match the composer's option list (up to 20 sequential upstream requests).
+  return Number.isFinite(n) ? Math.min(20, Math.max(1, n)) : 1;
+}
+
 async function runImageGeneration(run: ServerRunRecord, signal: AbortSignal): Promise<ServerRunResult> {
-  const requestedImageCount = Math.max(1, run.request.n);
+  const requestedImageCount = requestedImageCountFor(run);
   const body: Record<string, unknown> = {
     model: run.request.model || run.config.model,
     prompt: run.prompt,
@@ -609,7 +629,7 @@ async function runSingleEdit(run: ServerRunRecord, form: FormData, signal: Abort
 
 async function runImageEdit(run: ServerRunRecord, signal: AbortSignal): Promise<ServerRunResult> {
   const assetSessionId = runAssetSessionId(run.id);
-  const requestedImageCount = Math.max(1, run.request.n);
+  const requestedImageCount = requestedImageCountFor(run);
   const hits: ImageHit[] = [];
   let debugRaw = '';
 
@@ -695,11 +715,13 @@ async function executeServerRun(id: string, controller: AbortController) {
   const run = await readServerRun(id);
   if (!run || run.status === 'completed' || run.status === 'failed' || run.status === 'canceled') return;
 
-  await updateServerRun(id, {
+  const started = await updateServerRunIf(id, {
     status: 'running',
     startedAt: Date.now(),
     error: undefined,
-  });
+  }, (current) => current.status === 'queued');
+  // A cancel (or another terminal write) landed between the read and the write.
+  if (!started) return;
 
   try {
     const latest = await readServerRun(id);
@@ -719,31 +741,40 @@ async function executeServerRun(id: string, controller: AbortController) {
       if (controller.signal.aborted) throw error;
     }
 
-    await updateServerRun(id, {
+    // Conditional write: a cancel that landed while the run finished must not
+    // be resurrected to 'completed'.
+    await updateServerRunIf(id, {
       status: 'completed',
       result: completedResult,
       error: undefined,
       completedAt: Date.now(),
-    });
+      historyMessages: [],
+    }, (current) => current.status === 'queued' || current.status === 'running');
   } catch (error) {
     const message = errorMessage(error);
     const canceled = controller.signal.aborted || message === '任务已取消';
     const finalMessage = canceled ? '用户已取消本次请求。' : message + buildErrorHint(message);
-    await updateServerRun(id, {
-      status: canceled ? 'canceled' : 'failed',
-      error: finalMessage,
-      completedAt: Date.now(),
-      result: {
-        prompt: finalMessage,
-        images: [],
-        text: '',
-        code: '',
-        extra: 'error',
-        debugRaw: finalMessage,
-        statusText: canceled ? '已取消' : '请求失败',
-        statusType: canceled ? 'warn' : 'err',
-      },
-    });
+    try {
+      await updateServerRunIf(id, {
+        status: canceled ? 'canceled' : 'failed',
+        error: finalMessage,
+        completedAt: Date.now(),
+        historyMessages: [],
+        result: {
+          prompt: finalMessage,
+          images: [],
+          text: '',
+          code: '',
+          extra: 'error',
+          debugRaw: finalMessage,
+          statusText: canceled ? '已取消' : '请求失败',
+          statusType: canceled ? 'warn' : 'err',
+        },
+      }, (current) => current.status === 'queued' || current.status === 'running');
+    } catch (writeError) {
+      // The store may be unavailable (e.g. disk full); never rethrow here.
+      console.error(`Failed to record final state for server run ${id}`, writeError);
+    }
   }
 }
 
@@ -761,6 +792,7 @@ export function ensureServerRunStarted(id: string) {
         status: 'failed',
         error: message,
         completedAt: Date.now(),
+        historyMessages: [],
         result: {
           prompt: message,
           images: [],
@@ -775,7 +807,11 @@ export function ensureServerRunStarted(id: string) {
       return;
     }
     await executeServerRun(id, controller);
-  })().finally(() => {
+  })().catch((error) => {
+    // Callers intentionally discard this promise; absorb failures so they
+    // never surface as unhandled rejections.
+    console.error(`Server run ${id} failed unexpectedly`, error);
+  }).finally(() => {
     activeRuns.delete(id);
     activeControllers.delete(id);
     runtimeSecrets.delete(id);
@@ -787,10 +823,13 @@ export function ensureServerRunStarted(id: string) {
 export async function cancelServerRun(id: string) {
   activeControllers.get(id)?.abort();
   runtimeSecrets.delete(id);
-  await updateServerRun(id, {
+  // The predicate runs inside the store's write queue, so a run that reached a
+  // terminal state between the abort signal and the write cannot be clobbered.
+  await updateServerRunIf(id, {
     status: 'canceled',
     error: '用户已取消本次请求。',
     completedAt: Date.now(),
+    historyMessages: [],
     result: {
       prompt: '用户已取消本次请求。',
       images: [],
@@ -801,5 +840,5 @@ export async function cancelServerRun(id: string) {
       statusText: '已取消',
       statusType: 'warn',
     },
-  });
+  }, (run) => run.status === 'queued' || run.status === 'running');
 }

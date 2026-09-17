@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import dns from 'dns/promises';
 import net from 'net';
 import { isChatAssetSessionId } from '@/lib/chat-asset-session-id';
+import { fetchPinned, type ResolvedAddress } from '@/lib/pinned-fetch';
 
 const CHAT_ASSET_DIR = path.join(process.cwd(), 'data', 'chat-assets');
 const MAX_IMAGE_BYTES = getPositiveEnvInt('CHAT_ASSET_MAX_IMAGE_BYTES', 8 * 1024 * 1024);
@@ -81,12 +82,12 @@ function getPositiveEnvInt(name: string, fallback: number) {
 }
 
 function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; mime: string } {
-  const match = dataUrl.match(/^data:([^;,]+)(;base64)?,(.*)$/);
+  const match = dataUrl.match(/^data:([^;,]+)(;base64)?,([\s\S]*)$/);
   if (!match) throw new Error('Invalid image data');
 
   const mime = match[1].toLowerCase();
   const isBase64 = !!match[2];
-  const data = match[3] || '';
+  const data = (match[3] || '').replace(/\s+/g, '');
   const buffer = isBase64
     ? Buffer.from(data, 'base64')
     : Buffer.from(decodeURIComponent(data));
@@ -124,8 +125,11 @@ function isPrivateIp(ip: string) {
       ['172.16.0.0', 12],
       ['192.0.0.0', 24],
       ['192.0.2.0', 24],
+      ['192.31.196.0', 24],
+      ['192.52.193.0', 24],
       ['192.88.99.0', 24],
       ['192.168.0.0', 16],
+      ['192.175.48.0', 24],
       ['198.18.0.0', 15],
       ['198.51.100.0', 24],
       ['203.0.113.0', 24],
@@ -138,6 +142,7 @@ function isPrivateIp(ip: string) {
     const firstHextet = parseInt(normalizedIp.split(':')[0] || '0', 16);
     return normalizedIp === '::1'
       || normalizedIp === '::'
+      || normalizedIp.startsWith('64:ff9b:')
       || (firstHextet & 0xfe00) === 0xfc00
       || (firstHextet & 0xffc0) === 0xfe80
       || (firstHextet & 0xff00) === 0xff00
@@ -147,7 +152,13 @@ function isPrivateIp(ip: string) {
   return true;
 }
 
-async function assertPublicRemoteUrl(rawUrl: string): Promise<URL> {
+export interface PublicRemoteImageUrl {
+  url: URL;
+  /** Validated addresses the fetch must pin to (prevents DNS-rebinding TOCTOU). */
+  addresses: ResolvedAddress[];
+}
+
+export async function assertPublicRemoteUrl(rawUrl: string): Promise<PublicRemoteImageUrl> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -167,9 +178,10 @@ async function assertPublicRemoteUrl(rawUrl: string): Promise<URL> {
     throw new Error('Image URL host is not allowed');
   }
 
-  if (net.isIP(hostname)) {
+  const literalFamily = net.isIP(hostname);
+  if (literalFamily) {
     if (isPrivateIp(hostname)) throw new Error('Image URL host is not allowed');
-    return url;
+    return { url, addresses: [{ address: hostname, family: literalFamily }] };
   }
 
   const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
@@ -177,7 +189,7 @@ async function assertPublicRemoteUrl(rawUrl: string): Promise<URL> {
     throw new Error('Image URL host is not allowed');
   }
 
-  return url;
+  return { url, addresses };
 }
 
 async function readResponseBytes(response: Response): Promise<Uint8Array> {
@@ -207,23 +219,28 @@ async function readResponseBytes(response: Response): Promise<Uint8Array> {
   return bytes;
 }
 
-async function fetchRemoteImageBytes(rawUrl: string, redirects = 0): Promise<{ bytes: Uint8Array; mime: string }> {
-  const url = await assertPublicRemoteUrl(rawUrl);
+export async function fetchRemoteImageBytes(
+  rawUrl: string,
+  redirects = 0,
+  deadline = Date.now() + REMOTE_FETCH_TIMEOUT_MS,
+): Promise<{ bytes: Uint8Array; mime: string }> {
+  const { url, addresses } = await assertPublicRemoteUrl(rawUrl);
+  // DNS validation above shares the same timeout budget as the fetch itself.
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REMOTE_FETCH_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
 
   try {
-    const response = await fetch(url, {
+    const response = await fetchPinned(url, {
       redirect: 'manual',
       signal: controller.signal,
       headers: { Accept: 'image/png,image/jpeg,image/webp,image/gif' },
-    });
+    }, addresses);
 
     if (response.status >= 300 && response.status < 400) {
       if (redirects >= REMOTE_FETCH_MAX_REDIRECTS) throw new Error('Too many image redirects');
       const location = response.headers.get('location');
       if (!location) throw new Error('Invalid image redirect');
-      return fetchRemoteImageBytes(new URL(location, url).toString(), redirects + 1);
+      return fetchRemoteImageBytes(new URL(location, url).toString(), redirects + 1, deadline);
     }
 
     if (!response.ok) throw new Error('Failed to fetch image URL');

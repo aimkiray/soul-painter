@@ -15,11 +15,16 @@ import {
 } from '@/lib/model-gate';
 import { isModelGateEnabled } from '@/lib/model-gate-env';
 import { getChatAssetSession } from '@/lib/chat-asset-session';
+import { checkRateLimit, clientIp, isRateLimited } from '@/lib/rate-limit';
+import { readLimitedText } from '@/lib/limited-body';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const RUN_CREATE_MAX_BODY_BYTES = 32 * 1024 * 1024;
+const RUN_CREATE_RATE_LIMIT = 60;
+const RUN_CREATE_RATE_WINDOW_MS = 60_000;
+const RUN_TIMEOUT_MAX_SEC = 3600;
 
 interface ServerRunQueryPayload {
   items: Array<{ id: string; accessToken: string }>;
@@ -50,8 +55,11 @@ function isRunPayload(value: unknown): value is ServerRunCreatePayload {
     && !!options
     && typeof options.timeout === 'number'
     && Number.isFinite(options.timeout)
+    && options.timeout <= RUN_TIMEOUT_MAX_SEC
     && !!runRequest
     && (runRequest.mode === 'chat' || runRequest.mode === 'images' || runRequest.mode === 'edits')
+    && typeof runRequest.n === 'number'
+    && Number.isFinite(runRequest.n)
     && Array.isArray(runRequest.referenceImages)
     && Array.isArray(payload.historyMessages)
     && payload.historyMessages.every(isRecord);
@@ -125,10 +133,16 @@ async function validateModelGate(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const rawBody = await request.text();
-  if (new TextEncoder().encode(rawBody).length > RUN_CREATE_MAX_BODY_BYTES) {
+  // Cheap pre-check so request floods are rejected before the body is read.
+  if (isRateLimited(`runs:${clientIp(request)}`, RUN_CREATE_RATE_LIMIT, RUN_CREATE_RATE_WINDOW_MS)) {
+    return NextResponse.json({ error: '任务创建过于频繁，请稍后再试' }, { status: 429 });
+  }
+
+  const limited = await readLimitedText(request, RUN_CREATE_MAX_BODY_BYTES);
+  if ('tooLarge' in limited) {
     return NextResponse.json({ error: '任务数据过大' }, { status: 413 });
   }
+  const rawBody = limited.text;
 
   let body: unknown;
   try {
@@ -156,6 +170,10 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({ error: '任务参数不完整' }, { status: 400 });
+  }
+
+  if (!checkRateLimit(`runs:${clientIp(request)}`, RUN_CREATE_RATE_LIMIT, RUN_CREATE_RATE_WINDOW_MS)) {
+    return NextResponse.json({ error: '任务创建过于频繁，请稍后再试' }, { status: 429 });
   }
 
   const gateResponse = await validateModelGate(request);

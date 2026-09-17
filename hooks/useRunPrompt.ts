@@ -5,7 +5,6 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
 import { useImages } from '@/contexts/ImageContext';
 import type { ChatMessage, ChatReferenceImage, ChatTurnSnapshot } from '@/contexts/ChatContext';
-import { chatSessionPromptStorageKey } from '@/lib/constants';
 import { parseSize, resolveRequestSize } from '@/lib/size';
 import { buildRepeaterReply } from '@/lib/api-parsers';
 import {
@@ -19,19 +18,26 @@ import {
   createServerRunId,
   readPendingServerRuns,
   removePendingServerRun,
+  updatePendingServerRun,
   type ServerRunCreatePayload,
   type ServerRunPublicRecord,
 } from '@/lib/server-runs';
+import { USER_ABORT_SENTINEL } from '@/lib/api';
 import type { ImageRef } from '@/types';
 
 export interface PromptRunOptions {
   existingUserMessageId?: string;
   targetBotMessageId?: string;
+  runUserMessageId?: string;
   historyMessages?: ChatMessage[];
   requestSnapshot?: ChatTurnSnapshot;
 }
 
 const SERVER_RUN_MISSING_TIMEOUT_MS = 30_000;
+
+function updatePendingServerRunMissing(runId: string, missingSince: number | undefined) {
+  updatePendingServerRun(runId, { missingSince });
+}
 
 function isRunningServerRun(run: ServerRunPublicRecord) {
   return run.status === 'queued' || run.status === 'running';
@@ -100,7 +106,7 @@ function parseRunEventBlock(block: string): ServerRunPublicRecord | null {
   let eventType = 'message';
   const dataLines: string[] = [];
 
-  for (const line of block.split('\n')) {
+  for (const line of block.split(/\r\n|\r|\n/)) {
     if (line.startsWith('event:')) {
       eventType = line.slice(6).trim();
     } else if (line.startsWith('data:')) {
@@ -149,6 +155,9 @@ export function useRunPrompt() {
 
   const sessionsRef = useRef(sessions);
   const activeSessionIdRef = useRef(activeSessionId);
+  const inFlightRef = useRef(false);
+  const cancelRequestedRef = useRef(false);
+  const preSubmitControllerRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollPendingRunsRef = useRef<() => Promise<void>>(async () => undefined);
   const activeRunIdsRef = useRef<Set<string>>(new Set());
@@ -209,7 +218,7 @@ export function useRunPrompt() {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          const blocks = buffer.split('\n\n');
+          const blocks = buffer.split(/\r?\n\r?\n/);
           buffer = blocks.pop() || '';
 
           for (const block of blocks) {
@@ -305,8 +314,13 @@ export function useRunPrompt() {
 
       for (const run of runs) applyRunToChat(run);
       for (const item of pending) {
-        if (seen.has(item.id)) continue;
-        if (Date.now() - item.createdAt > SERVER_RUN_MISSING_TIMEOUT_MS) {
+        const missingSince = item.missingSince;
+        if (seen.has(item.id)) {
+          if (missingSince !== undefined) updatePendingServerRunMissing(item.id, undefined);
+          continue;
+        }
+        if (missingSince === undefined) updatePendingServerRunMissing(item.id, Date.now());
+        else if (Date.now() - missingSince > SERVER_RUN_MISSING_TIMEOUT_MS) {
           removePendingServerRun(item.id);
           activeRunIdsRef.current.delete(item.id);
           closeRunEvents(item.id);
@@ -364,6 +378,11 @@ export function useRunPrompt() {
     };
   }, [closeAllRunEvents, pollPendingRuns]);
 
+  useEffect(() => () => {
+    preSubmitControllerRef.current?.abort();
+    preSubmitControllerRef.current = null;
+  }, []);
+
   const submitServerRun = useCallback(async (payload: ServerRunCreatePayload) => {
     addPendingServerRun({
       id: payload.id,
@@ -399,7 +418,9 @@ export function useRunPrompt() {
     runOptions: PromptRunOptions = {},
   ) => {
     const cleanPrompt = prompt.trim();
-    if (!cleanPrompt || isLoading) return;
+    if (!cleanPrompt || isLoading || inFlightRef.current) return;
+    inFlightRef.current = true;
+    cancelRequestedRef.current = false;
 
     const sessionId = activeSessionId;
     const existingUserMessageId = runOptions.existingUserMessageId;
@@ -407,10 +428,12 @@ export function useRunPrompt() {
     const currentSessionMessages = sessionsRef.current.find((session) => session.id === sessionId)?.messages ?? [];
     const sessionMessages = runOptions.historyMessages ?? currentSessionMessages;
     let submittedBotMessageId = targetBotMessageId || '';
+    let userMessageCreated = false;
 
     const runId = createServerRunId();
     const accessToken = createServerRunAccessToken();
     const requestController = new AbortController();
+    preSubmitControllerRef.current = requestController;
 
     try {
       if (modelGateEnabled && !modelGateUnlocked) {
@@ -435,10 +458,6 @@ export function useRunPrompt() {
         setDebugRawForSession(sessionId, reply);
         setStatusForSession(sessionId, '回复完成', 'ok');
         return;
-      }
-
-      if (options.persistPrompt) {
-        try { localStorage.setItem(chatSessionPromptStorageKey(sessionId), cleanPrompt); } catch { /* ignore */ }
       }
 
       const isSnapshotRun = !!runOptions.requestSnapshot;
@@ -481,7 +500,7 @@ export function useRunPrompt() {
           serverRunId: runId,
         }, sessionId);
         const priorUser = [...sessionMessages].reverse().find((message) => message.role === 'user' && message.prompt.trim());
-        userMessageId = priorUser?.id || createServerRunId();
+        userMessageId = runOptions.runUserMessageId || priorUser?.id || createServerRunId();
       } else if (existingUserMessageId) {
         updateUserMessage(existingUserMessageId, cleanPrompt, sessionId, normalizedRequest, { markEdited: true });
         truncateChatAfterMessage(existingUserMessageId, sessionId);
@@ -490,6 +509,7 @@ export function useRunPrompt() {
         submittedBotMessageId = botMessageId;
       } else {
         userMessageId = addUserMsg(cleanPrompt, sessionId, normalizedRequest, runId);
+        userMessageCreated = true;
         botMessageId = addBotMsg([], '', '', sessionId, runId);
         submittedBotMessageId = botMessageId;
       }
@@ -509,10 +529,19 @@ export function useRunPrompt() {
         historyMessages: sessionMessages,
       });
     } catch (error) {
-      const message = (error as Error).message || '后台任务提交失败';
-      removePendingServerRun(runId);
-      activeRunIdsRef.current.delete(runId);
+      const aborted = cancelRequestedRef.current || (error as Error).message === USER_ABORT_SENTINEL;
+      const message = aborted ? '已取消' : (error as Error).message || '后台任务提交失败';
+      // 用户取消或 fetch 网络层失败时，POST 可能已到达服务端；保留 pending
+      // 记录交给轮询对账（未落库的 run 由 missingSince 超时兜底清理）。
+      const keepPending = aborted || error instanceof TypeError;
       setPendingRegenerateMessageId((current) => (current === targetBotMessageId ? null : current));
+      if (keepPending) {
+        if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = setTimeout(() => { void pollPendingRunsRef.current(); }, 1500);
+      } else {
+        removePendingServerRun(runId);
+        activeRunIdsRef.current.delete(runId);
+      }
       if (submittedBotMessageId) {
         replaceBotMessage(submittedBotMessageId, {
           prompt: message,
@@ -520,9 +549,12 @@ export function useRunPrompt() {
           text: '',
           code: '',
           extra: 'error',
-          serverRunId: undefined,
+          serverRunId: keepPending ? runId : undefined,
         }, sessionId);
-      } else {
+      } else if (!aborted) {
+        if (!userMessageCreated && !existingUserMessageId && !targetBotMessageId) {
+          addUserMsg(cleanPrompt, sessionId);
+        }
         const botMessageId = addBotMsg([], '', 'error', sessionId);
         replaceBotMessage(botMessageId, {
           prompt: message,
@@ -533,9 +565,14 @@ export function useRunPrompt() {
           serverRunId: undefined,
         }, sessionId);
       }
-      setStatusForSession(sessionId, message, 'err');
-      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, sessionId)) {
+      setStatusForSession(sessionId, message, aborted || keepPending ? 'warn' : 'err');
+      if (!keepPending && !hasTrackedPendingRunForSession(activeRunIdsRef.current, sessionId)) {
         setLoading(false, sessionId);
+      }
+    } finally {
+      inFlightRef.current = false;
+      if (preSubmitControllerRef.current === requestController) {
+        preSubmitControllerRef.current = null;
       }
     }
   }, [
@@ -561,6 +598,12 @@ export function useRunPrompt() {
   ]);
 
   const handleCancel = useCallback(() => {
+    const preSubmit = preSubmitControllerRef.current;
+    if (preSubmit) {
+      cancelRequestedRef.current = true;
+      preSubmitControllerRef.current = null;
+      preSubmit.abort();
+    }
     const sessionId = activeSessionId;
     const pending = readPendingServerRuns().filter((item) => (
       item.sessionId === sessionId && activeRunIdsRef.current.has(item.id)
@@ -603,9 +646,7 @@ export function useRunPrompt() {
       });
   }, [activeSessionId, closeRunEvents, pollPendingRuns, replaceBotMessage, setLoading, setStatusForSession]);
 
-  const handleSend = useCallback((prompt: string) => {
-    void runPrompt(prompt);
-  }, [runPrompt]);
+  const handleSend = useCallback((prompt: string) => runPrompt(prompt), [runPrompt]);
 
   const handleRegenerateMessage = useCallback((messageId: string) => {
     if (isLoading) return;
@@ -618,6 +659,7 @@ export function useRunPrompt() {
     if (!userMessage) return;
     void runPrompt(userMessage.prompt, {
       targetBotMessageId: messageId,
+      runUserMessageId: userMessage.id,
       historyMessages: priorMessages.filter((message) => message.id !== userMessage.id),
       requestSnapshot: userMessage.request,
     });

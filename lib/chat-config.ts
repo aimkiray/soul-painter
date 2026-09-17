@@ -36,8 +36,7 @@ function hasModel(options: readonly ModelOption[], model: string) {
 }
 
 function looksLikeClaudeModel(model: string) {
-  const normalized = model.trim().toLowerCase();
-  return normalized.startsWith('claude-') || normalized.includes('/claude-');
+  return /claude/i.test(model);
 }
 
 export function getChatFormatForModel(
@@ -67,7 +66,9 @@ export function parseChatModelChoice(value: string): { format: ChatApiFormat; mo
   const format = value.slice(0, separatorIndex);
   if (format !== 'openai' && format !== 'claude') return null;
 
-  return { format, model: value.slice(separatorIndex + 1) };
+  const model = value.slice(separatorIndex + 1);
+  if (!model.trim()) return null;
+  return { format, model };
 }
 
 export function getChatProviderConfig(
@@ -86,7 +87,7 @@ export function getChatProviderConfig(
   if (format === 'claude') {
     return {
       format,
-      apiKey: config.claudeApiKey,
+      apiKey: config.claudeApiKey || config.chatApiKey || config.apiKey,
       baseUrl: config.claudeBaseUrl,
       model,
       titleModel: config.claudeTitleModel,

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect } from 'react';
+import React, { useCallback, useRef, useEffect } from 'react';
 import { useChat } from '@/contexts/ChatContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useImages } from '@/contexts/ImageContext';
@@ -34,6 +34,19 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
   } = useChat();
   const isActiveSessionLoading = isLoading;
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }, []);
+
+  const handleDelete = useCallback(
+    (messageId: string) => deleteMessage(messageId, activeSessionId),
+    [deleteMessage, activeSessionId],
+  );
   const lastUserIndex = messages.findLastIndex((message) => message.role === 'user');
   const hasAssistantForCurrentTurn = lastUserIndex >= 0
     && messages.slice(lastUserIndex + 1).some((message) => message.role === 'bot');
@@ -53,7 +66,8 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
       : '等待描述';
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!isNearBottomRef.current) return;
+    bottomRef.current?.scrollIntoView({ behavior: isActiveSessionLoading ? 'auto' : 'smooth' });
   }, [messages, isActiveSessionLoading]);
 
   if (messages.length === 0 && !isActiveSessionLoading) {
@@ -70,7 +84,7 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
   }
 
   return (
-    <div className="chat-scroll-gutter flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col" id="chat-scroll">
+    <div className="chat-scroll-gutter flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col" id="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
       <div className={`${CHAT_CONTENT_CLASS} flex flex-col`}>
         {messages.map((msg, i) => {
           const isRegeneratingMessage = msg.id === pendingMessageId;
@@ -87,7 +101,7 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
               isRegenerating={isRegeneratingMessage}
               disabled={isLoading}
               canRegenerate={canRegenerate}
-              onDelete={(messageId) => deleteMessage(messageId, activeSessionId)}
+              onDelete={handleDelete}
               onEdit={onEditMessage}
               onRegenerate={onRegenerateMessage}
             />

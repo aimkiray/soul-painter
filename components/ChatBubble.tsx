@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import { ImageHit } from '@/types';
 import { writeClipboardText } from '@/lib/clipboard';
 import MarkdownRenderer from './MarkdownRenderer';
+import Modal from './Modal';
 
 interface ChatBubbleProps {
   message: {
@@ -94,7 +95,25 @@ function CopyFailedIcon() {
   );
 }
 
-export default function ChatBubble({
+function imageKey(hit: ImageHit, index: number) {
+  return `${index}:${(hit.dataUrl || hit.url || '').slice(0, 80)}`;
+}
+
+function downloadHit(hit: ImageHit, i: number) {
+  const link = hit.dataUrl || hit.url || '';
+  const isData = !!hit.dataUrl;
+  const ext = getExt(link, isData);
+  if (link.startsWith('data:')) {
+    const a = document.createElement('a');
+    a.href = link;
+    a.download = `micu-${Date.now()}-${i + 1}.${ext}`;
+    a.click();
+  } else {
+    window.open(link, '_blank');
+  }
+}
+
+const ChatBubble = React.memo(function ChatBubble({
   message,
   isPending = false,
   isRegenerating = false,
@@ -108,7 +127,7 @@ export default function ChatBubble({
   const { role, prompt, images, extra } = message;
   const visibleImages = images.filter((hit) => hit.dataUrl || hit.url);
   const [lightbox, setLightbox] = useState<string | null>(null);
-  const [imgErrors, setImgErrors] = useState<Set<number>>(new Set());
+  const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(prompt);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -116,13 +135,11 @@ export default function ChatBubble({
   const [thinkingOpen, setThinkingOpen] = useState(!message.thinkingDone);
   const copyTextFeedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const deleteTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  React.useEffect(() => {
-    if (!lightbox) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [lightbox]);
+  const thinkingTouchedRef = React.useRef(false);
+  const thinkingEdgeRef = React.useRef({
+    hasThinking: !!message.thinking,
+    done: !!message.thinkingDone,
+  });
 
   React.useEffect(() => {
     return () => {
@@ -132,26 +149,18 @@ export default function ChatBubble({
   }, []);
 
   React.useEffect(() => {
-    if (!message.thinking) return;
-    const timeoutId = setTimeout(() => {
-      setThinkingOpen(!message.thinkingDone);
-    }, 0);
-    return () => clearTimeout(timeoutId);
-  }, [message.thinking, message.thinkingDone]);
-
-  const handleDownload = (hit: ImageHit, i: number, timestamp: number) => {
-    const link = hit.dataUrl || hit.url || '';
-    const isData = !!hit.dataUrl;
-    const ext = getExt(link, isData);
-    if (link.startsWith('data:')) {
-      const a = document.createElement('a');
-      a.href = link;
-      a.download = `micu-${Math.round(timestamp)}-${i + 1}.${ext}`;
-      a.click();
-    } else {
-      window.open(link, '_blank');
+    const hasThinking = !!message.thinking;
+    const done = !!message.thinkingDone;
+    const prev = thinkingEdgeRef.current;
+    thinkingEdgeRef.current = { hasThinking, done };
+    if (thinkingTouchedRef.current) return;
+    // Only auto-open/close on the real edges: thinking appearing, or it
+    // finishing — never mid-stream updates and never after the user toggled.
+    if ((hasThinking && !prev.hasThinking) || (done && !prev.done)) {
+      const timeoutId = setTimeout(() => setThinkingOpen(!done), 0);
+      return () => clearTimeout(timeoutId);
     }
-  };
+  }, [message.thinking, message.thinkingDone]);
 
   const handleCopyText = async () => {
     const text = role === 'user' ? prompt : message.text;
@@ -201,10 +210,10 @@ export default function ChatBubble({
           <span className={`text-xs ${role === 'user' ? 'text-[#00aaaa]' : 'text-[#CCC]'}`}>
             {role === 'user' ? 'You' : 'Assistant'}
           </span>
-          <span className="text-[0.65rem] text-[#666]">#{messageIndex + 1}</span>
+          <span className="text-[0.65rem] text-[#999]">#{messageIndex + 1}</span>
           {showEdited && <span className="text-[0.65rem] text-[#888]">已编辑</span>}
         </div>
-        <div className={`w-fit max-w-full min-w-0 ${role === 'user' ? 'bg-[#00aaaa] text-white border-2 border-[#00aaaa] p-3' : 'bg-[#111] text-[#CCC] border-2 border-[#AAA] p-3'}`}>
+        <div className={`w-fit max-w-full min-w-0 ${role === 'user' ? 'bg-[#007a7a] text-white border-2 border-[#007a7a] p-3' : 'bg-[#111] text-[#CCC] border-2 border-[#AAA] p-3'}`}>
           {extra === 'error' ? (
             <div className="flex flex-col gap-1">
               <span className="text-xs text-[#ff5555] uppercase font-bold">[ 错误 ]</span>
@@ -219,6 +228,7 @@ export default function ChatBubble({
                       value={editDraft}
                       onChange={(event) => setEditDraft(event.target.value)}
                       onKeyDown={(event) => {
+                        if (event.nativeEvent.isComposing) return;
                         if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
                           event.preventDefault();
                           saveEdit();
@@ -265,7 +275,15 @@ export default function ChatBubble({
                     <details
                       className="mb-2 border border-[#444] bg-black/40"
                       open={thinkingOpen}
-                      onToggle={(event) => setThinkingOpen(event.currentTarget.open)}
+                      onToggle={(event) => {
+                        // Programmatic open changes echo back through toggle —
+                        // only count it as a user toggle when it differs from
+                        // the current state.
+                        if (event.currentTarget.open !== thinkingOpen) {
+                          thinkingTouchedRef.current = true;
+                        }
+                        setThinkingOpen(event.currentTarget.open);
+                      }}
                     >
                       <summary className="cursor-pointer select-none px-2 py-1 text-xs text-[#888] hover:text-[#00aaaa]">
                         {message.thinkingDone ? '[ 思考过程 ]' : '[ 思考中... ]'}
@@ -284,9 +302,10 @@ export default function ChatBubble({
                     <div className={visibleImages.length > 1 ? 'grid grid-cols-2 gap-2 mb-2' : 'mb-2'}>
                       {visibleImages.map((hit, i) => {
                         const src = hit.dataUrl || hit.url || '';
+                        const key = imageKey(hit, i);
                         return (
-                          <div key={i} className="relative group">
-                            {imgErrors.has(i) ? (
+                          <div key={key} className="relative group">
+                            {imgErrors.has(key) ? (
                               <div className="flex items-center justify-center min-h-[100px] bg-black text-[#ff5555] text-xs p-2">
                                 图片加载失败
                               </div>
@@ -299,7 +318,7 @@ export default function ChatBubble({
                                 loading="lazy" decoding="async"
                                 onClick={() => setLightbox(src)}
                                 onDragStart={(event) => event.preventDefault()}
-                                onError={() => setImgErrors((prev) => new Set(prev).add(i))}
+                                onError={() => setImgErrors((prev) => new Set(prev).add(key))}
                               />
                             )}
                             {visibleImages.length > 1 && (
@@ -331,7 +350,7 @@ export default function ChatBubble({
                         const link = hit.dataUrl || hit.url || '';
                         const isData = !!hit.dataUrl;
                         return (
-                          <span key={i} className="flex gap-2">
+                          <span key={imageKey(hit, i)} className="flex gap-2">
                             <button
                               onClick={() => setLightbox(link)}
                               className="btn-retro text-xs px-2 py-0.5"
@@ -339,7 +358,7 @@ export default function ChatBubble({
                               放大
                             </button>
                             <button
-                              onClick={(e) => handleDownload(hit, i, e.timeStamp)}
+                              onClick={() => downloadHit(hit, i)}
                               className="btn-retro text-xs px-2 py-0.5"
                             >
                               {isData ? '下载' : '打开'}
@@ -379,7 +398,7 @@ export default function ChatBubble({
                 <button
                   type="button"
                   onClick={() => { void handleCopyText(); }}
-                  disabled={disabled || !prompt.trim()}
+                  disabled={!prompt.trim()}
                   className={copyButtonClass}
                   aria-label={copyTextStatus === 'copied' ? '已复制消息' : copyTextStatus === 'failed' ? '复制失败' : '复制消息'}
                   title={copyTextStatus === 'copied' ? '已复制' : copyTextStatus === 'failed' ? '复制失败' : '复制'}
@@ -412,7 +431,7 @@ export default function ChatBubble({
                 <button
                   type="button"
                   onClick={() => { void handleCopyText(); }}
-                  disabled={disabled || !message.text.trim()}
+                  disabled={!message.text.trim()}
                   className={copyButtonClass}
                   aria-label={copyTextStatus === 'copied' ? '已复制消息' : copyTextStatus === 'failed' ? '复制失败' : '复制消息'}
                   title={copyTextStatus === 'copied' ? '已复制' : copyTextStatus === 'failed' ? '复制失败' : '复制'}
@@ -437,10 +456,17 @@ export default function ChatBubble({
 
       {/* Lightbox */}
       {lightbox && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4" onClick={() => setLightbox(null)}>
+        <Modal
+          id={`chat-lightbox-${message.id}`}
+          onClose={() => setLightbox(null)}
+          ariaLabel="查看大图"
+          backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
+          panelClassName="flex items-center justify-center max-w-full max-h-[95vh]"
+        >
           <button
             onClick={() => setLightbox(null)}
-            className="absolute top-3 right-3 text-white text-2xl hover:text-[#ff5555] cursor-pointer font-mono z-10"
+            className="fixed top-3 right-3 text-white text-2xl hover:text-[#ff5555] cursor-pointer font-mono z-10"
+            aria-label="关闭大图"
           >
             [X]
           </button>
@@ -449,12 +475,13 @@ export default function ChatBubble({
             alt="Full size"
             draggable={false}
             className="max-w-full max-h-[95vh] object-contain checkerboard"
-            loading="lazy" decoding="async"
-            onClick={(e) => e.stopPropagation()}
+            decoding="async"
             onDragStart={(event) => event.preventDefault()}
           />
-        </div>
+        </Modal>
       )}
     </>
   );
-}
+});
+
+export default ChatBubble;
