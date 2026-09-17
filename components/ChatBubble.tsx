@@ -99,6 +99,8 @@ function imageKey(hit: ImageHit, index: number) {
   return `${index}:${(hit.dataUrl || hit.url || '').slice(0, 80)}`;
 }
 
+const EMPTY_IMG_ERRORS = new Set<string>();
+
 function downloadHit(hit: ImageHit, i: number) {
   const link = hit.dataUrl || hit.url || '';
   const isData = !!hit.dataUrl;
@@ -127,7 +129,13 @@ const ChatBubble = React.memo(function ChatBubble({
   const { role, prompt, images, extra } = message;
   const visibleImages = images.filter((hit) => hit.dataUrl || hit.url);
   const [lightbox, setLightbox] = useState<string | null>(null);
-  const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
+  // Error flags are keyed to the current images array — a new array identity
+  // makes them stale, so they're derived (keyed clear) rather than reset in
+  // an effect.
+  const [imgErrorState, setImgErrorState] = useState<{ images: ImageHit[]; errors: Set<string> }>(
+    () => ({ images: message.images, errors: new Set() }),
+  );
+  const imgErrors = imgErrorState.images === message.images ? imgErrorState.errors : EMPTY_IMG_ERRORS;
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(prompt);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -318,7 +326,10 @@ const ChatBubble = React.memo(function ChatBubble({
                                 loading="lazy" decoding="async"
                                 onClick={() => setLightbox(src)}
                                 onDragStart={(event) => event.preventDefault()}
-                                onError={() => setImgErrors((prev) => new Set(prev).add(key))}
+                                onError={() => setImgErrorState((prev) => {
+                                  const errors = prev.images === message.images ? prev.errors : new Set<string>();
+                                  return { images: message.images, errors: new Set(errors).add(key) };
+                                })}
                               />
                             )}
                             {visibleImages.length > 1 && (

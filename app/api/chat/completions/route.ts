@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { corsPreflightResponse, validateRequest, proxyUpstreamStream, MAX_BODY_SIZE } from '@/lib/server-proxy';
 import { readLimitedText } from '@/lib/limited-body';
+import { checkRateLimit, clientIp } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+// Proxied upstream calls cost money: cap requests per IP per minute before any
+// body is read. The `proxy:` bucket is shared with the images routes.
+const PROXY_RATE_LIMIT = 30;
+const PROXY_RATE_WINDOW_MS = 60_000;
 
 export const OPTIONS = corsPreflightResponse;
 
@@ -65,6 +71,9 @@ function toClaudeMessagesBody(body: Record<string, unknown>) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!checkRateLimit(`proxy:${clientIp(request)}`, PROXY_RATE_LIMIT, PROXY_RATE_WINDOW_MS)) {
+    return NextResponse.json({ error: { message: '请求过于频繁，请稍后再试' } }, { status: 429 });
+  }
   const format = getChatApiFormat(request);
   const validated = await validateRequest(request, format === 'claude' ? 'claude' : 'chat');
   if (validated instanceof NextResponse) return validated;

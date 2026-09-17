@@ -10,6 +10,20 @@ export interface ChatStreamDelta {
 
 export const CHAT_STREAM_EMIT_INTERVAL_MS = 16;
 
+// Splits an SSE read buffer into complete event blocks. Emitters variously
+// separate blocks with '\n\n', '\r\n\r\n' or lone '\r' pairs, so all CR
+// variants normalize to '\n' before splitting on '\n\n'. A trailing '\r' is
+// held back: it may be half of a '\r\n' split across two reads.
+export function splitStreamEventBlocks(buffer: string): { blocks: string[]; rest: string } {
+  const deferred = buffer.endsWith('\r') ? '\r' : '';
+  const normalized = (deferred ? buffer.slice(0, -1) : buffer)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+  const parts = normalized.split('\n\n');
+  const rest = (parts.pop() ?? '') + deferred;
+  return { blocks: parts, rest };
+}
+
 export interface ChatStreamOptions {
   minEmitIntervalMs?: number;
 }
@@ -187,8 +201,8 @@ export async function processChatStream(
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
-      const blocks = buffer.split(/\r?\n\r?\n/);
-      buffer = blocks.pop() || '';
+      const { blocks, rest } = splitStreamEventBlocks(buffer);
+      buffer = rest;
 
       for (const block of blocks) {
         if (processBlock(block)) {

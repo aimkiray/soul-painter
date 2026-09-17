@@ -118,7 +118,12 @@ export function extractChatResponseText(response: unknown, format: ChatApiFormat
   return extractChatResponseParts(response, format).text;
 }
 
+// Byte budget for the serialized messages payload — measured as UTF-8 bytes
+// (what actually goes on the wire), not JS string.length, which counts UTF-16
+// code units and undercounts non-ASCII text by up to 3x.
 export const CHAT_HISTORY_BUDGET = 32 * 1024;
+
+const utf8Length = (value: string) => new TextEncoder().encode(value).length;
 
 export function buildChatMessages(
   history: ChatMessage[],
@@ -149,7 +154,7 @@ export function buildChatMessages(
   turns.push({ role: 'user', content: prompt });
 
   let combined = [...sys, ...turns];
-  while (turns.length > 1 && JSON.stringify(combined).length > CHAT_HISTORY_BUDGET) {
+  while (turns.length > 1 && utf8Length(JSON.stringify(combined)) > CHAT_HISTORY_BUDGET) {
     turns.shift();
     while (turns.length > 1 && turns[0].role === 'assistant') turns.shift();
     combined = [...sys, ...turns];

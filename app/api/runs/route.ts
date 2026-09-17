@@ -14,7 +14,7 @@ import {
   verifyModelGateUnlockToken,
 } from '@/lib/model-gate';
 import { isModelGateEnabled } from '@/lib/model-gate-env';
-import { getChatAssetSession } from '@/lib/chat-asset-session';
+import { getChatAssetSession, setChatAssetSession } from '@/lib/chat-asset-session';
 import { checkRateLimit, clientIp, isRateLimited } from '@/lib/rate-limit';
 import { readLimitedText } from '@/lib/limited-body';
 
@@ -23,6 +23,7 @@ export const dynamic = 'force-dynamic';
 
 const RUN_CREATE_MAX_BODY_BYTES = 32 * 1024 * 1024;
 const RUN_CREATE_RATE_LIMIT = 60;
+const RUN_QUERY_RATE_LIMIT = 240;
 const RUN_CREATE_RATE_WINDOW_MS = 60_000;
 const RUN_TIMEOUT_MAX_SEC = 3600;
 
@@ -91,9 +92,32 @@ function isAuthorizedRun(run: ServerRunRecord, token: string) {
   return !!token && safeEqual(hashAccessToken(run.id, token), run.accessTokenHash);
 }
 
+// Explicit allowlist of non-secret fields the stored record needs (model
+// names/format for execution and title generation). Credentials and base URLs
+// live in runtimeSecrets so the on-disk record never carries them.
 function sanitizeConfig(config: ServerRunCreatePayload['config']): ServerRunCreatePayload['config'] {
   return {
-    ...config,
+    mode: config.mode,
+    model: config.model,
+    chatModel: config.chatModel,
+    titleModel: config.titleModel,
+    chatApiFormat: config.chatApiFormat,
+    openAIChatModels: config.openAIChatModels,
+    customImageModels: config.customImageModels,
+    customChatModels: config.customChatModels,
+    claudeModel: config.claudeModel,
+    claudeTitleModel: config.claudeTitleModel,
+    claudeChatModels: config.claudeChatModels,
+    customClaudeModels: config.customClaudeModels,
+    size: config.size,
+    n: config.n,
+    quality: config.quality,
+    format: config.format,
+    background: config.background,
+    moderation: config.moderation,
+    compression: config.compression,
+    systemPrompt: config.systemPrompt,
+    // Secret/server fields — intentionally blanked in the stored record.
     apiKey: '',
     serverAccessToken: '',
     baseUrl: '',
@@ -153,6 +177,11 @@ export async function POST(request: NextRequest) {
 
   if (!isRunPayload(body)) {
     if (isRunQueryPayload(body)) {
+      // The create-path checkRateLimit below is skipped on this branch, so the
+      // query path counts against its own (looser) bucket.
+      if (!checkRateLimit(`runs-query:${clientIp(request)}`, RUN_QUERY_RATE_LIMIT, RUN_CREATE_RATE_WINDOW_MS)) {
+        return NextResponse.json({ error: '任务查询过于频繁，请稍后再试' }, { status: 429 });
+      }
       const items = body.items
         .filter((item) => item.id.trim() && item.accessToken.trim())
         .slice(0, 50);
@@ -212,17 +241,35 @@ export async function POST(request: NextRequest) {
     if (!isAuthorizedRun(created.run, body.accessToken)) {
       return NextResponse.json({ error: '任务 ID 已存在' }, { status: 409 });
     }
-    if (created.run.status === 'queued' || created.run.status === 'running') void ensureServerRunStarted(created.run.id);
-    return NextResponse.json({ ok: true, run: toPublicServerRun(created.run) });
+    if (created.run.status === 'queued' || created.run.status === 'running') {
+      // A duplicate POST after a server restart must re-register the
+      // memory-only runtime secrets before the run can resume — and must stay
+      // synchronous ahead of ensureServerRunStarted (see server-runner).
+      registerServerRunRuntimeSecrets(created.run.id, {
+        credentials: pickRuntimeCredentials(body.config),
+        assetSessionId: assetSession.id,
+        allowServerDefaults: serverDefaultAccessAuthorized(serverAccessToken),
+      });
+      void ensureServerRunStarted(created.run.id);
+    }
+    const response = NextResponse.json({ ok: true, run: toPublicServerRun(created.run) });
+    setChatAssetSession(response, assetSession, request);
+    return response;
   }
 
+  // Ordering assumption: secrets must be registered synchronously before
+  // ensureServerRunStarted — the executor checks runtimeSecrets.has(id) only
+  // after `await readServerRun(id)` resolves, so this same-tick registration
+  // is always observed.
   registerServerRunRuntimeSecrets(record.id, {
     credentials: pickRuntimeCredentials(body.config),
     assetSessionId: assetSession.id,
     allowServerDefaults: serverDefaultAccessAuthorized(serverAccessToken),
   });
   void ensureServerRunStarted(record.id);
-  return NextResponse.json({ ok: true, run: toPublicServerRun(record) });
+  const response = NextResponse.json({ ok: true, run: toPublicServerRun(record) });
+  setChatAssetSession(response, assetSession, request);
+  return response;
 }
 
 export async function GET() {

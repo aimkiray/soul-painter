@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 export const MODEL_GATE_VERSION_TAPS = 3;
 export const MODEL_GATE_ENABLED_COOKIE = 'model_gate_enabled';
 export const MODEL_GATE_UNLOCKED_COOKIE = 'model_gate_unlocked';
@@ -17,13 +19,19 @@ export function getRandomModelGateMessage() {
   return MODEL_GATE_MESSAGES[Math.floor(Math.random() * MODEL_GATE_MESSAGES.length)] || MODEL_GATE_MESSAGES[0];
 }
 
+// When no env secret is configured the HMAC key would otherwise be a public
+// constant, letting anyone forge unlock tokens. Instead we lazily generate a
+// per-boot random key — tokens stay unforgeable; the only cost is that unlock
+// state resets on restart, which is acceptable for this gate.
+let generatedFallbackSecret: string | null = null;
+
 function getModelGateSecret(): string {
-  return (
-    process.env.MODEL_GATE_SECRET ||
+  const configured = process.env.MODEL_GATE_SECRET ||
     process.env.DEFAULT_API_KEY ||
-    process.env.DEFAULT_CHAT_API_KEY ||
-    'soul-painter-local-model-gate'
-  );
+    process.env.DEFAULT_CHAT_API_KEY;
+  if (configured) return configured;
+  generatedFallbackSecret ??= randomBytes(32).toString('hex');
+  return generatedFallbackSecret;
 }
 
 async function signModelGatePayload(payload: string): Promise<string> {

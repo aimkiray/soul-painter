@@ -62,6 +62,22 @@ function HomeInner() {
     && editingIndex < 0
     && !chatSidebarOpen;
   useGlobalImageDrop(imageDropEnabled);
+
+  // F1 opens settings from anywhere — ChatInput unmounts on the Base64 tab,
+  // so this listener has to live at page level. Skipped when the event target
+  // is editable so F1 keeps any field-level meaning there.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'F1') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+      event.preventDefault();
+      setSettingsOpen(true);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const {
     handleSend,
     handleRegenerateMessage,

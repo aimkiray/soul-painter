@@ -4,6 +4,14 @@ function pngHasAlpha(file: File): boolean {
   return file.type === 'image/png' || /\.png$/i.test(file.name || '');
 }
 
+// SVG/GIF/WebP can't be flattened through a canvas re-encode without losing
+// what makes them special (vector scaling, animation frames) — and they're
+// typically small anyway, so pass them through untouched.
+function isPassthroughImage(file: File): boolean {
+  return /^image\/(svg\+xml|gif|webp)$/i.test(file.type || '')
+    || /\.(svg|gif|webp)$/i.test(file.name || '');
+}
+
 export interface CompressResult {
   file: File;
   originalSize: number;
@@ -69,6 +77,10 @@ export async function compressIfNeeded(file: File): Promise<CompressResult> {
   const { width: w, height: h } = decoded;
 
   try {
+    // Decoded to zero size (e.g. an SVG with no intrinsic dimensions) — a
+    // canvas re-encode would just replace the image with a blank 1×1 JPEG.
+    if (w === 0 || h === 0) return passthrough();
+    if (isPassthroughImage(file)) return passthrough(w, h);
     if (file.size <= COMPRESS_THRESHOLD && w <= MAX_EDGE && h <= MAX_EDGE) {
       return passthrough(w, h);
     }

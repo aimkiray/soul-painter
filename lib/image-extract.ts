@@ -1,6 +1,17 @@
 import { normalizeToDataUrl } from './base64';
 import { ImageHit } from '@/types';
 
+// URL-ish fields arrive either as a bare string or wrapped as { url }
+// (the real OpenAI image_url shape) — accept both.
+function unwrapUrlish(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const nested = (value as Record<string, unknown>).url;
+    if (typeof nested === 'string') return nested;
+  }
+  return null;
+}
+
 function findImageInText(text: string): ImageHit | null {
   if (typeof text !== 'string') return null;
   const im = text.match(/<img[^>]+src=["']([^"']+)["']/i);
@@ -10,21 +21,20 @@ function findImageInText(text: string): ImageHit | null {
       try { return { dataUrl: normalizeToDataUrl(u).dataUrl }; } catch { /* ignore */ }
     } else if (u.startsWith('http')) return { url: u };
   }
-  const dm = text.match(/(?:data:image\/[a-z]+;base64,)+([A-Za-z0-9+/=\s]+)/i);
-  if (dm) {
+  // A corrupt candidate must not hide a later valid one — walk every match.
+  for (const dm of text.matchAll(/(?:data:image\/[a-z]+;base64,)+([A-Za-z0-9+/=\s]+)/gi)) {
     const cleaned = dm[1].replace(/\s+/g, '');
     const b64 = (/^[A-Za-z0-9+/]*={0,2}/.exec(cleaned) || [''])[0];
     if (b64) {
-      try { return { dataUrl: normalizeToDataUrl(b64).dataUrl }; } catch { /* ignore */ }
+      try { return { dataUrl: normalizeToDataUrl(b64).dataUrl }; } catch { /* try the next match */ }
     }
   }
   const md = text.match(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/);
   if (md) return { url: md[1] };
   const bu = text.match(/https?:\/\/[^\s"'<>)]+\.(?:png|jpe?g|gif|webp)(?:\?[^\s"'<>)]*)?/i);
   if (bu) return { url: bu[0] };
-  const bb = text.match(/[A-Za-z0-9+/=]{200,}/);
-  if (bb) {
-    try { return { dataUrl: normalizeToDataUrl(bb[0]).dataUrl }; } catch { /* ignore */ }
+  for (const bb of text.matchAll(/[A-Za-z0-9+/=]{200,}/g)) {
+    try { return { dataUrl: normalizeToDataUrl(bb[0]).dataUrl }; } catch { /* try the next match */ }
   }
   return null;
 }
@@ -38,7 +48,8 @@ export function extractImage(resp: unknown): ImageHit | null {
       if (item && (item as Record<string, unknown>).type === 'message' && Array.isArray((item as Record<string, unknown>).content)) {
         for (const part of (item as { content: Record<string, unknown>[] }).content) {
           if (part && part.type === 'output_image') {
-            const u = part.image_url || part.url || part.b64_json || part.image;
+            const u = unwrapUrlish(part.image_url) || unwrapUrlish(part.url)
+              || unwrapUrlish(part.b64_json) || unwrapUrlish(part.image);
             if (typeof u === 'string') {
               if (u.startsWith('data:') || u.startsWith('http')) {
                 try { return u.startsWith('data:') ? { dataUrl: normalizeToDataUrl(u).dataUrl } : { url: u }; } catch { /* ignore */ }
@@ -79,7 +90,8 @@ export function extractImage(resp: unknown): ImageHit | null {
           if (item.startsWith('data:')) { try { return { dataUrl: normalizeToDataUrl(item).dataUrl }; } catch { /* ignore */ } }
           else if (item.startsWith('http')) return { url: item };
         } else if (item && typeof item === 'object') {
-          const u = (item as Record<string, string>).url || (item as Record<string, string>).image_url || (item as Record<string, string>).b64_json || (item as Record<string, string>).image || (item as Record<string, string>).src;
+          const rec = item as Record<string, unknown>;
+          const u = unwrapUrlish(rec.url) || unwrapUrlish(rec.image_url) || unwrapUrlish(rec.b64_json) || unwrapUrlish(rec.image) || unwrapUrlish(rec.src);
           if (typeof u === 'string') {
             if (u.startsWith('data:')) { try { return { dataUrl: normalizeToDataUrl(u).dataUrl }; } catch { /* ignore */ } }
             else if (u.startsWith('http')) return { url: u };

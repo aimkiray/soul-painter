@@ -50,6 +50,18 @@ export function isRateLimited(key: string, limit: number, windowMs: number): boo
 }
 
 export function clientIp(request: { headers: Headers }): string {
-  const forwarded = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-  return forwarded || request.headers.get('x-real-ip')?.trim() || 'unknown';
+  // nginx sets X-Forwarded-For via proxy_add_x_forwarded_for, which APPENDS the
+  // real client IP at the right end; every earlier entry is client-supplied
+  // and spoofable, so only the rightmost non-empty entry is trusted.
+  // Deployments must ensure nginx always sets this header — when XFF is absent
+  // entirely there is nothing to spoof and we fall back to X-Real-IP.
+  const rightmost = request.headers.get('x-forwarded-for')
+    ?.split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .pop();
+  const raw = rightmost || request.headers.get('x-real-ip')?.trim() || 'unknown';
+  // Normalize the bucket key (strip IPv6 brackets, lowercase) so equivalent
+  // spellings like `[::1]` and `::1` share one rate-limit bucket.
+  return raw.replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
 }

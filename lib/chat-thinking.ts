@@ -4,6 +4,9 @@ export interface ChatContentParts {
   thinkingDone: boolean;
 }
 
+// Reasoning tag names shared with lib/title.ts so both strip the same set.
+export const REASONING_TAG_NAMES = ['think', 'thinking', 'analysis'] as const;
+
 const EMPTY_CHAT_CONTENT: ChatContentParts = {
   text: '',
   thinking: '',
@@ -21,7 +24,7 @@ export function splitThinkTaggedContent(value: string): ChatContentParts {
 
   const textParts: string[] = [];
   const thinkingParts: string[] = [];
-  const tagRe = /<\/?think\b[^>]*>/gi;
+  const tagRe = new RegExp(`</?(?:${REASONING_TAG_NAMES.join('|')})\\b[^>]*>`, 'gi');
   let cursor = 0;
   let inThinking = false;
   let sawThinking = false;

@@ -19,10 +19,12 @@ import {
   readPendingServerRuns,
   removePendingServerRun,
   updatePendingServerRun,
+  type PendingServerRunRef,
   type ServerRunCreatePayload,
   type ServerRunPublicRecord,
 } from '@/lib/server-runs';
 import { USER_ABORT_SENTINEL } from '@/lib/api';
+import { splitStreamEventBlocks } from '@/lib/stream-utils';
 import type { ImageRef } from '@/types';
 
 export interface PromptRunOptions {
@@ -34,6 +36,7 @@ export interface PromptRunOptions {
 }
 
 const SERVER_RUN_MISSING_TIMEOUT_MS = 30_000;
+const SERVER_RUN_SUBMIT_TIMEOUT_MS = 60_000;
 
 function updatePendingServerRunMissing(runId: string, missingSince: number | undefined) {
   updatePendingServerRun(runId, { missingSince });
@@ -163,9 +166,18 @@ export function useRunPrompt() {
   const activeRunIdsRef = useRef<Set<string>>(new Set());
   const runEventControllersRef = useRef<Map<string, AbortController>>(new Map());
   const applyRunToChatRef = useRef<(run: ServerRunPublicRecord) => void>(() => undefined);
+  // Runs this tab submitted — the shared pending list can be clobbered by
+  // another tab's read-modify-write, so ownership is tracked separately.
+  const ownedRunsRef = useRef<Map<string, PendingServerRunRef>>(new Map());
+  // Runs the batch query reported missing — don't open a doomed SSE for them.
+  const missingRunIdsRef = useRef<Set<string>>(new Set());
+  // Last applied updatedAt per run — a stale record must not clobber a newer one.
+  const lastAppliedRunStampRef = useRef<Map<string, number>>(new Map());
+  const pendingRegenerateMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+  useEffect(() => { pendingRegenerateMessageIdRef.current = pendingRegenerateMessageId; }, [pendingRegenerateMessageId]);
 
   const setStatusForSession = useCallback((
     sessionId: string,
@@ -193,9 +205,13 @@ export function useRunPrompt() {
 
   const subscribeRunEvents = useCallback((runId: string) => {
     if (typeof window === 'undefined') return;
+    if (missingRunIdsRef.current.has(runId)) return;
     if (runEventControllersRef.current.has(runId)) return;
 
-    const pending = readPendingServerRuns().find((item) => item.id === runId);
+    // Fall back to this tab's owned record when another tab clobbered the
+    // shared pending list — the access token is still needed for the SSE.
+    const pending = readPendingServerRuns().find((item) => item.id === runId)
+      ?? ownedRunsRef.current.get(runId);
     if (!pending) return;
 
     const controller = new AbortController();
@@ -218,8 +234,8 @@ export function useRunPrompt() {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          const blocks = buffer.split(/\r?\n\r?\n/);
-          buffer = blocks.pop() || '';
+          const { blocks, rest } = splitStreamEventBlocks(buffer);
+          buffer = rest;
 
           for (const block of blocks) {
             const run = parseRunEventBlock(block);
@@ -247,7 +263,26 @@ export function useRunPrompt() {
   }, []);
 
   const applyRunToChat = useCallback((run: ServerRunPublicRecord) => {
+    const lastApplied = lastAppliedRunStampRef.current.get(run.id);
+    if (lastApplied !== undefined && run.updatedAt < lastApplied) return;
+    lastAppliedRunStampRef.current.set(run.id, run.updatedAt);
+
     const running = isRunningServerRun(run);
+    if (!sessionsRef.current.some((session) => session.id === run.sessionId)) {
+      // The session no longer exists locally (deleted, or wiped by clearAll)
+      // — drop tracking instead of resurrecting a zombie session. The fresh
+      // send path always creates the session before submitting, so a legit
+      // run never lands here.
+      console.warn('[useRunPrompt] dropping run for missing session', run.id, run.sessionId);
+      activeRunIdsRef.current.delete(run.id);
+      ownedRunsRef.current.delete(run.id);
+      missingRunIdsRef.current.delete(run.id);
+      closeRunEvents(run.id);
+      removePendingServerRun(run.id);
+      setPendingRegenerateMessageId((current) => (current === run.botMessageId ? null : current));
+      return;
+    }
+
     upsertMessages(run.sessionId, createRestoredMessages(run), run.prompt);
     if (run.result?.generatedTitle) setGeneratedSessionTitle(run.sessionId, run.result.generatedTitle);
 
@@ -264,9 +299,11 @@ export function useRunPrompt() {
     }
 
     activeRunIdsRef.current.delete(run.id);
+    ownedRunsRef.current.delete(run.id);
+    missingRunIdsRef.current.delete(run.id);
     closeRunEvents(run.id);
     removePendingServerRun(run.id);
-    if (run.botMessageId === pendingRegenerateMessageId) setPendingRegenerateMessageId(null);
+    if (run.botMessageId === pendingRegenerateMessageIdRef.current) setPendingRegenerateMessageId(null);
 
     if (run.result?.debugRaw) setDebugRawForSession(run.sessionId, run.result.debugRaw);
     if (run.result?.statusText) setStatusForSession(run.sessionId, run.result.statusText, run.result.statusType || '');
@@ -278,7 +315,6 @@ export function useRunPrompt() {
     }
   }, [
     closeRunEvents,
-    pendingRegenerateMessageId,
     setDebugRawForSession,
     setLoading,
     setStatusForSession,
@@ -291,9 +327,67 @@ export function useRunPrompt() {
     applyRunToChatRef.current = applyRunToChat;
   }, [applyRunToChat]);
 
+  const cancelServerRun = useCallback(async (item: PendingServerRunRef): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(item.id)}`, {
+        method: 'DELETE',
+        headers: { 'x-run-access-token': item.accessToken },
+      });
+      const data = await readRunResponse(response);
+      if (data.run && data.run.status !== 'canceled') {
+        // The run reached a real final state (e.g. completed) before the
+        // cancel landed — apply it instead of painting the canceled stub.
+        applyRunToChat(data.run);
+      } else {
+        closeRunEvents(item.id);
+        removePendingServerRun(item.id);
+        ownedRunsRef.current.delete(item.id);
+        missingRunIdsRef.current.delete(item.id);
+        activeRunIdsRef.current.delete(item.id);
+        replaceBotMessage(item.botMessageId, {
+          prompt: '用户已取消本次请求。',
+          images: [],
+          text: '',
+          code: '',
+          extra: 'error',
+          serverRunId: undefined,
+        }, item.sessionId);
+      }
+      setPendingRegenerateMessageId((current) => (current === item.botMessageId ? null : current));
+      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, item.sessionId)) {
+        setLoading(false, item.sessionId);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, [applyRunToChat, closeRunEvents, replaceBotMessage, setLoading]);
+
   const pollPendingRuns = useCallback(async () => {
     const pending = readPendingServerRuns();
     if (pending.length === 0) {
+      const orphaned = [...ownedRunsRef.current.values()];
+      if (orphaned.length > 0) {
+        // Another tab's read-modify-write may have clobbered our pending
+        // records — run one last batch query so a finished run still lands
+        // instead of leaving the session stuck on "generating".
+        try {
+          const response = await fetch('/api/runs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              items: orphaned.map((item) => ({ id: item.id, accessToken: item.accessToken })),
+            }),
+          });
+          const data = await readRunResponse(response);
+          const runs = Array.isArray(data.runs) ? data.runs : [];
+          for (const run of runs) applyRunToChat(run);
+        } catch {
+          // Nothing else will reconcile these runs — fall through and stop.
+        }
+      }
+      ownedRunsRef.current.clear();
+      missingRunIdsRef.current.clear();
       activeRunIdsRef.current.clear();
       closeAllRunEvents();
       setLoading(false);
@@ -316,14 +410,19 @@ export function useRunPrompt() {
       for (const item of pending) {
         const missingSince = item.missingSince;
         if (seen.has(item.id)) {
+          missingRunIdsRef.current.delete(item.id);
           if (missingSince !== undefined) updatePendingServerRunMissing(item.id, undefined);
           continue;
         }
+        missingRunIdsRef.current.add(item.id);
         if (missingSince === undefined) updatePendingServerRunMissing(item.id, Date.now());
         else if (Date.now() - missingSince > SERVER_RUN_MISSING_TIMEOUT_MS) {
           removePendingServerRun(item.id);
+          ownedRunsRef.current.delete(item.id);
+          missingRunIdsRef.current.delete(item.id);
           activeRunIdsRef.current.delete(item.id);
           closeRunEvents(item.id);
+          setPendingRegenerateMessageId((current) => (current === item.botMessageId ? null : current));
           replaceBotMessage(item.botMessageId, {
             prompt: '后台任务未成功提交，请重新发送。',
             images: [],
@@ -383,15 +482,17 @@ export function useRunPrompt() {
     preSubmitControllerRef.current = null;
   }, []);
 
-  const submitServerRun = useCallback(async (payload: ServerRunCreatePayload) => {
-    addPendingServerRun({
+  const submitServerRun = useCallback(async (payload: ServerRunCreatePayload, signal?: AbortSignal) => {
+    const pendingRef: PendingServerRunRef = {
       id: payload.id,
       accessToken: payload.accessToken,
       sessionId: payload.sessionId,
       userMessageId: payload.userMessageId,
       botMessageId: payload.botMessageId,
       createdAt: Date.now(),
-    });
+    };
+    addPendingServerRun(pendingRef);
+    ownedRunsRef.current.set(payload.id, pendingRef);
     activeRunIdsRef.current.add(payload.id);
     setLoading(true, payload.sessionId);
     setStatusForSession(payload.sessionId, '后台任务已提交...', 'warn');
@@ -402,11 +503,18 @@ export function useRunPrompt() {
     });
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (payload.config.serverAccessToken) headers['x-server-access-token'] = payload.config.serverAccessToken;
+    // A stalled socket must not hang the submit forever — cap it, and combine
+    // with the caller's cancel signal when AbortSignal.any is available.
+    const timeoutSignal = AbortSignal.timeout(SERVER_RUN_SUBMIT_TIMEOUT_MS);
+    const submitSignal = signal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([signal, timeoutSignal])
+      : signal ?? timeoutSignal;
     const response = await fetch('/api/runs', {
       method: 'POST',
       headers,
       body,
       keepalive: body.length < 60_000,
+      signal: submitSignal,
     });
     const data = await readRunResponse(response);
     if (data.run) applyRunToChat(data.run);
@@ -490,6 +598,14 @@ export function useRunPrompt() {
       let botMessageId = targetBotMessageId || '';
 
       if (targetBotMessageId) {
+        // A regenerate needs the real user message to attach the run to —
+        // minting a fresh id here would orphan the pair on the server.
+        const priorUser = [...sessionMessages].reverse().find((message) => message.role === 'user' && message.prompt.trim());
+        const resolvedUserMessageId = runOptions.runUserMessageId || priorUser?.id;
+        if (!resolvedUserMessageId) {
+          throw new Error('找不到可重新生成的原始消息，请重新发送。');
+        }
+        userMessageId = resolvedUserMessageId;
         setPendingRegenerateMessageId(targetBotMessageId);
         replaceBotMessage(targetBotMessageId, {
           prompt: '',
@@ -499,8 +615,6 @@ export function useRunPrompt() {
           extra: '',
           serverRunId: runId,
         }, sessionId);
-        const priorUser = [...sessionMessages].reverse().find((message) => message.role === 'user' && message.prompt.trim());
-        userMessageId = runOptions.runUserMessageId || priorUser?.id || createServerRunId();
       } else if (existingUserMessageId) {
         updateUserMessage(existingUserMessageId, cleanPrompt, sessionId, normalizedRequest, { markEdited: true });
         truncateChatAfterMessage(existingUserMessageId, sessionId);
@@ -527,19 +641,38 @@ export function useRunPrompt() {
         options: { ...options, streaming: shouldStream },
         request: normalizedRequest,
         historyMessages: sessionMessages,
-      });
+      }, requestController.signal);
+      if (cancelRequestedRef.current) {
+        // The cancel landed while the POST was in flight and could not abort
+        // it — the run is live server-side now, so issue the DELETE here.
+        void cancelServerRun({
+          id: runId,
+          accessToken,
+          sessionId,
+          userMessageId,
+          botMessageId,
+          createdAt: Date.now(),
+        });
+      }
     } catch (error) {
       const aborted = cancelRequestedRef.current || (error as Error).message === USER_ABORT_SENTINEL;
-      const message = aborted ? '已取消' : (error as Error).message || '后台任务提交失败';
-      // 用户取消或 fetch 网络层失败时，POST 可能已到达服务端；保留 pending
-      // 记录交给轮询对账（未落库的 run 由 missingSince 超时兜底清理）。
-      const keepPending = aborted || error instanceof TypeError;
+      // A signal-driven abort/timeout (AbortError/TimeoutError DOMException)
+      // or a TypeError network failure all leave the POST possibly delivered;
+      // 保留 pending 记录交给轮询对账（未落库的 run 由 missingSince 超时兜底清理）。
+      const submitAborted = (error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError';
+      const keepPending = aborted || submitAborted || error instanceof TypeError;
+      const message = aborted
+        ? '已取消'
+        : submitAborted
+          ? '后台任务提交超时，正在等待后台结果'
+          : (error as Error).message || '后台任务提交失败';
       setPendingRegenerateMessageId((current) => (current === targetBotMessageId ? null : current));
       if (keepPending) {
         if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
         pollTimerRef.current = setTimeout(() => { void pollPendingRunsRef.current(); }, 1500);
       } else {
         removePendingServerRun(runId);
+        ownedRunsRef.current.delete(runId);
         activeRunIdsRef.current.delete(runId);
       }
       if (submittedBotMessageId) {
@@ -580,6 +713,7 @@ export function useRunPrompt() {
     addBotMsg,
     addTextBotMsg,
     addUserMsg,
+    cancelServerRun,
     clearImages,
     config,
     images,
@@ -608,43 +742,29 @@ export function useRunPrompt() {
     const pending = readPendingServerRuns().filter((item) => (
       item.sessionId === sessionId && activeRunIdsRef.current.has(item.id)
     ));
+    // Owned runs survive a clobbered shared pending list — a cancel must
+    // still reach them.
+    const pendingIds = new Set(pending.map((item) => item.id));
+    for (const owned of ownedRunsRef.current.values()) {
+      if (owned.sessionId === sessionId && activeRunIdsRef.current.has(owned.id) && !pendingIds.has(owned.id)) {
+        pending.push(owned);
+      }
+    }
     if (pending.length === 0) return;
     setStatusForSession(sessionId, '正在取消后台任务...', 'warn');
-    void Promise.allSettled(pending.map((item) => fetch(`/api/runs/${encodeURIComponent(item.id)}`, {
-      method: 'DELETE',
-      headers: { 'x-run-access-token': item.accessToken },
-    }).then(readRunResponse).then(() => item)))
+    void Promise.allSettled(pending.map((item) => cancelServerRun(item)))
       .then((results) => {
-        const canceled = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-        canceled.forEach((item) => {
-          closeRunEvents(item.id);
-          removePendingServerRun(item.id);
-          activeRunIdsRef.current.delete(item.id);
-          replaceBotMessage(item.botMessageId, {
-            prompt: '用户已取消本次请求。',
-            images: [],
-            text: '',
-            code: '',
-            extra: 'error',
-            serverRunId: undefined,
-          }, item.sessionId);
-        });
-        setPendingRegenerateMessageId((current) => (
-          canceled.some((item) => item.botMessageId === current) ? null : current
-        ));
-        if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, sessionId)) {
-          setLoading(false, sessionId);
-        }
-        if (canceled.length === pending.length) {
+        const canceled = results.filter((result) => result.status === 'fulfilled' && result.value).length;
+        if (canceled === pending.length) {
           setStatusForSession(sessionId, '已取消', 'warn');
-        } else if (canceled.length > 0) {
-          setStatusForSession(sessionId, `已取消 ${canceled.length} 个任务，${pending.length - canceled.length} 个任务仍在运行`, 'warn');
+        } else if (canceled > 0) {
+          setStatusForSession(sessionId, `已取消 ${canceled} 个任务，${pending.length - canceled} 个任务仍在运行`, 'warn');
         } else {
           setStatusForSession(sessionId, '取消失败，后台任务仍在运行', 'err');
         }
         void pollPendingRuns();
       });
-  }, [activeSessionId, closeRunEvents, pollPendingRuns, replaceBotMessage, setLoading, setStatusForSession]);
+  }, [activeSessionId, cancelServerRun, pollPendingRuns, setStatusForSession]);
 
   const handleSend = useCallback((prompt: string) => runPrompt(prompt), [runPrompt]);
 

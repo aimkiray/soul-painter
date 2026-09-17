@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
-import { registerModalLayer } from '@/lib/modal-stack';
+import { registerModalLayer, modalLayerCount } from '@/lib/modal-stack';
 
 interface ModalProps {
   id: string;
@@ -47,6 +47,9 @@ export default function Modal({
       unregister();
       const target = restoreFocusRef.current;
       restoreFocusRef.current = null;
+      // A lower modal layer is still open — leave focus where it is instead of
+      // yanking it back to a background element.
+      if (modalLayerCount() > 0) return;
       if (target && target.isConnected) target.focus({ preventScroll: true });
     };
   }, [open, id]);
@@ -56,6 +59,12 @@ export default function Modal({
   return (
     <div
       className={backdropClassName}
+      onMouseDown={(event) => {
+        // A backdrop press would otherwise move focus to <body>, where Tab
+        // keydowns never reach the panel's focus trap. Guarded by target so
+        // clicks on panel children (inputs, buttons) still focus normally.
+        if (event.target === event.currentTarget) event.preventDefault();
+      }}
       onPointerDown={(event) => {
         pointerDownOnBackdropRef.current = event.target === event.currentTarget;
       }}
@@ -95,7 +104,12 @@ export default function Modal({
           const first = focusables[0];
           const last = focusables[focusables.length - 1];
           const active = document.activeElement as HTMLElement | null;
-          if (!panel.contains(active)) {
+          // The panel itself is focusable but excluded from `focusables` —
+          // wrap explicitly or Tab would escape into the background page.
+          if (active === panel) {
+            (event.shiftKey ? last : first).focus();
+            event.preventDefault();
+          } else if (!panel.contains(active)) {
             first.focus();
             event.preventDefault();
           } else if (event.shiftKey && active === first) {

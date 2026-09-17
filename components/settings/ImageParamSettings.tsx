@@ -11,7 +11,7 @@ import {
   QUALITY_OPTIONS,
   SIZE_PRESETS,
 } from '@/lib/constants';
-import { formatSizeDisplay } from '@/lib/size';
+import { CUSTOM_SIZE_PATTERN, formatSizeDisplay } from '@/lib/size';
 
 export const fieldsetClass = 'tui-fieldset border-[#AAA] min-w-0';
 export const labelClass = 'block text-xs text-[#CCC] mb-0.5';
@@ -21,8 +21,6 @@ export const hintClass = 'text-xs text-[#888] mt-1';
 export const providerHeadingClass = 'flex items-center justify-between gap-2 pt-2 border-t border-[#444] text-xs text-[#00aaaa]';
 export const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer';
 export const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
-
-const CUSTOM_SIZE_RE = /^\d{2,5}x\d{2,5}$/i;
 
 export default function ImageParamSettings() {
   const { config, updateConfig } = useConfig();
@@ -80,12 +78,12 @@ export default function ImageParamSettings() {
                       type="text"
                       value={config.size}
                       onChange={(e) => { updateConfig('size', e.target.value); setSizeInvalid(false); }}
-                      onBlur={(e) => setSizeInvalid(!CUSTOM_SIZE_RE.test(e.target.value.trim()))}
+                      onBlur={(e) => setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.target.value.trim()))}
                       onKeyDown={(e) => {
                         if (e.nativeEvent.isComposing) return;
                         if (e.key === 'Enter') {
                           e.preventDefault();
-                          setSizeInvalid(!CUSTOM_SIZE_RE.test(e.currentTarget.value.trim()));
+                          setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.currentTarget.value.trim()));
                           e.currentTarget.blur();
                         }
                       }}

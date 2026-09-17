@@ -225,6 +225,26 @@ export function normalizeSyncTombstones(value: unknown): ChatSyncTombstone[] {
     .slice(0, 1000);
 }
 
+// Applies tombstone filtering to a session list: deleted sessions are removed
+// and deleted messages are filtered out of the survivors. Callers that need
+// resurrection-aware filtering (synced entity newer than the delete) build
+// their own delete sets instead.
+export function applySyncTombstones(sessions: ChatSession[], tombstones: ChatSyncTombstone[]): ChatSession[] {
+  if (tombstones.length === 0) return sessions;
+  const sessionDeletes = new Set<string>();
+  const messageDeletes = new Set<string>();
+  for (const tombstone of tombstones) {
+    if (tombstone.type === 'session') sessionDeletes.add(tombstone.id);
+    else if (tombstone.sessionId) messageDeletes.add(`${tombstone.sessionId}:${tombstone.id}`);
+  }
+  return sessions
+    .filter((session) => !sessionDeletes.has(session.id))
+    .map((session) => ({
+      ...session,
+      messages: session.messages.filter((message) => !messageDeletes.has(`${session.id}:${message.id}`)),
+    }));
+}
+
 export function isPlaceholderSession(session: ChatSession) {
   return session.messages.length === 0
     && (session.titleSource === 'auto' || !session.titleSource)

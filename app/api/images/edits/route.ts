@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { corsPreflightResponse, validateRequest, proxyUpstreamFormDataStream, MAX_BODY_SIZE } from '@/lib/server-proxy';
 import { readLimitedBody } from '@/lib/limited-body';
+import { checkRateLimit, clientIp } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+// Proxied upstream calls cost money: cap requests per IP per minute before any
+// body is read. The `proxy:` bucket is shared with the other proxy routes.
+const PROXY_RATE_LIMIT = 30;
+const PROXY_RATE_WINDOW_MS = 60_000;
 
 export const OPTIONS = corsPreflightResponse;
 
@@ -62,6 +68,9 @@ function buildMultipartForm(body: Record<string, unknown>): FormData {
 }
 
 export async function POST(request: NextRequest) {
+  if (!checkRateLimit(`proxy:${clientIp(request)}`, PROXY_RATE_LIMIT, PROXY_RATE_WINDOW_MS)) {
+    return NextResponse.json({ error: { message: '请求过于频繁，请稍后再试' } }, { status: 429 });
+  }
   const validated = await validateRequest(request);
   if (validated instanceof NextResponse) return validated;
 

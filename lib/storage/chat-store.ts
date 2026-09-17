@@ -13,11 +13,13 @@ import {
   CHAT_SESSIONS_MAX,
 } from '@/lib/constants';
 import { get, set, del } from 'idb-keyval';
+import { isLocalDataCleared } from '@/lib/local-data-cleared';
 
 import {
   normalizeStoredMessages,
   normalizeStoredSessions,
   normalizeSyncTombstones,
+  applySyncTombstones,
   createEmptySession,
   isEmptyBotMessage,
   LEGACY_CHAT_TITLE,
@@ -58,6 +60,9 @@ export function readSessionSyncAuth(): ChatSyncAuth | null {
 }
 
 export function persistSessionSyncAuth(auth: ChatSyncAuth, syncedAt: number) {
+  // Checked at write time: callers await sync work before reaching us and a
+  // clearAll may have landed in between.
+  if (isLocalDataCleared()) return;
   try {
     sessionStorage.setItem(CHAT_SYNC_SESSION_AUTH_STORAGE_KEY, JSON.stringify({
       username: auth.username,
@@ -92,6 +97,12 @@ export async function loadChatState(): Promise<{ sessions: ChatSession[]; active
     } else {
       sessions = storedSessions;
     }
+
+    // Apply persisted tombstones so a stale-persisted deleted session or
+    // message can't resurrect on load.
+    const tombstones = await loadSyncTombstones();
+    sessions = applySyncTombstones(sessions, tombstones);
+    if (sessions.length === 0) sessions = [createEmptySession()];
 
     const storedActiveSessionId = await get(ACTIVE_CHAT_SESSION_STORAGE_KEY) || '';
     const activeSessionId = sessions.some((session) => session.id === storedActiveSessionId)
@@ -155,12 +166,19 @@ export function stripHeavyTurnSnapshotData(request: ChatTurnSnapshot | undefined
   return { ...request, referenceImages };
 }
 
-export async function persistStoredSessions(sessions: ChatSession[], activeSessionId: string) {
+export async function persistStoredSessions(
+  sessions: ChatSession[],
+  activeSessionId: string,
+  shouldAbort?: () => boolean,
+) {
   const sessionCaps = [CHAT_SESSIONS_MAX, 10, 5, 1];
   const messageCaps = [CHAT_MESSAGES_MAX, 50, 20, 5, 0];
 
   for (const sessionCap of sessionCaps) {
     for (const messageCap of messageCaps) {
+      // The caller's cancelled/cleared guards were evaluated before these
+      // awaits resolved — re-check right before every write.
+      if (shouldAbort?.()) return;
       const payload = sessions.slice(0, sessionCap).map((session) => ({
         ...session,
         messages: (messageCap === 0 ? [] : session.messages.slice(-messageCap)).map(stripHeavyMessageData),
@@ -168,7 +186,9 @@ export async function persistStoredSessions(sessions: ChatSession[], activeSessi
 
       try {
         await set(CHAT_SESSIONS_STORAGE_KEY, JSON.stringify(payload));
+        if (shouldAbort?.()) return;
         await set(ACTIVE_CHAT_SESSION_STORAGE_KEY, activeSessionId);
+        if (shouldAbort?.()) return;
         await del(CHAT_MESSAGES_STORAGE_KEY);
         return;
       } catch {
@@ -178,6 +198,7 @@ export async function persistStoredSessions(sessions: ChatSession[], activeSessi
   }
 
   try {
+    if (shouldAbort?.()) return;
     await del(CHAT_SESSIONS_STORAGE_KEY);
   } catch {
     // ignore

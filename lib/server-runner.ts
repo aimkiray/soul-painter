@@ -24,7 +24,7 @@ import {
   isRetryableRequestError,
   setRequestParam,
 } from '@/lib/request-helpers';
-import { readServerRun, updateServerRun, updateServerRunIf } from '@/lib/server-run-store';
+import { readServerRun, updateServerRunIf } from '@/lib/server-run-store';
 import { processChatStream } from '@/lib/stream-utils';
 import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from '@/lib/upstream-url';
 import { isSameUpstreamBaseUrl, resolveUpstreamBaseUrl } from '@/lib/upstream-security';
@@ -67,6 +67,10 @@ globalForServerRuns.serverRunRuntimeSecrets = runtimeSecrets;
 
 const CHAT_PARTIAL_WRITE_INTERVAL_MS = 120;
 
+// Callers must register secrets synchronously *before* ensureServerRunStarted:
+// the executor checks runtimeSecrets.has(id) only after `await readServerRun`
+// resolves, so anything registered in the same synchronous tick (e.g. a POST
+// handler) is guaranteed to be observed.
 export function registerServerRunRuntimeSecrets(runId: string, secrets: ServerRunRuntimeSecrets) {
   runtimeSecrets.set(runId, secrets);
 }
@@ -218,7 +222,9 @@ async function retryable<T>(
 
 async function updateServerRunStatus(runId: string, statusText: string) {
   // Keep any accumulated streaming result so retry status text does not blank it out.
-  await updateServerRun(runId, { error: statusText });
+  // Only write while the run is still active: a retry status enqueued before a
+  // cancel must not land after it and clear the terminal record's `error`.
+  await updateServerRunIf(runId, { error: statusText }, (run) => run.status === 'queued' || run.status === 'running');
 }
 
 function upstreamHeaders(target: UpstreamTarget, contentType?: string): HeadersInit {
@@ -393,7 +399,9 @@ function createPartialChatRunWriter(runId: string) {
     const result = chatResultFromParts(parts, '正在回复...', 'warn');
     writeQueue = writeQueue
       .catch(() => undefined)
-      .then(() => updateServerRun(runId, { result, error: undefined }))
+      // Conditional write: a partial enqueued before a cancel must not land
+      // after it and replace the terminal record's result.
+      .then(() => updateServerRunIf(runId, { result, error: undefined }, (run) => run.status === 'queued' || run.status === 'running'))
       .then(() => undefined, () => undefined);
   };
 
@@ -561,6 +569,33 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
   return chatResultFromParts(parts, '回复完成', 'ok', text);
 }
 
+// debugRaw/code mirror the upstream image response, which embeds the same
+// base64 bytes that result.images[].dataUrl already stores (~3x the cost per
+// image). Deep-clone the response with every `b64_json` value or
+// `data:image/...` string replaced by a short placeholder.
+function stripInlineImageData(value: unknown, key?: string): unknown {
+  if (typeof value === 'string') {
+    return key === 'b64_json' || /^data:image\//i.test(value)
+      ? `[base64 omitted: ${Buffer.byteLength(value, 'utf8')} bytes]`
+      : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => stripInlineImageData(item));
+  if (value && typeof value === 'object') {
+    const stripped: Record<string, unknown> = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      stripped[childKey] = stripInlineImageData(childValue, childKey);
+    }
+    return stripped;
+  }
+  return value;
+}
+
+function debugRawFromResponse(response: unknown) {
+  return typeof response === 'string'
+    ? response
+    : JSON.stringify(stripInlineImageData(response), null, 2);
+}
+
 async function runSingleImage(run: ServerRunRecord, body: Record<string, unknown>, signal: AbortSignal) {
   const text = await fetchUpstreamText(
     imageTarget(runConfig(run), runAllowsServerDefaults(run.id)),
@@ -573,7 +608,7 @@ async function runSingleImage(run: ServerRunRecord, body: Record<string, unknown
   const response = parseResponseBody(text);
   const hit = extractImage(response);
   if (!hit) throw new Error('响应中未找到图片');
-  return { hit, debugRaw: typeof response === 'string' ? response : JSON.stringify(response, null, 2) };
+  return { hit, debugRaw: debugRawFromResponse(response) };
 }
 
 function requestedImageCountFor(run: ServerRunRecord) {
@@ -624,7 +659,7 @@ async function runSingleEdit(run: ServerRunRecord, form: FormData, signal: Abort
   const response = parseResponseBody(text);
   const hit = extractImage(response);
   if (!hit) throw new Error('响应中未找到图片');
-  return { hit, debugRaw: typeof response === 'string' ? response : JSON.stringify(response, null, 2) };
+  return { hit, debugRaw: debugRawFromResponse(response) };
 }
 
 async function runImageEdit(run: ServerRunRecord, signal: AbortSignal): Promise<ServerRunResult> {
@@ -711,31 +746,53 @@ async function runChatStreamAttempt(
   }
 }
 
+// Reference-image data URLs are multi-MB payloads the executor only needs
+// while the run is active; nothing server-side reads them from the store once
+// the run leaves 'queued' (the public view strips down to {url} anyway).
+function stripRequestDataUrls(request: ServerRunRecord['request']): ServerRunRecord['request'] {
+  if (!request || !Array.isArray(request.referenceImages)) return request;
+  return {
+    ...request,
+    referenceImages: request.referenceImages.map((reference) => {
+      if (!reference || typeof reference !== 'object') return reference;
+      const next = { ...reference };
+      if (next.image?.dataUrl) next.image = { url: next.image.url };
+      if (next.mask?.dataUrl) next.mask = { url: next.mask.url };
+      return next;
+    }),
+  };
+}
+
 async function executeServerRun(id: string, controller: AbortController) {
   const run = await readServerRun(id);
   if (!run || run.status === 'completed' || run.status === 'failed' || run.status === 'canceled') return;
 
+  // Strip historyMessages and inline reference-image data at the running
+  // transition too: a restart can never resume a run (runtime secrets are
+  // memory-only), so persisting multi-MB payloads would just re-serialize them
+  // on every streaming flush. Execution continues from the already-read `run`,
+  // which still carries the full payload.
   const started = await updateServerRunIf(id, {
     status: 'running',
     startedAt: Date.now(),
     error: undefined,
+    historyMessages: [],
+    request: stripRequestDataUrls(run.request),
   }, (current) => current.status === 'queued');
   // A cancel (or another terminal write) landed between the read and the write.
   if (!started) return;
 
   try {
-    const latest = await readServerRun(id);
-    if (!latest) throw new Error('任务不存在');
-    const result = latest.request.mode === 'chat'
-      ? await runChat(latest, controller.signal)
-      : latest.request.mode === 'edits'
-        ? await runImageEdit(latest, controller.signal)
-        : await runImageGeneration(latest, controller.signal);
+    const result = run.request.mode === 'chat'
+      ? await runChat(run, controller.signal)
+      : run.request.mode === 'edits'
+        ? await runImageEdit(run, controller.signal)
+        : await runImageGeneration(run, controller.signal);
 
     let completedResult = result;
     try {
       const titleSource = result.text || (result.images.length > 0 ? `生成完成 ${result.images.length} 张图片` : '');
-      const generatedTitle = await generateRunTitle(latest, titleSource, controller.signal);
+      const generatedTitle = await generateRunTitle(run, titleSource, controller.signal);
       if (generatedTitle) completedResult = { ...result, generatedTitle };
     } catch (error) {
       if (controller.signal.aborted) throw error;
@@ -749,6 +806,7 @@ async function executeServerRun(id: string, controller: AbortController) {
       error: undefined,
       completedAt: Date.now(),
       historyMessages: [],
+      request: stripRequestDataUrls(run.request),
     }, (current) => current.status === 'queued' || current.status === 'running');
   } catch (error) {
     const message = errorMessage(error);
@@ -760,6 +818,7 @@ async function executeServerRun(id: string, controller: AbortController) {
         error: finalMessage,
         completedAt: Date.now(),
         historyMessages: [],
+        request: stripRequestDataUrls(run.request),
         result: {
           prompt: finalMessage,
           images: [],
@@ -788,11 +847,14 @@ export function ensureServerRunStarted(id: string) {
     const run = await readServerRun(id);
     if ((run?.status === 'queued' || run?.status === 'running') && !runtimeSecrets.has(id)) {
       const message = '后台任务因服务进程重启已中断，请重新发送。';
-      await updateServerRun(id, {
+      // Conditional write: a cancel that landed first must not be flipped to
+      // 'failed' by this restart-orphan sweep.
+      await updateServerRunIf(id, {
         status: 'failed',
         error: message,
         completedAt: Date.now(),
         historyMessages: [],
+        request: stripRequestDataUrls(run.request),
         result: {
           prompt: message,
           images: [],
@@ -803,7 +865,7 @@ export function ensureServerRunStarted(id: string) {
           statusText: '请求失败',
           statusType: 'err',
         },
-      });
+      }, (current) => current.status === 'queued' || current.status === 'running');
       return;
     }
     await executeServerRun(id, controller);
@@ -823,6 +885,7 @@ export function ensureServerRunStarted(id: string) {
 export async function cancelServerRun(id: string) {
   activeControllers.get(id)?.abort();
   runtimeSecrets.delete(id);
+  const existing = await readServerRun(id);
   // The predicate runs inside the store's write queue, so a run that reached a
   // terminal state between the abort signal and the write cannot be clobbered.
   await updateServerRunIf(id, {
@@ -830,6 +893,7 @@ export async function cancelServerRun(id: string) {
     error: '用户已取消本次请求。',
     completedAt: Date.now(),
     historyMessages: [],
+    ...(existing ? { request: stripRequestDataUrls(existing.request) } : {}),
     result: {
       prompt: '用户已取消本次请求。',
       images: [],

@@ -29,4 +29,30 @@ describe('extractImage', () => {
       dataUrl: `data:image/png;base64,${PNG_B64}`,
     });
   });
+
+  it('unwraps object-form image_url in message images', () => {
+    const resp = {
+      choices: [{ message: { images: [{ image_url: { url: 'https://x.test/gen?id=1' } }] } }],
+    };
+    expect(extractImage(resp)).toEqual({ url: 'https://x.test/gen?id=1' });
+  });
+
+  it('keeps looking past a corrupt data-url candidate', () => {
+    const corrupt = `data:image/png;base64,${'a'.repeat(64)}`;
+    const valid = `data:image/png;base64,${PNG_B64}`;
+    const content = `${corrupt}! ${valid}`;
+    expect(extractImage({ choices: [{ message: { content } }] })).toEqual({
+      dataUrl: `data:image/png;base64,${PNG_B64}`,
+    });
+  });
+
+  it('keeps looking past a long non-image token for a bare base64 image', () => {
+    const token = 'a'.repeat(250);
+    // PNG magic followed by padding — a valid ≥200-char base64 candidate.
+    const payload = `iVBORw0KGgo${'A'.repeat(200)}`;
+    const content = `${token} ${payload}`;
+    expect(extractImage({ choices: [{ message: { content } }] })).toEqual({
+      dataUrl: `data:image/png;base64,${payload}`,
+    });
+  });
 });

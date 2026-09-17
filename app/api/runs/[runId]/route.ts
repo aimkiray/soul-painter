@@ -47,5 +47,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   if (!run) return NextResponse.json({ error: '任务不存在' }, { status: 404 });
   if (!assertAuthorized(request, run)) return NextResponse.json({ error: '无权访问任务' }, { status: 404 });
   await cancelServerRun(runId);
-  return NextResponse.json({ ok: true });
+  // Return the real final state: a run that completed just before the cancel
+  // keeps its result, so the client must not paint "已取消" over it blindly.
+  const updated = await readServerRun(runId);
+  return NextResponse.json({ ok: true, run: updated ? toPublicServerRun(updated) : null });
 }

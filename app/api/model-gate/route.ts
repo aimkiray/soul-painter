@@ -12,6 +12,7 @@ import {
 import { isModelGateEnabled } from '@/lib/model-gate-env';
 import { shouldUseSecureCookie } from '@/lib/chat-asset-session';
 import { readLimitedText } from '@/lib/limited-body';
+import { checkRateLimit, clientIp } from '@/lib/rate-limit';
 
 // Node runtime: shouldUseSecureCookie lives with the other cookie helpers which
 // use node:crypto and Prisma.
@@ -19,6 +20,9 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const COOKIE_MAX_AGE = MODEL_GATE_UNLOCK_MAX_AGE_SEC;
+// Gate state changes (taps/clears) per IP per minute.
+const MODEL_GATE_POST_RATE_LIMIT = 60;
+const MODEL_GATE_POST_RATE_WINDOW_MS = 60_000;
 
 function cookieOptions(request: NextRequest, maxAge = COOKIE_MAX_AGE) {
   return {
@@ -67,6 +71,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!checkRateLimit(`model-gate:${clientIp(request)}`, MODEL_GATE_POST_RATE_LIMIT, MODEL_GATE_POST_RATE_WINDOW_MS)) {
+    return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+  }
   const limited = await readLimitedText(request, 4096);
   let body = {} as Record<string, unknown>;
   if (!('tooLarge' in limited)) {

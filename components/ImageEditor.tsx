@@ -18,6 +18,7 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const initializedRef = useRef(false);
   const isDrawing = useRef(false);
   const lastPoint = useRef<{ x: number; y: number } | null>(null);
   const toolRef = useRef<'brush' | 'eraser'>('brush');
@@ -33,6 +34,12 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
 
   const image = editingIndex >= 0 ? images[editingIndex] : null;
 
+  // The canvas element survives an image switch — drop the initialized flag
+  // so the next setup doesn't snapshot the previous image's strokes.
+  useEffect(() => {
+    initializedRef.current = false;
+  }, [image]);
+
   const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imgRef.current;
@@ -46,9 +53,17 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
     const targetW = Math.round(w * dpr);
     const targetH = Math.round(h * dpr);
 
+    // Re-assigning width/height resets the bitmap — when the size didn't
+    // actually change that would just wipe in-progress strokes.
+    if (initializedRef.current && canvas.width === targetW && canvas.height === targetH) {
+      return true;
+    }
+
     // Preserve in-progress strokes when the canvas is re-created (resize).
+    // Only snapshot once the canvas was initialized — before that it holds
+    // the blank 300×150 default, which would shadow image.maskCanvas.
     let snapshot: HTMLCanvasElement | null = null;
-    if (canvas.width > 0 && canvas.height > 0 && (canvas.width !== targetW || canvas.height !== targetH)) {
+    if (initializedRef.current && canvas.width > 0 && canvas.height > 0) {
       snapshot = document.createElement('canvas');
       snapshot.width = canvas.width;
       snapshot.height = canvas.height;
@@ -74,6 +89,7 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
     }
 
     ctxRef.current = ctx;
+    initializedRef.current = true;
     return true;
   }, [image]);
 
@@ -152,6 +168,13 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
 
     const moveDraw = (e: MouseEvent | TouchEvent) => {
       if (!isDrawing.current) return;
+      // mouseup outside the window never reaches us — if the primary button
+      // is already up on the next mousemove, end the stroke instead of
+      // painting without a pressed button.
+      if ('buttons' in e && (e.buttons & 1) === 0) {
+        endDraw();
+        return;
+      }
       e.preventDefault();
       const pos = getPos(e);
       const last = lastPoint.current!;
@@ -174,6 +197,8 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
     canvas.addEventListener('touchstart', startDraw, { passive: false });
     window.addEventListener('touchmove', moveDraw, { passive: false });
     window.addEventListener('touchend', endDraw);
+    window.addEventListener('touchcancel', endDraw);
+    window.addEventListener('blur', endDraw);
 
     return () => {
       canvas.removeEventListener('mousedown', startDraw);
@@ -183,13 +208,21 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
       canvas.removeEventListener('touchstart', startDraw);
       window.removeEventListener('touchmove', moveDraw);
       window.removeEventListener('touchend', endDraw);
+      window.removeEventListener('touchcancel', endDraw);
+      window.removeEventListener('blur', endDraw);
     };
   }, [getPos, drawStroke, drawLine]);
 
   const handleClear = () => {
     const ctx = ctxRef.current;
     const canvas = canvasRef.current;
-    if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!ctx || !canvas) return;
+    // ctx carries a scale(dpr) transform — clear in raw device pixels or the
+    // clear region would overshoot by the dpr factor.
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
   };
 
   const handleDone = () => {

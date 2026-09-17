@@ -146,7 +146,7 @@ interface ChatContextValue {
 function sessionTitleCacheKey(messages: ChatMessage[]) {
   const last = messages[messages.length - 1];
   const firstUser = messages.find((message) => message.role === 'user');
-  return `${messages.map((message) => message.id).join('|')}|${last?.thinkingDone ?? ''}|${last?.images.length ?? 0}|${firstUser?.prompt.length ?? 0}`;
+  return `${messages.map((message) => message.id).join('|')}|${last?.thinkingDone ?? ''}|${last?.images.length ?? 0}|${firstUser?.prompt.length ?? 0}|${firstUser?.prompt.slice(0, 32) ?? ''}`;
 }
 
 const ChatContext = createContext<ChatContextValue | undefined>(undefined);
@@ -172,6 +172,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const loadingSessionIdsRef = useRef(loadingSessionIds);
   const storageLoadFailedRef = useRef(false);
   const sessionTitleCacheRef = useRef(new Map<string, { key: string; title: string }>());
+  const evictedMessageTombstonesRef = useRef<ChatSyncTombstone[]>([]);
+  const evictionFlushScheduledRef = useRef(false);
 
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
   useEffect(() => { loadingSessionIdsRef.current = loadingSessionIds; }, [loadingSessionIds]);
@@ -224,6 +226,29 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     ]));
   }, [markLocalMutation]);
 
+  // Messages pushed past CHAT_MESSAGES_MAX are deleted locally with no
+  // tombstone — queue them into the same mechanism deleteMessage uses so a
+  // later sync can't resurrect them. The queue is flushed on a timeout
+  // because setSessions updaters must stay free of direct setState calls.
+  const queueMessageEvictionTombstones = useCallback((sessionId: string, evicted: ChatMessage[]) => {
+    if (evicted.length === 0) return;
+    const deletedAt = Date.now();
+    evictedMessageTombstonesRef.current.push(...evicted.map((message) => ({
+      type: 'message' as const,
+      id: message.id,
+      sessionId,
+      deletedAt,
+    })));
+    if (evictionFlushScheduledRef.current) return;
+    evictionFlushScheduledRef.current = true;
+    window.setTimeout(() => {
+      evictionFlushScheduledRef.current = false;
+      const queued = evictedMessageTombstonesRef.current;
+      evictedMessageTombstonesRef.current = [];
+      addSyncTombstones(queued);
+    }, 0);
+  }, [addSyncTombstones]);
+
   const updateSessionMessages = useCallback((
     sessionId: string,
     updater: (messages: ChatMessage[], session: ChatSession) => ChatMessage[],
@@ -232,7 +257,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setSessions((prev) => prev.map((session) => {
       if (session.id !== sessionId) return session;
 
-      const nextMessages = updater(session.messages, session).slice(-CHAT_MESSAGES_MAX);
+      const updated = updater(session.messages, session);
+      const nextMessages = updated.slice(-CHAT_MESSAGES_MAX);
+      if (updated.length > nextMessages.length) {
+        queueMessageEvictionTombstones(session.id, updated.slice(0, updated.length - nextMessages.length));
+      }
       let title = session.title;
       if (isAutoManagedSessionTitle(session)) {
         const titleKey = sessionTitleCacheKey(nextMessages);
@@ -254,7 +283,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         syncDirty,
       };
     }));
-  }, [markLocalMutation]);
+  }, [markLocalMutation, queueMessageEvictionTombstones]);
 
   const createChatSession = useCallback(() => {
     markLocalMutation();
@@ -449,15 +478,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       const applyMessages = (session: ChatSession): ChatSession => {
         const byId = new Map(session.messages.map((message) => [message.id, message]));
         for (const message of incomingMessages) {
+          const existing = byId.get(message.id);
           byId.set(message.id, {
-            ...byId.get(message.id),
+            ...existing,
             ...message,
+            // Keep the original stamp so a restored/regenerated pair keeps
+            // its position instead of being re-sorted to the end.
+            createdAt: existing?.createdAt ?? message.createdAt,
             syncDirty: true,
           });
         }
-        const nextMessages = [...byId.values()]
-          .sort((a, b) => a.createdAt - b.createdAt)
-          .slice(-CHAT_MESSAGES_MAX);
+        const sortedMessages = [...byId.values()]
+          .sort((a, b) => a.createdAt - b.createdAt);
+        const nextMessages = sortedMessages.slice(-CHAT_MESSAGES_MAX);
+        if (sortedMessages.length > nextMessages.length) {
+          queueMessageEvictionTombstones(session.id, sortedMessages.slice(0, sortedMessages.length - nextMessages.length));
+        }
         const title = isAutoManagedSessionTitle(session)
           ? sessionTitleFromMessages(nextMessages, titleHint || DEFAULT_CHAT_TITLE)
           : session.title;
@@ -495,7 +531,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         ...prev,
       ].slice(0, CHAT_SESSIONS_MAX);
     });
-  }, [markLocalMutation]);
+  }, [markLocalMutation, queueMessageEvictionTombstones]);
 
   const updateUserMessage = useCallback((
     messageId: string,
@@ -615,7 +651,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (!isLocalDataCleared()) {
-          persistStoredSessions(storedSessions, activeSessionIdRef.current);
+          persistStoredSessions(storedSessions, activeSessionIdRef.current, () => cancelled || isLocalDataCleared());
         }
       })().catch(() => { /* storage write failures are non-fatal */ });
     }, 300);
@@ -628,16 +664,25 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!storageReady || storageLoadFailedRef.current || isLocalDataCleared()) return;
     import('idb-keyval')
-      .then(({ set }) => set(CHAT_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify(syncTombstones)))
+      .then(({ set }) => {
+        // The dynamic import may resolve after a clearAll landed — re-check.
+        if (isLocalDataCleared()) return undefined;
+        return set(CHAT_SYNC_TOMBSTONES_STORAGE_KEY, JSON.stringify(syncTombstones));
+      })
       .catch(() => { /* ignore */ });
   }, [syncTombstones, storageReady]);
 
   useEffect(() => {
     if (!storageReady) return;
     if (applyingSyncRef.current) return;
+    // While runs are in flight every state change would re-arm the debounce
+    // and POST mid-run snapshots; a completion mutation re-triggers this
+    // effect naturally once loading clears.
+    if (loadingSessionIdsRef.current.length > 0) return;
     const auth = readSessionSyncAuth();
     if (!auth) return;
     const timer = window.setTimeout(() => {
+      if (loadingSessionIdsRef.current.length > 0) return;
       void (async () => {
         const snapshot = await getSyncSnapshot();
         const signature = JSON.stringify({

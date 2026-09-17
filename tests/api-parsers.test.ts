@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { extractModelGateMessage, isRecord, stringifyTextContent, parseErrorDetail, extractChatResponseParts } from '@/lib/api-parsers';
+import { extractModelGateMessage, isRecord, stringifyTextContent, parseErrorDetail, extractChatResponseParts, buildChatMessages, CHAT_HISTORY_BUDGET } from '@/lib/api-parsers';
+import type { ChatMessage } from '@/contexts/ChatContext';
+
+function historyMessage(id: string, role: 'user' | 'bot', prompt = '', text = ''): ChatMessage {
+  return { id, role, prompt, text, images: [], code: '', extra: '', createdAt: 0 };
+}
 
 describe('api-parsers', () => {
   it('extractModelGateMessage extracts message from standard error format', () => {
@@ -51,5 +56,32 @@ describe('api-parsers', () => {
     expect(parseErrorDetail(JSON.stringify({ error: { message: 'API error' } }))).toBe('API error');
     expect(parseErrorDetail(JSON.stringify({ message: 'General error' }))).toBe('General error');
     expect(parseErrorDetail(JSON.stringify({ error: { message: 42 } }))).toBe('42');
+  });
+
+  it('buildChatMessages trims oldest turns to stay under the budget', () => {
+    const big = 'x'.repeat(CHAT_HISTORY_BUDGET);
+    const history = [
+      historyMessage('u1', 'user', big),
+      historyMessage('b1', 'bot', '', big),
+      historyMessage('u2', 'user', 'second'),
+      historyMessage('b2', 'bot', '', 'reply'),
+    ];
+    const out = buildChatMessages(history, 'now', 'sys', 5);
+    expect(out[0]).toEqual({ role: 'system', content: 'sys' });
+    expect(out).toContainEqual({ role: 'user', content: 'second' });
+    expect(out).toContainEqual({ role: 'assistant', content: 'reply' });
+    expect(out[out.length - 1]).toEqual({ role: 'user', content: 'now' });
+    expect(out.some((m) => m.content === big)).toBe(false);
+  });
+
+  it('buildChatMessages measures the budget in UTF-8 bytes, not UTF-16 units', () => {
+    // ~36KB on the wire but only ~12K in string.length units.
+    const cjk = '汉'.repeat(12 * 1024);
+    const history = [
+      historyMessage('u1', 'user', cjk),
+      historyMessage('b1', 'bot', '', cjk),
+    ];
+    const out = buildChatMessages(history, 'now', '', 5);
+    expect(out).toEqual([{ role: 'user', content: 'now' }]);
   });
 });

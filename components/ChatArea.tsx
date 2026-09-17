@@ -65,6 +65,14 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
       ? '参考图已就绪'
       : '等待描述';
 
+  // Switching sessions always lands at the latest message — reset the
+  // near-bottom flag so auto-scroll isn't suppressed by the previous
+  // session's scroll position.
+  useEffect(() => {
+    isNearBottomRef.current = true;
+    bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+  }, [activeSessionId]);
+
   useEffect(() => {
     if (!isNearBottomRef.current) return;
     bottomRef.current?.scrollIntoView({ behavior: isActiveSessionLoading ? 'auto' : 'smooth' });

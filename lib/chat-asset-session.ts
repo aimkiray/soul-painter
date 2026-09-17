@@ -118,10 +118,14 @@ export async function getChatAssetSession(
 }
 
 export function shouldUseSecureCookie(request: NextRequest) {
+  // CHAT_ASSET_COOKIE_SECURE overrides the heuristic below:
+  // '1'/'true' → always Secure; '0'/'false' → never (e.g. plain-HTTP deploys).
   const configured = (process.env.CHAT_ASSET_COOKIE_SECURE || 'auto').trim().toLowerCase();
-  if (configured === 'true') return true;
-  if (configured === 'false') return false;
+  if (configured === '1' || configured === 'true') return true;
+  if (configured === '0' || configured === 'false') return false;
 
+  // Deployments should have nginx overwrite `X-Forwarded-Proto: $scheme` so
+  // this reflects the real client-facing scheme, not a spoofable header.
   const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase();
   if (forwardedProto) return forwardedProto === 'https';
   return request.nextUrl.protocol === 'https:';

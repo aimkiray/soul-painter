@@ -10,10 +10,11 @@ import {
   LEGACY_CHAT_MODEL_VALUES,
   CFG_STORAGE_KEY,
   OPTS_STORAGE_KEY,
+  LOCAL_DATA_CLEARED_STORAGE_KEY,
 } from '@/lib/constants';
 import { getClaudeChatModelOptions, getOpenAIChatModelOptions } from '@/lib/chat-config';
 import { mergeModelOptions, normalizeModelList } from '@/lib/model-options';
-import { isLocalDataCleared, markLocalDataCleared } from '@/lib/local-data-cleared';
+import { isLocalDataCleared, markLocalDataCleared, clearLocalDataClearedMarker } from '@/lib/local-data-cleared';
 import { clear } from 'idb-keyval';
 
 interface PublicServerConfig {
@@ -363,40 +364,62 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const saveConfig = useCallback(() => {
+    // A manual save is an explicit user action — it re-consents to local
+    // persistence after a wipe, so lift the cleared marker before writing.
+    clearLocalDataClearedMarker();
+    if (isLocalDataCleared()) return;
     localStorage.setItem(CFG_STORAGE_KEY, JSON.stringify(config));
   }, [config]);
 
   const saveOptions = useCallback(() => {
+    clearLocalDataClearedMarker();
+    if (isLocalDataCleared()) return;
     localStorage.setItem(OPTS_STORAGE_KEY, JSON.stringify(options));
   }, [options]);
 
   const clearAll = useCallback(() => {
     markLocalDataCleared();
+    // Hard upper bound: no cleanup step below may delay the reload past this.
+    const reloadTimer = window.setTimeout(() => { window.location.reload(); }, 10_000);
     void (async () => {
-      try { await clear(); } catch { /* ignore */ }
-      try { localStorage.clear(); } catch { /* ignore */ }
-      try { sessionStorage.clear(); } catch { /* ignore */ }
+      try {
+        try { await clear(); } catch { /* ignore */ }
+        try { localStorage.clear(); } catch { /* ignore */ }
+        // Persistent cleared marker — written after the wipe so it survives:
+        // it keeps this tab (post-reload) and every other tab in the cleared
+        // state until the user explicitly re-auths or saves config.
+        try { localStorage.setItem(LOCAL_DATA_CLEARED_STORAGE_KEY, String(Date.now())); } catch { /* ignore */ }
+        try { sessionStorage.clear(); } catch { /* ignore */ }
 
-      const cacheDeletes = 'caches' in window
-        ? window.caches.keys()
-            .then((keys) => Promise.allSettled(keys.map((key) => window.caches.delete(key))))
-        : Promise.resolve();
-      const workerDeletes = 'serviceWorker' in navigator
-        ? navigator.serviceWorker.getRegistrations()
-            .then((registrations) => Promise.allSettled(registrations.map((registration) => registration.unregister())))
-        : Promise.resolve();
+        const cacheDeletes = 'caches' in window
+          ? window.caches.keys()
+              .then((keys) => Promise.allSettled(keys.map((key) => window.caches.delete(key))))
+          : Promise.resolve();
+        const workerDeletes = 'serviceWorker' in navigator
+          ? navigator.serviceWorker.getRegistrations()
+              .then((registrations) => Promise.allSettled(registrations.map((registration) => registration.unregister())))
+          : Promise.resolve();
 
-      await Promise.allSettled([
-        cacheDeletes,
-        workerDeletes,
-        fetch('/api/chat-assets', { method: 'DELETE' }),
-        fetch('/api/model-gate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'clear' }),
-        }),
-      ]);
-      window.location.reload();
+        // Cleanup fetches get their own timeout and the whole batch is
+        // capped — a stalled socket must not leave the app in cleared limbo.
+        await Promise.race([
+          Promise.allSettled([
+            cacheDeletes,
+            workerDeletes,
+            fetch('/api/chat-assets', { method: 'DELETE', signal: AbortSignal.timeout(5000) }),
+            fetch('/api/model-gate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'clear' }),
+              signal: AbortSignal.timeout(5000),
+            }),
+          ]),
+          new Promise((resolve) => { window.setTimeout(resolve, 8000); }),
+        ]);
+      } finally {
+        window.clearTimeout(reloadTimer);
+        window.location.reload();
+      }
     })();
   }, []);
 

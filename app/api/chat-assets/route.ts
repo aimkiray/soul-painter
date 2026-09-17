@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   CHAT_ASSET_MAX_BODY_BYTES,
+  ChatAssetStoreFullError,
   clearChatAssets,
   resolveChatAsset,
 } from '@/lib/chat-assets';
@@ -9,6 +10,7 @@ import {
   getChatAssetSession,
   setChatAssetSession,
 } from '@/lib/chat-asset-session';
+import { CHAT_ASSET_SESSION_COOKIE } from '@/lib/constants';
 import { readLimitedText } from '@/lib/limited-body';
 import { checkRateLimit, clientIp } from '@/lib/rate-limit';
 
@@ -17,13 +19,21 @@ export const dynamic = 'force-dynamic';
 
 const CHAT_ASSET_RATE_LIMIT = 120;
 const CHAT_ASSET_RATE_WINDOW_MS = 60_000;
+// Anonymous session mints per IP per hour — bounds cookie-rotation abuse that
+// would otherwise create unbounded per-session disk quotas.
+const CHAT_ASSET_SESSION_MINT_LIMIT = 60;
+const CHAT_ASSET_SESSION_MINT_WINDOW_MS = 60 * 60 * 1000;
+// Session deletes per IP per minute.
+const CHAT_ASSET_DELETE_LIMIT = 30;
+const CHAT_ASSET_DELETE_WINDOW_MS = 60_000;
 
 function tooLargeResponse() {
   return NextResponse.json({ error: 'Image request is too large' }, { status: 413 });
 }
 
 export async function POST(request: NextRequest) {
-  if (!checkRateLimit(`chat-assets:${clientIp(request)}`, CHAT_ASSET_RATE_LIMIT, CHAT_ASSET_RATE_WINDOW_MS)) {
+  const ip = clientIp(request);
+  if (!checkRateLimit(`chat-assets:${ip}`, CHAT_ASSET_RATE_LIMIT, CHAT_ASSET_RATE_WINDOW_MS)) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
   }
 
@@ -54,11 +64,23 @@ export async function POST(request: NextRequest) {
     const image = typeof body.image === 'string' ? body.image : '';
     const url = typeof body.url === 'string' ? body.url : '';
     const session = await getChatAssetSession(request);
+    // When the presented cookie is absent or fails validation, a fresh
+    // anonymous session was just minted — cap mints per IP so dropping the
+    // cookie cannot rotate into unbounded fresh session dirs. Existing
+    // (valid) sessions are unaffected: their cookie echoes back unchanged.
+    const presentedCookie = request.cookies.get(CHAT_ASSET_SESSION_COOKIE)?.value || '';
+    if (presentedCookie !== session.cookieValue
+      && !checkRateLimit(`asset-session:${ip}`, CHAT_ASSET_SESSION_MINT_LIMIT, CHAT_ASSET_SESSION_MINT_WINDOW_MS)) {
+      return NextResponse.json({ error: 'Too many sessions' }, { status: 429 });
+    }
     const asset = await resolveChatAsset(session.id, image ? { dataUrl: image } : { url });
     const response = NextResponse.json(asset);
     setChatAssetSession(response, session, request);
     return response;
   } catch (error) {
+    if (error instanceof ChatAssetStoreFullError) {
+      return NextResponse.json({ error: error.message }, { status: 429 });
+    }
     return NextResponse.json(
       { error: (error as Error).message || 'Failed to save chat asset' },
       { status: 400 },
@@ -67,6 +89,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  if (!checkRateLimit(`asset-del:${clientIp(request)}`, CHAT_ASSET_DELETE_LIMIT, CHAT_ASSET_DELETE_WINDOW_MS)) {
+    return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+  }
   const session = await getChatAssetSession(request);
   await clearChatAssets(session.id);
   const response = NextResponse.json({ ok: true });

@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import dns from 'dns/promises';
 import net from 'net';
 import { isChatAssetSessionId } from '@/lib/chat-asset-session-id';
+import { ipIsPrivate } from '@/lib/ip-private';
 import { fetchPinned, type ResolvedAddress } from '@/lib/pinned-fetch';
 
 const CHAT_ASSET_DIR = path.join(process.cwd(), 'data', 'chat-assets');
@@ -12,6 +13,12 @@ const SESSION_MAX_BYTES = getPositiveEnvInt('CHAT_ASSET_SESSION_MAX_BYTES', 256 
 const SESSION_MAX_FILES = getPositiveEnvInt('CHAT_ASSET_SESSION_MAX_FILES', 200);
 const SESSION_MAX_AGE_MS = getPositiveEnvInt('CHAT_ASSET_SESSION_MAX_AGE_DAYS', 30) * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
+// Global disk budget across ALL session dirs: per-session quotas alone cannot
+// stop an attacker rotating anonymous cookies to mint unbounded session dirs.
+const CHAT_ASSETS_MAX_TOTAL_BYTES = getPositiveEnvInt('CHAT_ASSETS_MAX_TOTAL_BYTES', 1024 * 1024 * 1024);
+// The running total is re-measured by walking the store at most this often;
+// between refreshes it is kept accurate by write/delete deltas.
+const STORE_TOTAL_REFRESH_MS = 60_000;
 const REMOTE_FETCH_TIMEOUT_MS = getPositiveEnvInt('CHAT_ASSET_REMOTE_FETCH_TIMEOUT_MS', 15_000);
 const REMOTE_FETCH_MAX_REDIRECTS = getPositiveEnvInt('CHAT_ASSET_REMOTE_FETCH_MAX_REDIRECTS', 3);
 export const CHAT_ASSET_MAX_BODY_BYTES = getPositiveEnvInt(
@@ -94,62 +101,11 @@ function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; mime: string } {
   return { bytes: new Uint8Array(buffer), mime };
 }
 
-function ipv4ToNumber(ip: string) {
-  const parts = ip.split('.').map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
-  return parts.reduce((value, part) => ((value << 8) + part) >>> 0, 0);
-}
-
-function ipv4InRange(value: number, base: string, bits: number) {
-  const baseValue = ipv4ToNumber(base);
-  if (baseValue === null) return false;
-  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-  return (value & mask) === (baseValue & mask);
-}
-
 function isPrivateIp(ip: string) {
-  const normalizedIp = ip.toLowerCase();
-  const ipv4Mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
-  if (ipv4Mapped) return isPrivateIp(ipv4Mapped[1]);
-  if (normalizedIp.startsWith('::ffff:')) return true;
-
-  if (net.isIP(ip) === 4) {
-    const value = ipv4ToNumber(ip);
-    if (value === null) return true;
-    return [
-      ['0.0.0.0', 8],
-      ['10.0.0.0', 8],
-      ['100.64.0.0', 10],
-      ['127.0.0.0', 8],
-      ['169.254.0.0', 16],
-      ['172.16.0.0', 12],
-      ['192.0.0.0', 24],
-      ['192.0.2.0', 24],
-      ['192.31.196.0', 24],
-      ['192.52.193.0', 24],
-      ['192.88.99.0', 24],
-      ['192.168.0.0', 16],
-      ['192.175.48.0', 24],
-      ['198.18.0.0', 15],
-      ['198.51.100.0', 24],
-      ['203.0.113.0', 24],
-      ['224.0.0.0', 4],
-      ['240.0.0.0', 4],
-    ].some(([base, bits]) => ipv4InRange(value, base as string, bits as number));
-  }
-
-  if (net.isIP(ip) === 6) {
-    const firstHextet = parseInt(normalizedIp.split(':')[0] || '0', 16);
-    return normalizedIp === '::1'
-      || normalizedIp === '::'
-      || normalizedIp.startsWith('64:ff9b:')
-      || (firstHextet & 0xfe00) === 0xfc00
-      || (firstHextet & 0xffc0) === 0xfe80
-      || (firstHextet & 0xff00) === 0xff00
-      || normalizedIp.startsWith('2001:db8:');
-  }
-
-  return true;
+  // Delegated to lib/ip-private.ts: byte-level parsing catches expanded IPv6
+  // forms (v4-mapped/v4-compatible, 6to4, Teredo, NAT64) that prefix string
+  // checks miss.
+  return ipIsPrivate(ip);
 }
 
 export interface PublicRemoteImageUrl {
@@ -347,6 +303,7 @@ async function enforceSessionAssetLimits(sessionId: string, protectedAssetId?: s
       await rm(file.path, { force: true });
       totalSize -= file.size;
       totalFiles -= 1;
+      noteStoredBytesDelta(-file.size);
     } catch {
       // Best effort cleanup; the next save will try again.
     }
@@ -362,6 +319,7 @@ async function cleanupExpiredChatAssetSessions() {
   }
 
   const expiresBefore = Date.now() - SESSION_MAX_AGE_MS;
+  let removedAny = false;
   for await (const entry of handle) {
     if (!entry.isDirectory() || !isChatAssetSessionId(entry.name)) continue;
     const dir = path.join(CHAT_ASSET_DIR, entry.name);
@@ -371,11 +329,14 @@ async function cleanupExpiredChatAssetSessions() {
       const lastAccessedAt = meta?.lastAccessedAt || fallbackStat?.mtimeMs || 0;
       if (lastAccessedAt < expiresBefore) {
         await rm(dir, { recursive: true, force: true });
+        removedAny = true;
       }
     } catch {
       // Best effort cleanup; ignore directories that disappear mid-scan.
     }
   }
+  // Whole dirs were removed; force the next budget check to re-measure.
+  if (removedAny) storeBytesCache = null;
 }
 
 function scheduleExpiredChatAssetCleanup() {
@@ -389,8 +350,126 @@ function scheduleExpiredChatAssetCleanup() {
     });
 }
 
+/** Thrown when the cross-session store budget is exhausted; routes map this
+ *  507-style failure to a retryable 429 response. */
+export class ChatAssetStoreFullError extends Error {
+  constructor() {
+    super('Chat asset storage is full, please retry later');
+    this.name = 'ChatAssetStoreFullError';
+  }
+}
+
+let storeBytesCache: { bytes: number; measuredAt: number } | null = null;
+let storeBytesMeasure: Promise<number> | null = null;
+
+/** Keep the cached total accurate between full re-measurements. */
+function noteStoredBytesDelta(delta: number) {
+  if (storeBytesCache) storeBytesCache.bytes = Math.max(0, storeBytesCache.bytes + delta);
+}
+
+async function measureStoreBytes(): Promise<number> {
+  let total = 0;
+  let handle;
+  try {
+    handle = await opendir(CHAT_ASSET_DIR);
+  } catch {
+    return 0;
+  }
+  for await (const entry of handle) {
+    if (!entry.isDirectory() || !isChatAssetSessionId(entry.name)) continue;
+    const dir = path.join(CHAT_ASSET_DIR, entry.name);
+    let inner;
+    try {
+      inner = await opendir(dir);
+    } catch {
+      continue;
+    }
+    for await (const file of inner) {
+      if (!file.isFile()) continue;
+      try {
+        total += (await stat(path.join(dir, file.name))).size;
+      } catch {
+        // File disappeared mid-scan; the total stays approximately correct.
+      }
+    }
+  }
+  return total;
+}
+
+async function totalStoredBytes(): Promise<number> {
+  if (storeBytesCache && Date.now() - storeBytesCache.measuredAt < STORE_TOTAL_REFRESH_MS) {
+    return storeBytesCache.bytes;
+  }
+  // Single-flight the directory walk so concurrent saves share one scan.
+  storeBytesMeasure ??= measureStoreBytes()
+    .then((bytes) => {
+      storeBytesCache = { bytes, measuredAt: Date.now() };
+      return bytes;
+    })
+    .finally(() => {
+      storeBytesMeasure = null;
+    });
+  return storeBytesMeasure;
+}
+
+interface SessionDirSummary {
+  sessionId: string;
+  lastAccessedAt: number;
+  bytes: number;
+}
+
+/** Session dirs sorted oldest-idle first — the same ordering the expired
+ *  session cleanup applies via lastAccessedAt. */
+async function listSessionDirSummaries(): Promise<SessionDirSummary[]> {
+  let handle;
+  try {
+    handle = await opendir(CHAT_ASSET_DIR);
+  } catch {
+    return [];
+  }
+  const summaries: SessionDirSummary[] = [];
+  for await (const entry of handle) {
+    if (!entry.isDirectory() || !isChatAssetSessionId(entry.name)) continue;
+    try {
+      const files = await listSessionAssets(entry.name);
+      const meta = await readSessionMeta(entry.name);
+      let lastAccessedAt = meta?.lastAccessedAt || 0;
+      if (!lastAccessedAt) {
+        lastAccessedAt = (await stat(path.join(CHAT_ASSET_DIR, entry.name))).mtimeMs;
+      }
+      summaries.push({
+        sessionId: entry.name,
+        lastAccessedAt,
+        bytes: files.reduce((sum, file) => sum + file.size, 0),
+      });
+    } catch {
+      // Directory disappeared mid-scan; skip it.
+    }
+  }
+  return summaries.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
+}
+
+/** Enforce the global store budget before a write: evict oldest-idle sessions
+ *  until under budget, and fail when eviction cannot make room. */
+async function enforceGlobalStoreBudget(protectedSessionId: string) {
+  let total = await totalStoredBytes();
+  if (total <= CHAT_ASSETS_MAX_TOTAL_BYTES) return;
+
+  for (const summary of await listSessionDirSummaries()) {
+    if (total <= CHAT_ASSETS_MAX_TOTAL_BYTES) break;
+    if (summary.sessionId === protectedSessionId) continue;
+    await rm(path.join(CHAT_ASSET_DIR, summary.sessionId), { recursive: true, force: true })
+      .catch(() => undefined);
+    total -= summary.bytes;
+    noteStoredBytesDelta(-summary.bytes);
+  }
+  if (total > CHAT_ASSETS_MAX_TOTAL_BYTES) throw new ChatAssetStoreFullError();
+}
+
 export async function clearChatAssets(sessionId: string) {
   await rm(sessionDir(sessionId), { recursive: true, force: true });
+  // Whole-dir removal: force the next budget check to re-measure.
+  storeBytesCache = null;
 }
 
 function errorMessage(error: unknown) {
@@ -421,6 +500,7 @@ export async function copyChatAssetsBetweenSessions(
     try {
       await copyFile(file.path, targetPath);
       result.copied += 1;
+      noteStoredBytesDelta(file.size);
     } catch (error) {
       result.failed.push({ id: file.name, error: errorMessage(error) });
     }
@@ -429,6 +509,9 @@ export async function copyChatAssetsBetweenSessions(
   if (result.copied > 0 || result.skipped > 0) {
     await touchChatAssetSession(targetSessionId);
     await enforceSessionAssetLimits(targetSessionId);
+    // The copy duplicated bytes, so the global budget is re-checked after the
+    // copy (before would risk evicting the source session mid-migration).
+    await enforceGlobalStoreBudget(targetSessionId);
     scheduleExpiredChatAssetCleanup();
   }
 
@@ -442,6 +525,10 @@ export async function saveChatAsset(sessionId: string, bytes: Uint8Array, mime: 
     throw new Error('Image is too large');
   }
 
+  // Global budget runs before any write so cookie-rotated anonymous sessions
+  // cannot grow the store without bound.
+  await enforceGlobalStoreBudget(sessionId);
+
   const hash = createHash('sha256').update(bytes).digest('hex');
   const id = `${hash}.${ext}`;
   const filePath = assetPath(sessionId, id);
@@ -451,6 +538,7 @@ export async function saveChatAsset(sessionId: string, bytes: Uint8Array, mime: 
     await stat(filePath);
   } catch {
     await writeFile(filePath, bytes);
+    noteStoredBytesDelta(bytes.byteLength);
   }
   await enforceSessionAssetLimits(sessionId, id);
   scheduleExpiredChatAssetCleanup();

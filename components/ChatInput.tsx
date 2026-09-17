@@ -8,7 +8,7 @@ import { IMAGE_MODEL_PRESETS, chatSessionPromptStorageKey, ORIGINAL_ASPECT_SIZE,
 import { COMPOSER_FRAME_CLASS } from '@/lib/layout';
 import { isLocalDataCleared } from '@/lib/local-data-cleared';
 import { mergeModelOptions } from '@/lib/model-options';
-import { formatSizeDisplay } from '@/lib/size';
+import { CUSTOM_SIZE_PATTERN, formatSizeDisplay } from '@/lib/size';
 import {
   encodeChatModelChoice,
   getActiveChatModel,
@@ -28,8 +28,6 @@ interface ChatInputProps {
 
 const composerSelectClass = 'composer-select h-8 cursor-pointer bg-black text-[#CCC] border-2 border-[#AAA] focus:border-[#00aaaa] text-xs sm:text-sm pl-2 pr-7 font-mono outline-none disabled:opacity-100 disabled:cursor-default';
 
-const CUSTOM_SIZE_RE = /^\d{2,5}x\d{2,5}$/i;
-
 function readStoredPrompt(sessionId: string) {
   try {
     return localStorage.getItem(chatSessionPromptStorageKey(sessionId)) || '';
@@ -38,7 +36,7 @@ function readStoredPrompt(sessionId: string) {
   }
 }
 
-export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel }: ChatInputProps) {
+export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProps) {
   const { config, updateConfig, options, modelGateEnabled, modelGateUnlocked } = useConfig();
   // Drafts live in ChatContext so they survive tab switches / remounts.
   const { activeSessionId, promptDrafts, setPromptDraft } = useChat();
@@ -72,8 +70,8 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
     return () => clearTimeout(timer);
   }, [prompt, options.persistPrompt, activeSessionId]);
 
-  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'F1') { e.preventDefault(); onOpenSettings(); } }; document.addEventListener('keydown', h); return () => document.removeEventListener('keydown', h); }, [onOpenSettings]);
-
+  // F1 → settings is handled by a page-level listener (app/page.tsx) so it
+  // keeps working when this component is unmounted (e.g. the Base64 tab).
   const busy = isLoading;
   const send = () => {
     const nextPrompt = prompt.trim();
@@ -183,8 +181,8 @@ export default function ChatInput({ onSend, isLoading, onOpenSettings, onCancel 
                     type="text"
                     value={config.size}
                     onChange={e=>{updateConfig('size',e.target.value);setSizeInvalid(false)}}
-                    onBlur={e=>setSizeInvalid(!CUSTOM_SIZE_RE.test(e.target.value.trim()))}
-                    onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if(e.key==='Enter'){e.preventDefault();setSizeInvalid(!CUSTOM_SIZE_RE.test(e.currentTarget.value.trim()));e.currentTarget.blur()}}}
+                    onBlur={e=>setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.target.value.trim()))}
+                    onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if(e.key==='Enter'){e.preventDefault();setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.currentTarget.value.trim()));e.currentTarget.blur()}}}
                     placeholder="WxH"
                     title={sizeInvalid ? '格式如 1024x1024' : undefined}
                     aria-invalid={sizeInvalid || undefined}

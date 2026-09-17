@@ -1,3 +1,5 @@
+import { REASONING_TAG_NAMES } from './chat-thinking';
+
 interface NormalizeChatTitleOptions {
   fallback?: string;
   maxLength?: number;
@@ -6,15 +8,17 @@ interface NormalizeChatTitleOptions {
 
 const DEFAULT_MAX_TITLE_LENGTH = 24;
 
+const REASONING_TAG_GROUP = REASONING_TAG_NAMES.join('|');
+const STRAY_REASONING_TAG_RE = new RegExp(`</?(?:${REASONING_TAG_GROUP})\\b[^>]*>`, 'gi');
+
 function stripReasoningBlocks(value: string) {
-  return value
-    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, ' ')
-    .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, ' ')
-    .replace(/<analysis\b[^>]*>[\s\S]*?<\/analysis>/gi, ' ')
-    .replace(/<think\b[^>]*>[\s\S]*$/i, ' ')
-    .replace(/<thinking\b[^>]*>[\s\S]*$/i, ' ')
-    .replace(/<analysis\b[^>]*>[\s\S]*$/i, ' ')
-    .replace(/<\/?(think|thinking|analysis)\b[^>]*>/gi, ' ');
+  let out = value;
+  for (const tag of REASONING_TAG_NAMES) {
+    out = out
+      .replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?</${tag}>`, 'gi'), ' ')
+      .replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*$`, 'i'), ' ');
+  }
+  return out.replace(STRAY_REASONING_TAG_RE, ' ');
 }
 
 function extractJsonTitle(value: string) {

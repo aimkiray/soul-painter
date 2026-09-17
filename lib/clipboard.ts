@@ -8,6 +8,11 @@ export async function writeClipboardText(text: string) {
     }
   }
 
+  // The fallback steals focus — remember what had it so we can hand it back.
+  const previousActive = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
+
   const textarea = document.createElement('textarea');
   textarea.value = text;
   textarea.setAttribute('readonly', '');
@@ -26,5 +31,8 @@ export async function writeClipboardText(text: string) {
     return false;
   } finally {
     document.body.removeChild(textarea);
+    if (previousActive && previousActive.isConnected) {
+      previousActive.focus({ preventScroll: true });
+    }
   }
 }

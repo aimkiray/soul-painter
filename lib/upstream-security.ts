@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { ipIsPrivate } from '@/lib/ip-private';
 import { normalizeUpstreamBaseUrl } from '@/lib/upstream-url';
 import type { ResolvedAddress } from '@/lib/pinned-fetch';
 
@@ -20,42 +21,11 @@ function normalizedHostname(hostname: string) {
   return hostname.replace(/^\[/, '').replace(/\]$/, '').toLowerCase().replace(/\.$/, '');
 }
 
-function ipv4IsPrivate(value: string) {
-  const parts = value.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-  const [a, b, c] = parts;
-  return a === 0
-    || a === 10
-    || a === 127
-    || (a === 100 && b >= 64 && b <= 127)
-    || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 0 && (c === 0 || c === 2))
-    || (a === 192 && b === 31 && c === 196)
-    || (a === 192 && b === 52 && c === 193)
-    || (a === 192 && b === 88 && c === 99)
-    || (a === 192 && b === 168)
-    || (a === 192 && b === 175 && c === 48)
-    || (a === 198 && b >= 18 && b <= 19)
-    || (a === 198 && b === 51 && c === 100)
-    || (a === 203 && b === 0 && c === 113)
-    || a >= 224;
-}
-
-function ipv6IsPrivate(value: string) {
-  const normalized = value.toLowerCase();
-  if (normalized === '::' || normalized === '::1') return true;
-  // Covers ::/128, ::ffff:0:0/96 (IPv4-mapped) and other deprecated v4-compatible forms.
-  if (normalized.startsWith('::')) return true;
-  if (normalized.startsWith('64:ff9b:')) return true; // NAT64 well-known/local-use prefixes
-  if (/^(fc|fd|fe[89ab]|ff)/.test(normalized)) return true;
-  if (normalized.startsWith('2001:db8:')) return true;
-  return false;
-}
-
 export function addressIsPrivate(address: string) {
-  const version = isIP(address);
-  return version === 4 ? ipv4IsPrivate(address) : version === 6 ? ipv6IsPrivate(address) : true;
+  // Byte-level classification lives in ip-private.ts so expanded IPv6 forms
+  // (v4-mapped/v4-compatible, 6to4, Teredo, NAT64…) cannot slip past prefix
+  // string checks.
+  return ipIsPrivate(address);
 }
 
 function isTrustedBaseUrl(baseUrl: string, trustedBaseUrls: string[]) {

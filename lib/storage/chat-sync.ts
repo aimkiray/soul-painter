@@ -1,5 +1,6 @@
 import { useCallback, type MutableRefObject } from 'react';
-import type { ChatSession, ChatSyncTombstone } from '@/contexts/ChatContext';
+import type { ChatMessage, ChatSession, ChatSyncTombstone, ChatTurnSnapshot } from '@/contexts/ChatContext';
+import type { ImageHit } from '@/types';
 import { CHAT_SESSIONS_MAX } from '@/lib/constants';
 import {
   isPlaceholderSession,
@@ -8,7 +9,8 @@ import {
   createEmptySession,
 } from '@/lib/storage/chat-normalize';
 import { prepareSessionsForStorage, type ChatSyncAuth } from '@/lib/storage/chat-store';
-import { buildIncrementalSyncPayload } from '@/lib/storage/chat-sync-delta';
+import { buildIncrementalSyncPayload, syncEntityStamp } from '@/lib/storage/chat-sync-delta';
+import { clearLocalDataClearedMarker } from '@/lib/local-data-cleared';
 
 export interface ChatSyncResponse {
   ok?: boolean;
@@ -51,23 +53,107 @@ function tombstoneKey(tombstone: ChatSyncTombstone) {
   return `${tombstone.type}:${tombstone.sessionId || ''}:${tombstone.id}`;
 }
 
+// The synced copy of a tombstoned entity carrying a newer stamp means the
+// entity was recreated server-side after the delete — resurrection wins and
+// the local tombstone is dropped.
+function tombstoneResurrectedBy(tombstone: ChatSyncTombstone, incoming: ChatSession[]): boolean {
+  const session = tombstone.type === 'session'
+    ? incoming.find((s) => s.id === tombstone.id)
+    : incoming.find((s) => s.id === tombstone.sessionId);
+  if (!session) return false;
+  if (tombstone.type === 'session') return syncEntityStamp(session) > tombstone.deletedAt;
+  const message = session.messages.find((m) => m.id === tombstone.id);
+  return !!message && syncEntityStamp(message) > tombstone.deletedAt;
+}
+
 export function mergeSyncTombstoneLists(
   local: ChatSyncTombstone[],
   incoming: ChatSyncTombstone[],
+  incomingSessions?: ChatSession[],
 ): ChatSyncTombstone[] {
   const incomingByKey = new Map(incoming.map((t) => [tombstoneKey(t), t]));
+  const now = Date.now();
   // Local tombstones the server did not echo must survive, otherwise a pending
   // delete is silently undone. An echoed tombstone is acknowledged and loses
   // syncDirty — unless its local deletedAt is strictly newer, in which case the
-  // server still needs to learn the newer stamp on the next sync.
+  // server still needs to learn the newer stamp on the next sync. A stamp in
+  // the future relative to now is client clock skew, though: keeping it dirty
+  // would re-push it forever, so it is acknowledged too.
   const retained = local
+    .filter((t) => !incomingSessions || !tombstoneResurrectedBy(t, incomingSessions))
     .filter((t) => t.syncDirty === true || !incomingByKey.has(tombstoneKey(t)))
     .map((t) => {
       const echoed = incomingByKey.get(tombstoneKey(t));
       if (!echoed || t.syncDirty !== true) return t;
-      return { ...t, syncDirty: t.deletedAt > echoed.deletedAt };
+      return { ...t, syncDirty: t.deletedAt > echoed.deletedAt && t.deletedAt <= now };
     });
   return normalizeSyncTombstones([...retained, ...incoming]);
+}
+
+// The newest edit stamp a message carries; updatedAt/editedAt are absent on
+// older stored messages, so fall back to createdAt.
+function syncedMessageStamp(message: ChatMessage) {
+  return Math.max(message.updatedAt ?? 0, message.editedAt ?? 0, message.createdAt ?? 0);
+}
+
+// Merge synced images with the local copy by position: the sync payload only
+// carries uploaded asset URLs, so an un-uploaded local dataUrl is preserved.
+// Local trailing images that were never uploaded (no url) survive too — the
+// stored copy could never have known them.
+function mergeSyncedImages(synced: ImageHit[], local: ImageHit[]): ImageHit[] {
+  const merged = synced.map((image, index) => {
+    const localImage = local[index];
+    if (!localImage) return image;
+    return {
+      ...image,
+      dataUrl: image.dataUrl ?? localImage.dataUrl,
+      url: image.url ?? localImage.url,
+    };
+  });
+  return merged.concat(local.slice(synced.length).filter((image) => !image.url && !!image.dataUrl));
+}
+
+function mergeSyncedRequest(synced: ChatTurnSnapshot | undefined, local: ChatTurnSnapshot | undefined) {
+  if (!synced) return local;
+  if (!local) return synced;
+  return {
+    ...synced,
+    referenceImages: synced.referenceImages.map((reference, index) => {
+      const localReference = local.referenceImages[index];
+      if (!localReference) return reference;
+      return {
+        ...reference,
+        image: { ...reference.image, dataUrl: reference.image.dataUrl ?? localReference.image.dataUrl },
+        mask: reference.mask
+          ? { ...reference.mask, dataUrl: reference.mask.dataUrl ?? localReference.mask?.dataUrl }
+          : reference.mask,
+      };
+    }),
+  };
+}
+
+// Per-message merge: a strictly-newer synced message wins, but client-only
+// fields the sync payload can't carry (code, serverRunId, un-uploaded image
+// dataUrls) are preserved from the local copy.
+function mergeSyncedMessages(local: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  const byId = new Map<string, ChatMessage>(local.map((message) => [message.id, message]));
+  for (const synced of incoming) {
+    const existing = byId.get(synced.id);
+    if (!existing) {
+      byId.set(synced.id, synced);
+      continue;
+    }
+    if (syncedMessageStamp(synced) <= syncedMessageStamp(existing)) continue;
+    byId.set(synced.id, {
+      ...synced,
+      code: synced.code || existing.code,
+      serverRunId: synced.serverRunId ?? existing.serverRunId,
+      images: mergeSyncedImages(synced.images, existing.images),
+      request: mergeSyncedRequest(synced.request, existing.request),
+      syncDirty: synced.syncDirty === true || existing.syncDirty === true,
+    });
+  }
+  return [...byId.values()].sort((a, b) => a.createdAt - b.createdAt);
 }
 
 export function mergeSyncedSessionList(
@@ -75,15 +161,39 @@ export function mergeSyncedSessionList(
   incoming: ChatSession[],
   tombstones: ChatSyncTombstone[],
 ): ChatSession[] {
-  const byId = new Map<string, ChatSession>();
-  for (const s of local) byId.set(s.id, s);
-  for (const s of incoming) byId.set(s.id, s);
+  const incomingById = new Map<string, ChatSession>(incoming.map((s) => [s.id, s]));
 
   const sessionDeletes = new Set<string>();
   const messageDeletes = new Set<string>();
   for (const t of tombstones) {
-    if (t.type === 'session') sessionDeletes.add(t.id);
-    else if (t.sessionId) messageDeletes.add(`${t.sessionId}:${t.id}`);
+    if (t.type === 'session') {
+      // A synced session newer than the tombstone was resurrected
+      // server-side — the delete no longer applies.
+      const resurrected = incomingById.get(t.id);
+      if (resurrected && syncEntityStamp(resurrected) > t.deletedAt) continue;
+      sessionDeletes.add(t.id);
+    } else if (t.sessionId) {
+      const resurrected = incomingById.get(t.sessionId)?.messages.find((m) => m.id === t.id);
+      if (resurrected && syncEntityStamp(resurrected) > t.deletedAt) continue;
+      messageDeletes.add(`${t.sessionId}:${t.id}`);
+    }
+  }
+
+  const byId = new Map<string, ChatSession>();
+  for (const s of local) byId.set(s.id, s);
+  for (const synced of incoming) {
+    const existing = byId.get(synced.id);
+    if (!existing) {
+      byId.set(synced.id, synced);
+      continue;
+    }
+    const base = syncEntityStamp(synced) > syncEntityStamp(existing) ? synced : existing;
+    byId.set(synced.id, {
+      ...base,
+      updatedAt: Math.max(synced.updatedAt, existing.updatedAt),
+      syncDirty: synced.syncDirty === true || existing.syncDirty === true,
+      messages: mergeSyncedMessages(existing.messages, synced.messages),
+    });
   }
 
   const merged = Array.from(byId.values())
@@ -150,7 +260,7 @@ export function useChatSync({
 
     // Session filtering must use the merged tombstone list — a locally
     // retained (not yet echoed) delete still applies to the UI.
-    const mergedTombstones = mergeSyncTombstoneLists(syncTombstones, incomingTombstones);
+    const mergedTombstones = mergeSyncTombstoneLists(syncTombstones, incomingTombstones, incomingSessions);
     setSyncTombstones(mergedTombstones);
 
     const nextSessions = mergeSyncedSessionList(sessions, incomingSessions, mergedTombstones);
@@ -203,6 +313,9 @@ export function useChatSync({
       error.status = response.status;
       throw error;
     }
+    // A successful sync is an explicit (re-)authentication — it lifts the
+    // local-data-cleared marker so storage writes resume.
+    clearLocalDataClearedMarker();
     if (localMutationRevisionRef.current !== requestRevision) {
       return { updatedAt: clientKnownUpdatedAt, applied: false, username: data.username || username };
     }
