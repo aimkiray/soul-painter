@@ -23,6 +23,7 @@ export interface AppConfig {
   chatModel: string;
   titleModel: string;
   chatApiFormat: 'openai' | 'claude';
+  chatEffort: string;
   openAIChatModels?: string[];
   customImageModels: string[];
   customChatModels: string[];

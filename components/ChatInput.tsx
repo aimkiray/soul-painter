@@ -4,11 +4,12 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
 import { useImages } from '@/contexts/ImageContext';
-import { IMAGE_MODEL_PRESETS, chatSessionPromptStorageKey, ORIGINAL_ASPECT_SIZE, REPEATER_MODEL_LABEL, SIZE_PRESETS } from '@/lib/constants';
+import { IMAGE_MODEL_PRESETS, CHAT_EFFORT_OPTIONS, chatSessionPromptStorageKey, ORIGINAL_ASPECT_SIZE, REPEATER_MODEL_LABEL, SIZE_PRESETS } from '@/lib/constants';
 import { COMPOSER_FRAME_CLASS } from '@/lib/layout';
 import { isLocalDataCleared } from '@/lib/local-data-cleared';
 import { mergeModelOptions } from '@/lib/model-options';
 import { CUSTOM_SIZE_PATTERN, formatSizeDisplay } from '@/lib/size';
+import MenuSelect, { type MenuSelectGroup } from '@/components/MenuSelect';
 import {
   encodeChatModelChoice,
   getActiveChatModel,
@@ -24,8 +25,6 @@ interface ChatInputProps {
   isLoading: boolean;
   onCancel?: () => void;
 }
-
-const composerSelectClass = 'composer-select h-8 cursor-pointer bg-black text-[#CCC] border-2 border-[#AAA] focus:border-[#00aaaa] text-xs sm:text-sm pl-2 pr-7 font-mono outline-none disabled:opacity-100 disabled:cursor-default';
 
 function readStoredPrompt(sessionId: string) {
   try {
@@ -114,6 +113,42 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
     ? images.filter((_, i) => selectedIndices.has(i))
     : [];
   const originalAspectLabel = formatSizeDisplay(ORIGINAL_ASPECT_SIZE, activeImages);
+  const imageModelGroups: MenuSelectGroup[] = [{
+    options: [
+      ...(imageModelIsOption ? [] : [{ value: config.model, label: config.model }]),
+      ...imageModelOptions.map(m => ({ value: m.value, label: m.label })),
+    ],
+  }];
+  const sizeGroups: MenuSelectGroup[] = [
+    ...(['AUTO', '1K', '2K', '4K'] as const).map(group => ({
+      label: group,
+      options: SIZE_PRESETS.filter(s => s.group === group).map(s => ({
+        value: s.value,
+        label: s.value === ORIGINAL_ASPECT_SIZE ? originalAspectLabel : s.label,
+      })),
+    })),
+    { options: [{ value: '__custom__', label: '自定义...' }] },
+  ];
+  const chatModelGroups: MenuSelectGroup[] = [
+    {
+      options: chatModelIsOption ? [] : [{ value: activeChatChoice, label: activeChatModel }],
+    },
+    {
+      label: 'OpenAI Compatible',
+      options: openAIChatModelOptions.map(m => ({ value: encodeChatModelChoice('openai', m.value), label: m.label })),
+    },
+    {
+      label: 'Claude Compatible',
+      options: claudeChatModelOptions.map(m => ({ value: encodeChatModelChoice('claude', m.value), label: m.label })),
+    },
+  ].filter(group => group.options.length > 0);
+  const gatedGroup: MenuSelectGroup[] = [{ options: [{ value: '__gated__', label: `${REPEATER_MODEL_LABEL} · gated` }] }];
+  const effortGroups: MenuSelectGroup[] = [{
+    options: CHAT_EFFORT_OPTIONS.map((effort) => ({ value: effort, label: effort })),
+  }];
+  const placeholderText = config.mode === 'chat'
+    ? '输入聊天内容...'
+    : hasImages ? '描述如何使用/修改参考图...' : '描述你要生成的画面内容...';
   const selectChatModel = (value: string) => {
     const choice = parseChatModelChoice(value);
     if (!choice) return;
@@ -123,12 +158,15 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
   };
 
   return (
-    <div className={`${COMPOSER_FRAME_CLASS} shrink min-h-0 flex flex-col pb-2 border-t md:border-t-0 border-[#AAA]`}>
-      <div className="w-full py-1.5 md:mb-1">
-        <div className="flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden pb-0 md:pb-0.5">
+    <div className={`${COMPOSER_FRAME_CLASS} flex min-h-0 shrink flex-col pb-8`}>
+      <div className="w-full py-6">
+        {/* -mx-2 bleeds the scroller past its padding so the ring-1 hairlines
+            have room to paint, while controls still land flush with the
+            input row below (px-2 cancels the bleed). */}
+        <div className="scroll-fade-x -mx-2 flex flex-wrap items-center gap-8 overflow-x-auto overflow-y-hidden px-2 py-2 sm:flex-nowrap">
             <div
-              className="grid h-8 w-32 shrink-0 grid-cols-2 overflow-hidden border-2 border-[#AAA] bg-black p-0.5"
-              role="tablist"
+              className="grid h-32 w-128 shrink-0 grid-cols-2 overflow-hidden bg-theme-bg ring-1 ring-theme-fg/30"
+              role="radiogroup"
               aria-label="生成模式"
             >
               {([
@@ -140,17 +178,17 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
                   <button
                     key={mode}
                     type="button"
-                    role="tab"
-                    aria-selected={active}
+                    role="radio"
+                    aria-checked={active}
                     onClick={() => updateConfig('mode', mode)}
                     className={[
-                      'flex h-full min-w-0 cursor-pointer items-center justify-center gap-1 whitespace-nowrap px-1 text-xs font-mono font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-white',
+                      'flex h-full min-w-0 cursor-pointer items-center justify-center gap-4 whitespace-nowrap px-4 font-mono text-body-10 uppercase',
                       active
-                        ? 'bg-[#AAA] text-black'
-                        : 'bg-black text-[#CCC] hover:bg-[#111] hover:text-[#00aaaa]',
+                        ? 'bg-theme-fg text-theme-bg'
+                        : 'text-theme-muted hover:bg-theme-fg/10 hover:text-theme-fg',
                     ].filter(Boolean).join(' ')}
                   >
-                    <span className="w-5 shrink-0 whitespace-nowrap text-left tabular-nums" aria-hidden="true">
+                    <span className="w-20 shrink-0 whitespace-nowrap text-left tabular-nums" aria-hidden="true">
                       {active ? '[x]' : '[ ]'}
                     </span>
                     {label}
@@ -160,72 +198,96 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
             </div>
             {imageModeActive ? (
               <>
-                <select value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : config.model} disabled={lockedRepeaterMode} onChange={e=>updateConfig('model',e.target.value)} className={`${composerSelectClass} min-w-[7.5rem] flex-[0.7]`}>
-                  {lockedRepeaterMode ? <option value={REPEATER_MODEL_LABEL}>{REPEATER_MODEL_LABEL}</option> : (
-                    <>
-                      {!imageModelIsOption && <option value={config.model}>{config.model}</option>}
-                      {imageModelOptions.map(m=>(<option key={m.value} value={m.value}>{m.label}</option>))}
-                    </>
-                  )}
-                </select>
-                <select value={(customSize || !sizeIsPreset)?'__custom__':config.size} onChange={e=>{if(e.target.value==='__custom__')setCustomSize(true);else{setCustomSize(false);updateConfig('size',e.target.value)}}} className={`${composerSelectClass} min-w-[10rem] flex-[1.4]`}>
-                  <optgroup label="AUTO">{SIZE_PRESETS.filter(s=>s.group==='AUTO').map(s=>(<option key={s.value} value={s.value}>{s.value === ORIGINAL_ASPECT_SIZE ? originalAspectLabel : s.label}</option>))}</optgroup>
-                  <optgroup label="1K">{SIZE_PRESETS.filter(s=>s.group==='1K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
-                  <optgroup label="2K">{SIZE_PRESETS.filter(s=>s.group==='2K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
-                  <optgroup label="4K">{SIZE_PRESETS.filter(s=>s.group==='4K').map(s=>(<option key={s.value} value={s.value}>{s.label}</option>))}</optgroup>
-                  <option value="__custom__">自定义...</option>
-                </select>
+                <MenuSelect
+                  ariaLabel="图片模型"
+                  value={lockedRepeaterMode ? '__gated__' : config.model}
+                  groups={lockedRepeaterMode ? gatedGroup : imageModelGroups}
+                  onSelect={(v) => updateConfig('model', v)}
+                  disabled={lockedRepeaterMode}
+                  openUp
+                  className="min-w-100 flex-1 sm:flex-[0.7]"
+                />
+                <MenuSelect
+                  ariaLabel="图片尺寸"
+                  value={(customSize || !sizeIsPreset) ? '__custom__' : config.size}
+                  groups={sizeGroups}
+                  onSelect={(v) => {
+                    if (v === '__custom__') setCustomSize(true);
+                    else { setCustomSize(false); setSizeInvalid(false); updateConfig('size', v); }
+                  }}
+                  openUp
+                  className="min-w-[calc(50%-4px)] flex-1 sm:min-w-120"
+                />
                 {(customSize || !sizeIsPreset) && (
-                  <input
-                    type="text"
-                    value={config.size}
-                    onChange={e=>{updateConfig('size',e.target.value);setSizeInvalid(false)}}
-                    onBlur={e=>setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.target.value.trim()))}
-                    onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if(e.key==='Enter'){e.preventDefault();setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.currentTarget.value.trim()));e.currentTarget.blur()}}}
-                    placeholder="WxH"
-                    title={sizeInvalid ? '格式如 1024x1024' : undefined}
-                    aria-invalid={sizeInvalid || undefined}
-                    className={`h-8 min-w-[5.5rem] w-24 shrink-0 bg-black border-2 ${sizeInvalid ? 'border-[#ff5555]' : 'border-[#00aaaa]'} text-[#CCC] text-xs sm:text-sm px-2 font-mono outline-none`}
-                  />
+                  // Wrap in a MenuSelect-shaped flex item so the input sizes
+                  // exactly like the selects beside it (bare inputs grow wider).
+                  <div className="relative min-w-[calc(50%-4px)] flex-1 sm:min-w-120">
+                    <input
+                      type="text"
+                      value={config.size}
+                      onChange={e=>{updateConfig('size',e.target.value);setSizeInvalid(false)}}
+                      onBlur={e=>setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.target.value.trim()))}
+                      onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if(e.key==='Enter'){e.preventDefault();setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.currentTarget.value.trim()));e.currentTarget.blur()}}}
+                      placeholder="WxH"
+                      aria-label="自定义尺寸"
+                      title={sizeInvalid ? '格式如 1024x1024' : undefined}
+                      aria-invalid={sizeInvalid || undefined}
+                      className={`h-32 w-full bg-theme-bg px-8 font-mono text-body-14 text-theme-fg outline-none ring-1 ${sizeInvalid ? 'ring-error' : 'ring-theme-fg/30 focus:ring-theme-fg'}`}
+                    />
+                  </div>
                 )}
               </>
             ) : (
               <>
-                <select
-                  value={lockedRepeaterMode ? REPEATER_MODEL_LABEL : activeChatChoice}
+                <MenuSelect
+                  ariaLabel="聊天模型"
+                  value={lockedRepeaterMode ? '__gated__' : activeChatChoice}
+                  groups={lockedRepeaterMode ? gatedGroup : chatModelGroups}
+                  onSelect={selectChatModel}
                   disabled={lockedRepeaterMode}
-                  onChange={e=>selectChatModel(e.target.value)}
-                  className={`${composerSelectClass} min-w-[12rem] flex-1`}
-                >
-                  {lockedRepeaterMode ? <option value={REPEATER_MODEL_LABEL}>{REPEATER_MODEL_LABEL}</option> : (
-                    <>
-                      {!chatModelIsOption && <option value={activeChatChoice}>{activeChatModel}</option>}
-                      <optgroup label="OpenAI Compatible">
-                        {openAIChatModelOptions.map(m=>(
-                          <option key={`openai:${m.value}`} value={encodeChatModelChoice('openai', m.value)}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="Claude Compatible">
-                        {claudeChatModelOptions.map(m=>(
-                          <option key={`claude:${m.value}`} value={encodeChatModelChoice('claude', m.value)}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                    </>
-                  )}
-                </select>
+                  openUp
+                  className="min-w-160 flex-1"
+                />
+                <MenuSelect
+                  ariaLabel="推理强度"
+                  value={config.chatEffort}
+                  groups={effortGroups}
+                  onSelect={(v) => updateConfig('chatEffort', v)}
+                  disabled={lockedRepeaterMode || activeChatFormat === 'claude'}
+                  openUp
+                  className="min-w-[calc(50%-4px)] flex-1 sm:min-w-100 sm:flex-[0.5]"
+                />
               </>
             )}
         </div>
       </div>
 
-      <div className="w-full flex items-stretch gap-2 shrink-0">
-        <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={kd} rows={2} aria-label="Prompt" className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] font-mono text-sm sm:text-base p-2 sm:p-3 resize-none outline-none min-h-[60px] sm:min-h-0" placeholder={config.mode === 'chat' ? '输入聊天内容...' : hasImages ? '描述如何使用/修改参考图...' : '描述你要生成的画面内容...'} />
-        <div className="flex flex-col gap-2 w-10 sm:w-10 shrink-0">
-          <button onClick={()=>fileInputRef.current?.click()} className="btn-retro bg-[#00aaaa] flex-1 flex items-center justify-center" aria-label="添加参考图"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" className="w-5 h-5"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" strokeLinecap="square" strokeWidth="2" d="m20.506 12.313l-7.778 7.778a6 6 0 0 1-8.485-8.485l7.778-7.778a4 4 0 1 1 5.657 5.657L9.9 17.263a2 2 0 1 1-2.829-2.829l7.071-7.07"/></svg></button>
+      <div className="flex w-full shrink-0 items-stretch gap-8">
+        {/* Auto-growing field: the invisible sizer span drives the grid row
+            height; the textarea overlays it and scrolls past the ~10-line cap. */}
+        <div className="grid min-w-0 flex-1 bg-theme-bg ring-1 ring-theme-fg/30 focus-within:ring-theme-fg">
+          <span
+            aria-hidden
+            className="invisible col-start-1 row-start-1 max-h-192 min-h-56 overflow-hidden whitespace-pre-wrap wrap-anywhere p-8 font-mono text-body-14"
+          >
+            {`${prompt || placeholderText} `}
+          </span>
+          <textarea
+            value={prompt}
+            onChange={e=>setPrompt(e.target.value)}
+            onKeyDown={kd}
+            rows={1}
+            aria-label="提示词"
+            className="col-start-1 row-start-1 h-full w-0 min-w-full resize-none overflow-y-auto wrap-anywhere bg-transparent p-8 font-mono text-body-14 text-theme-fg outline-none [scrollbar-width:none]"
+            placeholder={placeholderText}
+          />
+        </div>
+        <div className="flex w-40 shrink-0 flex-col gap-8">
+          <button onClick={()=>fileInputRef.current?.click()} className="flex flex-1 cursor-pointer items-center justify-center text-theme-dim ring-1 ring-theme-fg/30 hover:bg-theme-fg/10 hover:text-theme-fg" aria-label="添加参考图"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" className="size-16"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" strokeLinecap="square" strokeWidth="2" d="m20.506 12.313l-7.778 7.778a6 6 0 0 1-8.485-8.485l7.778-7.778a4 4 0 1 1 5.657 5.657L9.9 17.263a2 2 0 1 1-2.829-2.829l7.071-7.07"/></svg></button>
           {busy && onCancel ? (
-            <button onClick={onCancel} className="btn-retro bg-[#aa0000] flex-1 flex items-center justify-center font-bold text-white" aria-label="停止">■</button>
+            <button onClick={onCancel} className="flex flex-1 cursor-pointer items-center justify-center bg-error font-semibold text-black hover:bg-transparent hover:text-error ring-1 ring-transparent hover:ring-error" aria-label="停止"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" className="size-12" aria-hidden="true"><rect width="12" height="12" fill="currentColor" /></svg></button>
           ) : (
-            <button onClick={send} disabled={busy||!prompt.trim()} className="btn-retro bg-[#00aaaa] disabled:opacity-50 disabled:cursor-not-allowed flex-1 flex items-center justify-center font-bold" aria-label="发送">{busy?<span className="animate-pulse">...</span>:'>'}</button>
+            <button onClick={send} disabled={busy||!prompt.trim()} className="flex flex-1 cursor-pointer items-center justify-center border border-transparent bg-theme-fg font-semibold text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg disabled:cursor-not-allowed disabled:opacity-40" aria-label="发送">{busy?<span className="animate-pulse motion-reduce:animate-none">...</span>:'>'}</button>
           )}
         </div>
         <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e=>{if(e.target.files?.length){addFiles(e.target.files).catch(()=>{});e.target.value=''}}} />

@@ -47,24 +47,24 @@ function MarkdownCodeBlock({ children }: { children: React.ReactNode }) {
       ? '失败'
       : '复制';
   const statusClass = copyStatus === 'copied'
-    ? 'border-[#00aaaa] text-[#00aaaa]'
+    ? 'ring-theme-fg text-theme-fg'
     : copyStatus === 'failed'
-      ? 'border-[#ff5555] text-[#ff5555]'
-      : 'border-[#555] text-[#AAA] hover:border-[#00aaaa] hover:text-[#00aaaa]';
+      ? 'ring-error/60 text-error'
+      : 'ring-theme-fg/30 text-theme-dim hover:ring-theme-fg hover:text-theme-fg';
 
   return (
-    <div className="relative my-2 bg-[#0a0a0a] border border-[#666]">
+    <div className="relative my-8 bg-theme-fg/10 ring-1 ring-theme-fg/30">
       <button
         type="button"
         onClick={() => { void handleCopy(); }}
         disabled={!codeText}
-        className={`absolute right-1 top-1 z-10 border bg-black px-2 py-0.5 text-[0.65rem] leading-4 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${statusClass}`}
+        className={`absolute right-4 top-4 z-10 cursor-pointer bg-theme-bg px-8 py-2 font-mono text-body-10 uppercase ring-1 disabled:cursor-not-allowed disabled:opacity-40 ${statusClass}`}
         aria-label={copyStatus === 'copied' ? '已复制代码' : copyStatus === 'failed' ? '复制代码失败' : '复制代码'}
         title={copyStatus === 'copied' ? '已复制' : copyStatus === 'failed' ? '复制失败' : '复制代码'}
       >
         {buttonText}
       </button>
-      <pre className="overflow-x-auto p-2 pt-8">
+      <pre className="overflow-x-auto p-8 pt-28">
         {children}
       </pre>
     </div>
@@ -83,13 +83,13 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
           const isBlock = /language-/.test(className || '') || extractText(children).includes('\n') || fenced;
           if (!isBlock) {
             return (
-              <code className="bg-[#222] text-[#00ffaa] px-1 py-0.5 border border-[#444] text-xs" {...props}>
+              <code className="bg-theme-fg/10 px-2 py-1 font-mono text-body-10 text-theme-fg ring-1 ring-theme-fg/30" {...props}>
                 {children}
               </code>
             );
           }
           return (
-            <code className={`${className || ''} text-xs text-[#CCC]`} {...props}>
+            <code className={`${className || ''} font-mono text-body-10 text-theme-fg`} {...props}>
               {children}
             </code>
           );
@@ -99,42 +99,42 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
         },
         a({ href, children }) {
           return (
-            <a href={href} target="_blank" rel="noopener noreferrer" className="text-[#00aaaa] underline break-all">
+            <a href={href} target="_blank" rel="noopener noreferrer" className="break-all text-theme-fg underline underline-offset-2 hover:decoration-dashed">
               {children}
             </a>
           );
         },
         ul({ children }) {
-          return <ul className="list-disc list-inside ml-2 my-1">{children}</ul>;
+          return <ul className="my-4 ml-8 list-inside list-disc">{children}</ul>;
         },
         ol({ children }) {
-          return <ol className="list-decimal list-inside ml-2 my-1">{children}</ol>;
+          return <ol className="my-4 ml-8 list-inside list-decimal">{children}</ol>;
         },
         li({ children }) {
-          return <li className="my-0.5">{children}</li>;
+          return <li className="my-2">{children}</li>;
         },
-        h1({ children }) { return <h1 className="text-[#00ffcc] text-base font-bold mt-2 mb-1">{children}</h1>; },
-        h2({ children }) { return <h2 className="text-[#00ffcc] text-sm font-bold mt-2 mb-1">{children}</h2>; },
-        h3({ children }) { return <h3 className="text-[#00ffcc] text-sm font-bold mt-1 mb-0.5">{children}</h3>; },
-        h4({ children }) { return <h4 className="text-[#00ffcc] text-sm mt-1 mb-0.5">{children}</h4>; },
-        p({ children }) { return <p className="my-1">{children}</p>; },
+        h1({ children }) { return <h1 className="mb-4 mt-8 font-semibold text-theme-fg">{children}</h1>; },
+        h2({ children }) { return <h2 className="mb-4 mt-8 font-semibold text-theme-fg">{children}</h2>; },
+        h3({ children }) { return <h3 className="mb-2 mt-4 font-semibold text-theme-fg">{children}</h3>; },
+        h4({ children }) { return <h4 className="mb-2 mt-4 font-semibold text-theme-fg">{children}</h4>; },
+        p({ children }) { return <p className="my-4">{children}</p>; },
         blockquote({ children }) {
-          return <blockquote className="border-l-2 border-[#00aaaa] pl-2 my-1 text-[#999]">{children}</blockquote>;
+          return <blockquote className="my-4 border-l-2 border-theme-fg/30 pl-8 text-theme-dim">{children}</blockquote>;
         },
-        hr() { return <hr className="border-[#666] my-2" />; },
+        hr() { return <hr className="my-8 border-theme-fg/30" />; },
         table({ children }) {
-          return <table className="border-collapse my-2 text-xs">{children}</table>;
+          return <table className="my-8 border-collapse font-mono text-body-10">{children}</table>;
         },
         th({ children }) {
-          return <th className="border border-[#666] px-2 py-1 bg-[#222]">{children}</th>;
+          return <th className="bg-theme-fg/10 px-8 py-4 ring-1 ring-theme-fg/30">{children}</th>;
         },
         td({ children }) {
-          return <td className="border border-[#666] px-2 py-1">{children}</td>;
+          return <td className="px-8 py-4 ring-1 ring-theme-fg/30">{children}</td>;
         },
         img({ src, alt }) {
           return <img src={typeof src === 'string' ? src : undefined} alt={alt || ''} className="max-w-full" />;
         },
-        strong({ children }) { return <strong className="text-white font-bold">{children}</strong>; },
+        strong({ children }) { return <strong className="font-semibold text-theme-fg">{children}</strong>; },
         em({ children }) { return <em className="italic">{children}</em>; },
       }}
     >

@@ -3,25 +3,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
-import { REPEATER_MODEL_LABEL } from '@/lib/constants';
-import { getActiveChatModel } from '@/lib/chat-config';
 
 const MODEL_GATE_UNLOCK_TAPS = 3;
 
-export default function StatusBar() {
-  const { config, modelGateEnabled, modelGateUnlocked, setModelGateUnlocked } = useConfig();
+// Version stamp in the footer — triple-tap it to unlock the model gate.
+export default function VersionTap() {
+  const { modelGateEnabled, modelGateUnlocked, setModelGateUnlocked } = useConfig();
   const { setStatus } = useChat();
-  const activeModel = config.mode === 'chat' ? getActiveChatModel(config) : config.model;
   const [tapping, setTapping] = useState(false);
   const [locallyUnlocked, setLocallyUnlocked] = useState(false);
+  const titleUnlocked = modelGateUnlocked || locallyUnlocked;
   const localTapsRef = useRef(0);
   const pendingTapsRef = useRef(0);
   const processingRef = useRef(false);
   const mountedRef = useRef(true);
-  const titleUnlocked = modelGateUnlocked || locallyUnlocked;
-  const lockedRepeaterMode = modelGateEnabled && !titleUnlocked;
-  const displayModel = lockedRepeaterMode ? REPEATER_MODEL_LABEL : activeModel;
-  const modeLabel = config.mode === 'chat' ? '聊天' : '图片';
 
   useEffect(() => {
     mountedRef.current = true;
@@ -62,7 +57,8 @@ export default function StatusBar() {
         setModelGateUnlocked(true);
         setStatus('模型访问已解锁', 'ok');
       } else {
-        setStatus('标题栏确认已记录', 'warn');
+        const taps = Math.min(localTapsRef.current, MODEL_GATE_UNLOCK_TAPS);
+        setStatus(`版本号确认已记录 ${taps}/${MODEL_GATE_UNLOCK_TAPS}`, 'warn');
       }
     } catch {
       pendingTapsRef.current = 0;
@@ -87,26 +83,16 @@ export default function StatusBar() {
     void flushPendingTaps();
   };
 
+  if (!modelGateEnabled) return <span className="shrink-0 text-theme-dim">v1.0</span>;
+
   return (
-    <header className="flex-shrink-0 bg-[#aa0000] text-white px-2 py-1 font-mono text-sm font-bold flex items-center justify-start gap-2">
-      <span>{lockedRepeaterMode ? '复读机' : '灵魂画师'}</span>
-      <span className="text-[#ffff55]">::</span>
-      <span className="text-[#CCC]">{modeLabel}</span>
-      <span className="text-[#ffff55]">::</span>
-      <span className="text-[#CCC]">{displayModel}</span>
-      <span className="text-[#ffff55]">::</span>
-      {modelGateEnabled ? (
-        <button
-          type="button"
-          onClick={handleVersionClick}
-          className={`text-[#CCC] cursor-pointer hover:text-white ${tapping ? 'animate-pulse' : ''}`}
-          title="版本信息"
-        >
-          v1.0
-        </button>
-      ) : (
-        <span className="text-[#CCC]">v1.0</span>
-      )}
-    </header>
+    <button
+      type="button"
+      onClick={handleVersionClick}
+      className={`hit-x-8 hit-y-4 shrink-0 cursor-pointer text-theme-dim hover:text-theme-fg ${tapping ? 'animate-pulse motion-reduce:animate-none' : ''}`}
+      title="版本信息"
+    >
+      v1.0
+    </button>
   );
 }

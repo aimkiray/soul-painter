@@ -13,6 +13,7 @@ describe('chat sync message metadata', () => {
         model: 'image-model',
         chatModel: 'chat-model',
         chatApiFormat: 'openai',
+        chatEffort: 'high',
         size: '1024x1024',
         n: 1,
         quality: 'high',
@@ -33,6 +34,7 @@ describe('chat sync message metadata', () => {
     expect(decoded.thinkingDone).toBe(false);
     expect(decoded.editedAt).toBe(1234);
     expect(decoded.request?.mode).toBe('edits');
+    expect(decoded.request?.chatEffort).toBe('high');
     expect(decoded.request?.referenceImages).toHaveLength(1);
   });
 

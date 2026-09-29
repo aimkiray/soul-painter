@@ -4,6 +4,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useImages } from '@/contexts/ImageContext';
+import { useWindowDrag } from '@/hooks/useWindowDrag';
 import Modal from './Modal';
 
 interface ImageEditorProps {
@@ -14,6 +15,7 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
   const { images, editingIndex, persistMask, closeEditor } = useImages();
   const [tool, setTool] = useState<'brush' | 'eraser'>('brush');
   const [brushSize, setBrushSize] = useState(32);
+  const { dragStyle, onTitlePointerDown } = useWindowDrag();
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -250,69 +252,85 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
       id={`image-editor-${editingIndex}`}
       onClose={handleCancel}
       ariaLabel={`编辑第 ${editingIndex + 1} 张图片`}
-      backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-2 bg-black/60"
-      panelClassName="relative bg-black w-full max-w-lg border-2 border-[#AAA] font-mono text-sm"
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8"
+      panelClassName="relative w-full max-w-lg bg-theme-bg font-mono text-body-14 text-theme-fg ring-1 ring-theme-fg/30"
+      panelStyle={dragStyle}
       closeOnBackdropClick={false}
     >
-        <div className="bg-[#0A0] text-white px-2 py-1 flex items-center justify-between">
-          <span>编辑第 {editingIndex + 1} 张{imageSizeLabel}</span>
-          <button onClick={handleCancel} className="text-white hover:text-[#ff5555] cursor-pointer" aria-label="取消编辑">
-            [X]
+        {/* window title bar — drag handle */}
+        <div
+          className="flex h-26 shrink-0 cursor-grab touch-none items-center justify-between gap-4 border-b border-theme-fg/30 px-8"
+          onPointerDown={onTitlePointerDown}
+            title="拖拽移动 · 双击复位"
+        >
+          <span className="truncate">~/refs/{editingIndex + 1}/mask{imageSizeLabel}</span>
+          <button
+            onClick={handleCancel}
+            onPointerDown={(event) => event.stopPropagation()}
+            className="hit-x-4 hit-y-4 flex size-16 shrink-0 cursor-pointer items-center justify-center rounded-full border border-transparent bg-theme-fg text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg"
+            aria-label="取消编辑"
+          >
+            <svg viewBox="0 0 24 24" className="size-full shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
         </div>
 
-        <div className="p-2">
-          <div className="flex justify-center bg-black p-1">
+        <div className="p-8">
+          <div className="flex justify-center bg-theme-bg p-4">
             <div className="relative inline-block">
               <img
                 ref={imgRef}
                 src={image.objectUrl}
                 alt="editing"
-                className="max-w-full max-h-[340px] block select-none"
+                className="block max-h-340 max-w-full select-none"
                 loading="lazy" decoding="async"
                 draggable={false}
               />
               <canvas
                 ref={canvasRef}
-                className="absolute top-0 left-0 touch-none cursor-crosshair"
+                className="absolute left-0 top-0 cursor-crosshair touch-none"
               />
             </div>
           </div>
 
-          <div className="flex items-center gap-2 mt-3 flex-wrap">
+          <div className="mt-12 flex flex-wrap items-center gap-8">
             {/* Segmented tool toggle */}
-            <div className="flex shrink-0">
+            <div className="flex shrink-0 ring-1 ring-theme-fg/30" role="radiogroup" aria-label="编辑工具">
               <button
                 onClick={() => setTool('brush')}
-                className={`px-2.5 py-1 text-xs border-2 border-[#AAA] font-mono cursor-pointer ${tool === 'brush' ? 'bg-[#00aaaa] text-black border-[#00aaaa]' : 'bg-black text-[#CCC]'}`}
+                role="radio"
+                aria-checked={tool === 'brush'}
+                className={`cursor-pointer px-10 py-4 text-body-10 uppercase ${tool === 'brush' ? 'bg-theme-fg text-theme-bg' : 'text-theme-dim hover:bg-theme-fg/10 hover:text-theme-fg'}`}
               >笔刷</button>
               <button
                 onClick={() => setTool('eraser')}
-                className={`px-2.5 py-1 text-xs border-2 border-[#AAA] font-mono cursor-pointer -ml-[2px] ${tool === 'eraser' ? 'bg-[#00aaaa] text-black border-[#00aaaa]' : 'bg-black text-[#CCC]'}`}
+                role="radio"
+                aria-checked={tool === 'eraser'}
+                className={`cursor-pointer px-10 py-4 text-body-10 uppercase ${tool === 'eraser' ? 'bg-theme-fg text-theme-bg' : 'text-theme-dim hover:bg-theme-fg/10 hover:text-theme-fg'}`}
               >擦除</button>
             </div>
 
             {/* Brush size slider */}
-            <div className="flex items-center gap-0 text-xs text-[#CCC] flex-1 min-w-0">
+            <div className="flex min-w-0 flex-1 items-center gap-4 text-body-10 text-theme-dim">
               <input
                 type="range"
                 min={8}
                 max={100}
+                aria-label="笔刷大小"
                 value={brushSize}
                 onChange={(e) => setBrushSize(parseInt(e.target.value, 10))}
-                className="flex-1 min-w-[60px] accent-[#00aaaa]"
+                className="min-w-60 flex-1 accent-theme-fg"
               />
-              <span className="w-6 text-right font-mono shrink-0">{brushSize}</span>
+              <span className="w-24 shrink-0 text-right tabular-nums">{brushSize}</span>
             </div>
 
             {/* Actions */}
-            <button onClick={handleClear} className="btn-retro px-2.5 py-1 text-xs shrink-0">
+            <button onClick={handleClear} className="shrink-0 cursor-pointer px-10 py-4 text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10">
               清除
             </button>
-            <button onClick={handleCancel} className="btn-retro px-2.5 py-1 text-xs shrink-0">
+            <button onClick={handleCancel} className="shrink-0 cursor-pointer px-10 py-4 text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10">
               取消
             </button>
-            <button onClick={handleDone} className="btn-retro bg-[#00aaaa] text-xs px-3 py-1 shrink-0">
+            <button onClick={handleDone} className="shrink-0 cursor-pointer border border-transparent bg-theme-fg px-12 py-4 text-body-10 uppercase text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg">
               保存
             </button>
           </div>

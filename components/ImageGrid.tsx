@@ -13,17 +13,24 @@ interface ImageGridProps {
 }
 
 // maskHasStrokes is persisted by persistMask; for refs written before that
-// field existed, fall back to a single canvas scan.
+// field existed, fall back to a single canvas scan. canvasHasStrokes walks
+// every pixel, so the legacy-ref result is cached per objectUrl.
+const maskScanCache = new Map<string, boolean>();
+
 function imageHasMaskStrokes(img: ImageRef): boolean {
   if (!img.maskCanvas) return false;
-  return img.maskHasStrokes ?? canvasHasStrokes(img.maskCanvas);
+  if (img.maskHasStrokes !== undefined) return img.maskHasStrokes;
+  const key = img.objectUrl || '';
+  const cached = maskScanCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = canvasHasStrokes(img.maskCanvas);
+  maskScanCache.set(key, result);
+  return result;
 }
 
 const Placeholder = ({ className }: { className?: string }) => (
-  <div className={`bg-black border-2 border-dashed border-[#555] flex items-center justify-center ${className || ''}`}>
-    <svg viewBox="0 0 100 100" className="w-3/4 h-3/4 animate-pulse">
-      <text x="50" y="54" textAnchor="middle" fontSize="14" fill="#888">处理中</text>
-    </svg>
+  <div className={`flex items-center justify-center border border-dashed border-theme-fg/30 ${className || ''}`}>
+    <span className="animate-pulse font-mono text-body-10 uppercase text-theme-muted motion-reduce:animate-none">处理中</span>
   </div>
 );
 
@@ -31,22 +38,18 @@ const COMPRESSED_BADGE_MS = 3000;
 
 function ThumbnailEditButton({
   index,
-  layout,
   onEdit,
 }: {
   index: number;
-  layout: ImageGridProps['layout'];
   onEdit: (index: number) => void;
 }) {
-  const edgeBorderClass = layout === 'strip' ? 'border-x-2 border-b-2 border-[#00aaaa]' : '';
-
   return (
     <button
       onClick={(e) => {
         e.stopPropagation();
         onEdit(index);
       }}
-      className={`absolute inset-x-0 bottom-0 h-7 bg-black/70 ${edgeBorderClass} text-[#00aaaa] text-xs font-mono flex items-center justify-center cursor-pointer hover:bg-[#111] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00aaaa] focus-visible:ring-inset`}
+      className="absolute inset-x-0 bottom-0 flex h-22 cursor-pointer items-center justify-center border-t border-theme-fg/30 bg-theme-bg/80 font-mono text-body-10 uppercase text-theme-fg hover:bg-theme-fg hover:text-theme-bg"
       aria-label={`编辑第 ${index + 1} 张图片`}
     >
       编辑
@@ -129,43 +132,54 @@ export default function ImageGrid({ layout }: ImageGridProps) {
   const selectedCount = selectedIndices.size;
   if (layout === 'sidebar') {
     return (
-      <div className="bg-black border-l-2 border-[#AAA] font-mono text-xs flex flex-col h-full w-[256px] shrink-0">
-        <div className="flex items-center justify-between px-2 py-1 border-b border-[#AAA] shrink-0">
-          <span className="text-[#00aaaa] font-bold">
-            图片{selectedCount > 0 && <span className="text-[#888] font-normal ml-1">已选 {selectedCount}</span>}
+      <div className="flex h-full w-256 shrink-0 flex-col border-l border-theme-fg/30 bg-theme-bg font-mono">
+        {/* window title bar */}
+        <div className="flex h-26 shrink-0 items-center justify-between gap-4 border-b border-theme-fg/30 px-8">
+          <span className="truncate">
+            ~/refs
+            {selectedCount > 0 && <span className="ml-4 text-theme-muted">已选 {selectedCount}</span>}
           </span>
-          <button onClick={() => { const indices = [...selectedIndices].sort((a, b) => b - a); indices.forEach((idx) => removeImage(idx)); }} className="text-[#ff5555] hover:text-[#ff5555] text-xs cursor-pointer" disabled={selectedCount === 0}>删除选中</button>
+          <button
+            onClick={() => { const indices = [...selectedIndices].sort((a, b) => b - a); indices.forEach((idx) => removeImage(idx)); }}
+            className="hit-y-4 cursor-pointer text-body-10 uppercase text-error disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={selectedCount === 0}
+          >
+            删除选中
+          </button>
         </div>
 
-        <div className="overflow-y-auto flex-1 p-2 space-y-1">
-          <div className="grid grid-cols-2 gap-1">
+        <div className="scroll-fade-y flex-1 overflow-y-auto p-8">
+          <div className="grid grid-cols-2 gap-4">
             {images.map((img, i) => {
               const isSelected = selectedIndices.has(i);
               const hasMask = imageHasMaskStrokes(img);
               const showCompressedBadge = compressedBadgeUrls.has(img.objectUrl);
               return (
-                <div
+                <button
                   key={img.objectUrl || `image-${i}`}
+                  type="button"
                   onClick={() => toggleSelect(i)}
-                  className={`relative aspect-square overflow-hidden bg-black cursor-pointer border-2 ${isSelected ? 'border-[#00aaaa]' : 'border-[#555]'}`}
+                  aria-pressed={isSelected}
+                  aria-label={`参考图 ${i + 1}`}
+                  className={`relative aspect-square w-full cursor-pointer overflow-hidden bg-theme-bg ring-1 ${isSelected ? 'ring-theme-fg' : 'ring-theme-fg/30'}`}
                 >
                   <img
-                    src={img.objectUrl} alt={`ref ${i + 1}`}
-                    className="w-full h-full object-cover"
+                    src={img.objectUrl} alt=""
+                    className="h-full w-full object-cover"
                     loading="lazy" decoding="async"
                   />
                   {hasMask && (
                     <canvas
                       ref={(el) => { if (!el || !img.maskCanvas) return; el.width = img.maskCanvas.width; el.height = img.maskCanvas.height; el.getContext('2d')!.drawImage(img.maskCanvas, 0, 0, img.maskCanvas.width, img.maskCanvas.height); }}
-                      className="absolute inset-0 w-full h-full object-cover opacity-50 pointer-events-none"
+                      className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-50"
                     />
                   )}
-                  <span className="absolute top-0.5 left-0.5 bg-black/80 text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">#{i + 1}</span>
-                  {isSelected && <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#00aaaa]"></span>}
-                  {showCompressedBadge && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
-                  {hasMask && <span className={`absolute left-0.5 bg-[#ff5555] text-white text-[0.7rem] px-0.5 py-0.5 leading-none ${isSelected ? 'bottom-7' : 'bottom-0.5'}`}>涂抹</span>}
-                  {isSelected && <ThumbnailEditButton index={i} layout={layout} onEdit={openEditor} />}
-                </div>
+                  <span className="absolute left-2 top-2 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-fg ring-1 ring-theme-fg/30">#{i + 1}</span>
+                  {isSelected && <span className="absolute right-2 top-2 size-10 bg-theme-fg"></span>}
+                  {showCompressedBadge && <span className="absolute right-2 top-16 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-dim ring-1 ring-theme-fg/30">已缩小</span>}
+                  {hasMask && <span className={`absolute left-2 flex items-center bg-theme-fg px-2 py-2 text-body-10 leading-none text-theme-bg ${isSelected ? 'bottom-24' : 'bottom-2'}`}>mask</span>}
+                  {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} />}
+                </button>
               );
             })}
             {pendingCount > 0 && Array.from({ length: pendingCount }).map((_, i) => (
@@ -178,50 +192,60 @@ export default function ImageGrid({ layout }: ImageGridProps) {
   }
 
   return (
-    <div className={`${COMPOSER_FRAME_CLASS} bg-black border-t border-[#AAA] pb-2`}>
-      <div className="flex items-center justify-between gap-2 py-1.5">
-        <span className="flex items-center gap-2">
-          <button onClick={() => setCollapsed(!collapsed)} className="text-xs sm:text-sm text-white font-mono cursor-pointer">
-            {collapsed ? '图片 ▸' : '图片 ▾'}
+    <div className={`${COMPOSER_FRAME_CLASS} border-t border-theme-fg/30 pb-8 font-mono`}>
+      <div className="flex items-center justify-between gap-8 py-6">
+        <span className="flex items-center gap-8">
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            className="hit-y-4 cursor-pointer text-body-10 uppercase text-theme-fg"
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? '~/refs ▸' : '~/refs ▾'}
           </button>
           {selectedCount > 0 && (
-            <span className="text-[#00aaaa] text-xs sm:text-sm font-mono">已选 {selectedCount}</span>
+            <span className="text-body-10 uppercase text-theme-muted">已选 {selectedCount}</span>
           )}
         </span>
-        <span className="flex items-center gap-2">
-          <button onClick={() => { const indices = [...selectedIndices].sort((a, b) => b - a); indices.forEach((idx) => removeImage(idx)); }} className="text-xs sm:text-sm text-[#ff5555] font-mono cursor-pointer" disabled={selectedCount === 0}>删除选中</button>
+        <span className="flex items-center gap-8">
+          <button onClick={() => { const indices = [...selectedIndices].sort((a, b) => b - a); indices.forEach((idx) => removeImage(idx)); }} className="hit-y-4 cursor-pointer text-body-10 uppercase text-error disabled:cursor-not-allowed disabled:opacity-40" disabled={selectedCount === 0}>删除选中</button>
         </span>
       </div>
 
       {!collapsed && (
-        <div className="flex items-center gap-1.5 py-1 overflow-x-auto">
+        <div className="scroll-fade-x -mx-2 flex items-center gap-6 overflow-x-auto px-2 py-4">
           {images.map((img, i) => {
             const isSelected = selectedIndices.has(i);
             const showCompressedBadge = compressedBadgeUrls.has(img.objectUrl);
             return (
-              <div key={img.objectUrl || `image-${i}`} className="relative shrink-0">
+              <button
+                key={img.objectUrl || `image-${i}`}
+                type="button"
+                onClick={() => toggleSelect(i)}
+                aria-pressed={isSelected}
+                aria-label={`参考图 ${i + 1}`}
+                className="relative shrink-0"
+              >
                 <img
                   src={img.objectUrl}
-                  alt={`ref ${i + 1}`}
-                  onClick={() => toggleSelect(i)}
-                  className={`w-16 h-16 object-cover cursor-pointer border-2 ${isSelected ? 'border-[#00aaaa]' : 'border-[#AAA]'}`}
+                  alt=""
+                  className={`size-64 cursor-pointer object-cover ring-1 ${isSelected ? 'ring-theme-fg' : 'ring-theme-fg/30'}`}
                   loading="lazy" decoding="async"
                 />
                 {img.maskCanvas && imageHasMaskStrokes(img) && (
                   <canvas
                     ref={(el) => { if (!el || !img.maskCanvas) return; el.width = img.maskCanvas.width; el.height = img.maskCanvas.height; el.getContext('2d')!.drawImage(img.maskCanvas, 0, 0, img.maskCanvas.width, img.maskCanvas.height); }}
-                    className="absolute inset-0 w-full h-full object-cover opacity-50 pointer-events-none"
+                    className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-50"
                   />
                 )}
-                <span className="absolute top-0.5 left-0.5 bg-black/80 text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">#{i + 1}</span>
-                {isSelected && <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#00aaaa]"></span>}
-                {showCompressedBadge && <span className="absolute top-4 right-0.5 bg-[#A40] text-white text-[0.7rem] px-0.5 leading-none h-3 flex items-center">已缩小</span>}
-                {isSelected && <ThumbnailEditButton index={i} layout={layout} onEdit={openEditor} />}
-              </div>
+                <span className="absolute left-2 top-2 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-fg ring-1 ring-theme-fg/30">#{i + 1}</span>
+                {isSelected && <span className="absolute right-2 top-2 size-10 bg-theme-fg"></span>}
+                {showCompressedBadge && <span className="absolute right-2 top-16 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-dim ring-1 ring-theme-fg/30">已缩小</span>}
+                {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} />}
+              </button>
             );
           })}
           {pendingCount > 0 && Array.from({ length: pendingCount }).map((_, i) => (
-            <Placeholder key={`mph-${i}`} className="w-16 h-16 shrink-0" />
+            <Placeholder key={`mph-${i}`} className="size-64 shrink-0" />
           ))}
         </div>
       )}

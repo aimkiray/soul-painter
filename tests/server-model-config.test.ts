@@ -4,9 +4,17 @@ import { getServerModelConfig } from '@/lib/server-model-config';
 describe('getServerModelConfig', () => {
   it('keeps the built-in defaults when model env vars are absent', () => {
     expect(getServerModelConfig({})).toEqual({
-      openAIChatModels: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
+      openAIChatModels: [
+        'gpt-5.6-sol',
+        'gpt-5.6-luna',
+        'gpt-5.6',
+        'gpt-5.5',
+        'gpt-6-astra',
+        'gpt-6-luna',
+        'codex-auto-review',
+      ],
       defaultOpenAIChatModel: 'gpt-5.6-sol',
-      defaultOpenAITitleModel: 'gpt-5.6-terra',
+      defaultOpenAITitleModel: 'gpt-5.6-sol',
       claudeChatModels: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'],
       defaultClaudeChatModel: 'claude-sonnet-5',
       defaultClaudeTitleModel: 'claude-haiku-4-5',

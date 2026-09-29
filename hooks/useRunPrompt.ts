@@ -166,6 +166,7 @@ export function useRunPrompt() {
   const activeRunIdsRef = useRef<Set<string>>(new Set());
   const runEventControllersRef = useRef<Map<string, AbortController>>(new Map());
   const applyRunToChatRef = useRef<(run: ServerRunPublicRecord) => void>(() => undefined);
+  const dispatchRunToChatRef = useRef<(run: ServerRunPublicRecord) => void>(() => undefined);
   // Runs this tab submitted — the shared pending list can be clobbered by
   // another tab's read-modify-write, so ownership is tracked separately.
   const ownedRunsRef = useRef<Map<string, PendingServerRunRef>>(new Map());
@@ -174,6 +175,10 @@ export function useRunPrompt() {
   // Last applied updatedAt per run — a stale record must not clobber a newer one.
   const lastAppliedRunStampRef = useRef<Map<string, number>>(new Map());
   const pendingRegenerateMessageIdRef = useRef<string | null>(null);
+  // Streaming events are cumulative snapshots — coalesce bursts and apply only
+  // the latest record per run so each SSE chunk doesn't re-render the chat.
+  const runApplyQueueRef = useRef<Map<string, ServerRunPublicRecord>>(new Map());
+  const runApplyFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
@@ -240,7 +245,7 @@ export function useRunPrompt() {
           for (const block of blocks) {
             const run = parseRunEventBlock(block);
             if (!run) continue;
-            applyRunToChatRef.current(run);
+            dispatchRunToChatRef.current(run);
             if (isFinishedServerRun(run)) return;
           }
         }
@@ -249,7 +254,7 @@ export function useRunPrompt() {
         if (tail) buffer += tail;
         if (buffer.trim()) {
           const run = parseRunEventBlock(buffer);
-          if (run) applyRunToChatRef.current(run);
+          if (run) dispatchRunToChatRef.current(run);
         }
       } catch {
         // Polling remains the fallback when the streaming subscription fails.
@@ -332,6 +337,31 @@ export function useRunPrompt() {
   useEffect(() => {
     applyRunToChatRef.current = applyRunToChat;
   }, [applyRunToChat]);
+
+  const flushQueuedRuns = useCallback(() => {
+    runApplyFlushTimerRef.current = null;
+    const queued = [...runApplyQueueRef.current.values()];
+    runApplyQueueRef.current.clear();
+    for (const run of queued) applyRunToChatRef.current(run);
+  }, []);
+
+  // Terminal states jump the queue — a finished run must apply now, and it
+  // discards any still-queued intermediate snapshot for the same run.
+  const dispatchRunToChat = useCallback((run: ServerRunPublicRecord) => {
+    if (!isRunningServerRun(run)) {
+      runApplyQueueRef.current.delete(run.id);
+      applyRunToChatRef.current(run);
+      return;
+    }
+    runApplyQueueRef.current.set(run.id, run);
+    if (!runApplyFlushTimerRef.current) {
+      runApplyFlushTimerRef.current = setTimeout(flushQueuedRuns, 120);
+    }
+  }, [flushQueuedRuns]);
+
+  useEffect(() => {
+    dispatchRunToChatRef.current = dispatchRunToChat;
+  }, [dispatchRunToChat]);
 
   const cancelServerRun = useCallback(async (item: PendingServerRunRef): Promise<boolean> => {
     try {
@@ -515,6 +545,7 @@ export function useRunPrompt() {
     return () => {
       clearTimeout(initialPollId);
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      if (runApplyFlushTimerRef.current) clearTimeout(runApplyFlushTimerRef.current);
       closeAllRunEvents();
     };
   }, [closeAllRunEvents, pollPendingRuns]);

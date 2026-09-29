@@ -4,14 +4,29 @@ import React from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 
 
-export const fieldsetClass = 'tui-fieldset border-[#AAA] min-w-0';
-export const labelClass = 'block text-xs text-[#CCC] mb-0.5';
-export const inputClass = 'w-full bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono';
-export const selectClass = 'w-full bg-[#AAA] text-black border-2 border-[#999] text-sm py-1 px-1 cursor-pointer font-mono';
-export const hintClass = 'text-xs text-[#888] mt-1';
-export const providerHeadingClass = 'flex items-center justify-between gap-2 pt-2 border-t border-[#444] text-xs text-[#00aaaa]';
-export const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer';
-export const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
+import MenuSelect from '@/components/MenuSelect';
+import {
+  fieldsetClass,
+  legendClass,
+  labelClass,
+  inputClass,
+  hintClass,
+  optionRowClass,
+} from './styles';
+
+// aria-pressed option rows replace checkbox inputs — the whole row is the
+// toggle, the trailing square is the checkbox glyph (filled = on).
+function OptionToggle({ label, pressed, onToggle }: { label: string; pressed: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" aria-pressed={pressed} onClick={onToggle} className={`${optionRowClass} w-full`}>
+      <span className="font-mono text-body-10 uppercase text-theme-muted">{label}</span>
+      <span
+        aria-hidden
+        className={`size-18 shrink-0 rounded-2 ring-1 ${pressed ? 'bg-theme-fg ring-theme-fg' : 'ring-theme-fg/30'}`}
+      />
+    </button>
+  );
+}
 
 export default function RuntimeSettings() {
   const { options, updateOption } = useConfig();
@@ -26,13 +41,14 @@ export default function RuntimeSettings() {
 
   return (
     <fieldset className={`${fieldsetClass} lg:col-span-2`}>
-              <legend className="text-[#00aaaa] px-2">运行设置</legend>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
-                <div className="bg-black px-2 py-2 space-y-3">
-                  <div className="min-h-[58px]">
-                    <label className={labelClass}>请求超时（秒）</label>
+              <legend className={legendClass}>运行设置</legend>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-start">
+                <div className="space-y-12 px-8 py-8">
+                  <div className="min-h-58">
+                    <span className={labelClass}>请求超时（秒）</span>
                     <input
                       key={options.timeout}
+                      aria-label="请求超时（秒）"
                       type="number"
                       defaultValue={options.timeout}
                       onBlur={(e) => commitTimeout(e.currentTarget)}
@@ -45,51 +61,22 @@ export default function RuntimeSettings() {
                     <p className={hintClass}>10-3600</p>
                   </div>
 
-                  <div className="min-h-[58px]">
-                    <label className={labelClass}>上下文数量限制</label>
-                    <select
-                      value={options.contextLimit}
-                      onChange={(e) => updateOption('contextLimit', Math.max(0, Math.min(5, parseInt(e.target.value, 10) || 0)))}
-                      className={selectClass}
-                    >
-                      {[0, 1, 2, 3, 4, 5].map(v => (
-                        <option key={v} value={v}>{v}</option>
-                      ))}
-                    </select>
+                  <div className="min-h-58">
+                    <span className={labelClass}>上下文数量限制</span>
+                    <MenuSelect
+                      ariaLabel="上下文数量限制"
+                      value={String(options.contextLimit)}
+                      groups={[{ options: [0, 1, 2, 3, 4, 5].map(v => ({ value: String(v), label: String(v) })) }]}
+                      onSelect={(v) => updateOption('contextLimit', Math.max(0, Math.min(5, parseInt(v, 10) || 0)))}
+                    />
                     <p className={hintClass}>0 表示不带上下文，最多保留最近 5 轮对话</p>
                   </div>
                 </div>
 
-                <div className="bg-black px-2 py-2 space-y-3">
-                  <label className={optionRowClass}>
-                    <span className="text-xs text-[#CCC]">渐进加载</span>
-                    <input
-                      type="checkbox"
-                      checked={options.streaming}
-                      onChange={(e) => updateOption('streaming', e.target.checked)}
-                      className={toggleClass}
-                    />
-                  </label>
-
-                  <label className={optionRowClass}>
-                    <span className="text-xs text-[#CCC]">提交后清空参考图</span>
-                    <input
-                      type="checkbox"
-                      checked={options.clearOnSubmit}
-                      onChange={(e) => updateOption('clearOnSubmit', e.target.checked)}
-                      className={toggleClass}
-                    />
-                  </label>
-
-                  <label className={optionRowClass}>
-                    <span className="text-xs text-[#CCC]">重启后加载上次 Prompt</span>
-                    <input
-                      type="checkbox"
-                      checked={options.persistPrompt}
-                      onChange={(e) => updateOption('persistPrompt', e.target.checked)}
-                      className={toggleClass}
-                    />
-                  </label>
+                <div className="space-y-12 px-8 py-8">
+                  <OptionToggle label="渐进加载" pressed={options.streaming} onToggle={() => updateOption('streaming', !options.streaming)} />
+                  <OptionToggle label="提交后清空参考图" pressed={options.clearOnSubmit} onToggle={() => updateOption('clearOnSubmit', !options.clearOnSubmit)} />
+                  <OptionToggle label="重启后加载上次 Prompt" pressed={options.persistPrompt} onToggle={() => updateOption('persistPrompt', !options.persistPrompt)} />
                 </div>
               </div>
             </fieldset>

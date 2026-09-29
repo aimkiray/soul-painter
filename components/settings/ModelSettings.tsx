@@ -16,14 +16,17 @@ import {
   parseChatModelChoice,
 } from '@/lib/chat-config';
 
-export const fieldsetClass = 'tui-fieldset border-[#AAA] min-w-0';
-export const labelClass = 'block text-xs text-[#CCC] mb-0.5';
-export const inputClass = 'w-full bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono';
-export const selectClass = 'w-full bg-[#AAA] text-black border-2 border-[#999] text-sm py-1 px-1 cursor-pointer font-mono';
-export const hintClass = 'text-xs text-[#888] mt-1';
-export const providerHeadingClass = 'flex items-center justify-between gap-2 border-t border-[#444] pt-2 pb-1 text-xs text-[#00aaaa]';
-export const toggleClass = 'shrink-0 w-5 h-5 appearance-none border-2 border-[#AAA] bg-black checked:bg-[#00aaaa] checked:border-[#00aaaa] cursor-pointer';
-export const optionRowClass = 'flex items-center justify-between gap-3 bg-black cursor-pointer select-none';
+import MenuSelect, { type MenuSelectGroup } from '@/components/MenuSelect';
+import {
+  fieldsetClass,
+  legendClass,
+  labelClass,
+  inputClass,
+  hintClass,
+  providerHeadingClass,
+  addRowInputClass,
+  addRowButtonClass,
+} from './styles';
 
 export default function ModelSettings() {
   const { config, updateConfig, modelDefaults } = useConfig();
@@ -43,6 +46,35 @@ export default function ModelSettings() {
   const chatModelIsOption = allChatModelOptions.some(m => m.format === activeChatApiFormat && m.value === activeChatModel);
   const titleModelIsOption = openAIChatModelOptions.some(m => m.value === config.titleModel);
   const claudeTitleModelIsOption = claudeModelOptions.some(m => m.value === config.claudeTitleModel);
+  const imageModelGroups: MenuSelectGroup[] = [{
+    options: [
+      ...(imageModelIsOption ? [] : [{ value: config.model, label: config.model }]),
+      ...imageModelOptions.map(m => ({ value: m.value, label: m.label })),
+    ],
+  }];
+  const chatModelGroups: MenuSelectGroup[] = [
+    { options: chatModelIsOption ? [] : [{ value: activeChatChoice, label: activeChatModel }] },
+    {
+      label: 'OpenAI Compatible',
+      options: openAIChatModelOptions.map(m => ({ value: encodeChatModelChoice('openai', m.value), label: m.label })),
+    },
+    {
+      label: 'Claude Compatible',
+      options: claudeModelOptions.map(m => ({ value: encodeChatModelChoice('claude', m.value), label: m.label })),
+    },
+  ].filter(group => group.options.length > 0);
+  const titleModelGroups: MenuSelectGroup[] = [{
+    options: [
+      ...(titleModelIsOption ? [] : [{ value: config.titleModel, label: config.titleModel }]),
+      ...openAIChatModelOptions.map(m => ({ value: m.value, label: m.label })),
+    ],
+  }];
+  const claudeTitleModelGroups: MenuSelectGroup[] = [{
+    options: [
+      ...(claudeTitleModelIsOption ? [] : [{ value: config.claudeTitleModel, label: config.claudeTitleModel }]),
+      ...claudeModelOptions.map(m => ({ value: m.value, label: m.label })),
+    ],
+  }];
   const selectChatModel = (value: string) => {
     const choice = parseChatModelChoice(value);
     if (!choice) return;
@@ -117,42 +149,37 @@ export default function ModelSettings() {
   };
   return (
     <fieldset className={fieldsetClass}>
-              <legend className="text-[#00aaaa] px-2">模型</legend>
-              <div className="space-y-3">
+              <legend className={legendClass}>模型</legend>
+              <div className="space-y-8">
                 <div>
-                  <label className={labelClass}>Image Model</label>
-                  <div className="space-y-1">
-                    <select
-                      value={imageModelIsOption ? config.model : '__current__'}
-                      onChange={(e) => {
-                        if (e.target.value !== '__current__') updateConfig('model', e.target.value);
-                      }}
-                      className={selectClass}
-                    >
-                      {!imageModelIsOption && <option value="__current__">{config.model}</option>}
-                      {imageModelOptions.map(m => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                      ))}
-                    </select>
-                    <div className="flex min-w-0">
+                  <span className={labelClass}>图片模型</span>
+                  <div className="space-y-4">
+                    <MenuSelect
+                      ariaLabel="图片模型"
+                      value={config.model}
+                      groups={imageModelGroups}
+                      onSelect={(v) => updateConfig('model', v)}
+                    />
+                    <div className="flex min-w-0 gap-4">
                       <input
                         type="text"
                         value={newImageModel}
                         onChange={(e) => setNewImageModel(e.target.value)}
                         onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addImageModel(); } }}
+                        aria-label="添加图片模型"
                         placeholder="添加图片模型"
-                        className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                        className={addRowInputClass}
                       />
-                      <button onClick={addImageModel} className="btn-retro px-2 text-xs shrink-0">
+                      <button onClick={addImageModel} className={addRowButtonClass}>
                         添加
                       </button>
                     </div>
                     {config.customImageModels.length > 0 && (
-                      <div className="space-y-1">
+                      <div className="space-y-4">
                         {config.customImageModels.map((model) => (
-                          <div key={model} className="flex min-w-0 items-center gap-2 border-2 border-[#444] bg-black px-2 py-1">
-                            <span className="min-w-0 flex-1 truncate text-xs text-[#CCC]">{model}</span>
-                            <button onClick={() => deleteImageModel(model)} className="text-xs text-[#ff5555] hover:text-white cursor-pointer">
+                          <div key={model} className="flex min-w-0 items-center gap-8 px-8 py-4 ring-1 ring-theme-fg/30">
+                            <span className="min-w-0 flex-1 truncate font-mono text-body-10 text-theme-fg">{model}</span>
+                            <button onClick={() => deleteImageModel(model)} className="cursor-pointer font-mono text-body-10 uppercase text-error hover:text-theme-fg">
                               删除
                             </button>
                           </div>
@@ -163,25 +190,14 @@ export default function ModelSettings() {
                 </div>
 
                 <div>
-                  <label className={labelClass}>Chat Model</label>
-                  <div className="space-y-1">
-                    <select
+                  <span className={labelClass}>聊天模型</span>
+                  <div className="space-y-4">
+                    <MenuSelect
+                      ariaLabel="聊天模型"
                       value={activeChatChoice}
-                      onChange={(e) => selectChatModel(e.target.value)}
-                      className={selectClass}
-                    >
-                      {!chatModelIsOption && <option value={activeChatChoice}>{activeChatModel}</option>}
-                      <optgroup label="OpenAI Compatible">
-                        {openAIChatModelOptions.map(m => (
-                          <option key={`openai:${m.value}`} value={encodeChatModelChoice('openai', m.value)}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="Claude Compatible">
-                        {claudeModelOptions.map(m => (
-                          <option key={`claude:${m.value}`} value={encodeChatModelChoice('claude', m.value)}>{m.label}</option>
-                        ))}
-                      </optgroup>
-                    </select>
+                      groups={chatModelGroups}
+                      onSelect={selectChatModel}
+                    />
                     <p className={hintClass}>当前会使用 {activeChatProviderLabel} 连接配置</p>
                   </div>
                 </div>
@@ -190,40 +206,35 @@ export default function ModelSettings() {
                   <div className={providerHeadingClass}>
                     <span>OpenAI Compatible</span>
                   </div>
-                  <div className="space-y-1">
-                    <label className={labelClass}>Title Model</label>
-                    <select
-                      value={titleModelIsOption ? config.titleModel : '__current__'}
-                      onChange={(e) => {
-                        if (e.target.value !== '__current__') updateConfig('titleModel', e.target.value);
-                      }}
-                      className={selectClass}
-                    >
-                      {!titleModelIsOption && <option value="__current__">{config.titleModel}</option>}
-                      {openAIChatModelOptions.map(m => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                      ))}
-                    </select>
+                  <div className="space-y-4">
+                    <span className={labelClass}>标题模型</span>
+                    <MenuSelect
+                      ariaLabel="标题模型（OpenAI）"
+                      value={config.titleModel}
+                      groups={titleModelGroups}
+                      onSelect={(v) => updateConfig('titleModel', v)}
+                    />
                     <p className={hintClass}>用于第一轮回复后自动总结聊天标题</p>
-                    <div className="flex min-w-0">
+                    <div className="flex min-w-0 gap-4">
                       <input
                         type="text"
                         value={newChatModel}
                         onChange={(e) => setNewChatModel(e.target.value)}
                         onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addChatModel(); } }}
+                        aria-label="添加 OpenAI Compatible 模型"
                         placeholder="添加 OpenAI Compatible 模型"
-                        className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                        className={addRowInputClass}
                       />
-                      <button onClick={addChatModel} className="btn-retro px-2 text-xs shrink-0">
+                      <button onClick={addChatModel} className={addRowButtonClass}>
                         添加
                       </button>
                     </div>
                     {config.customChatModels.length > 0 && (
-                      <div className="space-y-1">
+                      <div className="space-y-4">
                         {config.customChatModels.map((model) => (
-                          <div key={model} className="flex min-w-0 items-center gap-2 border-2 border-[#444] bg-black px-2 py-1">
-                            <span className="min-w-0 flex-1 truncate text-xs text-[#CCC]">{model}</span>
-                            <button onClick={() => deleteChatModel(model)} className="text-xs text-[#ff5555] hover:text-white cursor-pointer">
+                          <div key={model} className="flex min-w-0 items-center gap-8 px-8 py-4 ring-1 ring-theme-fg/30">
+                            <span className="min-w-0 flex-1 truncate font-mono text-body-10 text-theme-fg">{model}</span>
+                            <button onClick={() => deleteChatModel(model)} className="cursor-pointer font-mono text-body-10 uppercase text-error hover:text-theme-fg">
                               删除
                             </button>
                           </div>
@@ -237,40 +248,35 @@ export default function ModelSettings() {
                   <div className={providerHeadingClass}>
                     <span>Claude Compatible</span>
                   </div>
-                  <div className="space-y-1">
-                    <label className={labelClass}>Title Model</label>
-                    <select
-                      value={claudeTitleModelIsOption ? config.claudeTitleModel : '__current__'}
-                      onChange={(e) => {
-                        if (e.target.value !== '__current__') updateConfig('claudeTitleModel', e.target.value);
-                      }}
-                      className={selectClass}
-                    >
-                      {!claudeTitleModelIsOption && <option value="__current__">{config.claudeTitleModel}</option>}
-                      {claudeModelOptions.map(m => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                      ))}
-                    </select>
+                  <div className="space-y-4">
+                    <span className={labelClass}>标题模型</span>
+                    <MenuSelect
+                      ariaLabel="标题模型（Claude）"
+                      value={config.claudeTitleModel}
+                      groups={claudeTitleModelGroups}
+                      onSelect={(v) => updateConfig('claudeTitleModel', v)}
+                    />
                     <p className={hintClass}>Claude 格式下用于第一轮回复后自动总结聊天标题</p>
-                    <div className="flex min-w-0">
+                    <div className="flex min-w-0 gap-4">
                       <input
                         type="text"
                         value={newClaudeModel}
                         onChange={(e) => setNewClaudeModel(e.target.value)}
                         onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addClaudeModel(); } }}
+                        aria-label="添加 Claude 模型"
                         placeholder="添加 Claude 模型"
-                        className="flex-1 min-w-0 bg-black border-2 border-[#AAA] focus:border-[#00aaaa] text-[#CCC] text-sm py-1 px-2 outline-none font-mono"
+                        className={addRowInputClass}
                       />
-                      <button onClick={addClaudeModel} className="btn-retro px-2 text-xs shrink-0">
+                      <button onClick={addClaudeModel} className={addRowButtonClass}>
                         添加
                       </button>
                     </div>
                     {config.customClaudeModels.length > 0 && (
-                      <div className="space-y-1">
+                      <div className="space-y-4">
                         {config.customClaudeModels.map((model) => (
-                          <div key={model} className="flex min-w-0 items-center gap-2 border-2 border-[#444] bg-black px-2 py-1">
-                            <span className="min-w-0 flex-1 truncate text-xs text-[#CCC]">{model}</span>
-                            <button onClick={() => deleteClaudeModel(model)} className="text-xs text-[#ff5555] hover:text-white cursor-pointer">
+                          <div key={model} className="flex min-w-0 items-center gap-8 px-8 py-4 ring-1 ring-theme-fg/30">
+                            <span className="min-w-0 flex-1 truncate font-mono text-body-10 text-theme-fg">{model}</span>
+                            <button onClick={() => deleteClaudeModel(model)} className="cursor-pointer font-mono text-body-10 uppercase text-error hover:text-theme-fg">
                               删除
                             </button>
                           </div>
@@ -281,8 +287,9 @@ export default function ModelSettings() {
                 </div>
 
                 <div>
-                  <label className={labelClass}>System Prompt</label>
+                  <span className={labelClass}>系统提示词</span>
                   <textarea
+                    aria-label="系统提示词"
                     value={config.systemPrompt}
                     onChange={(e) => updateConfig('systemPrompt', e.target.value)}
                     rows={4}

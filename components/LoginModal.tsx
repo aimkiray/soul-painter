@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useChat } from '@/contexts/ChatContext';
 import { CHAT_SYNC_AUTH_STORAGE_KEY, CHAT_SYNC_SESSION_AUTH_STORAGE_KEY } from '@/lib/constants';
+import { useWindowDrag } from '@/hooks/useWindowDrag';
 import Modal from './Modal';
 
 interface LoginModalProps {
@@ -59,17 +60,17 @@ function formatSyncTime(value?: number) {
 }
 
 function loginStatusBox(message: string) {
-  const status = message.toUpperCase().slice(0, 16).padEnd(16, ' ');
+  const status = `STATUS: ${message.toUpperCase()}`.slice(0, 24).padEnd(24, ' ');
   return [
     '╔══════════════════════════╗',
-    '║ CHAT SYNC: READY         ║',
-    `║ STATUS: ${status} ║`,
+    `║ ${'CHAT SYNC: READY'.padEnd(24, ' ')} ║`,
+    `║ ${status} ║`,
     '╚══════════════════════════╝',
   ].join('\n');
 }
 
 function loginStatusColor(message: string) {
-  return message === 'AUTH FAILED' ? 'text-[#ff5555]' : 'text-[#00ff00]';
+  return message === 'AUTH FAILED' ? 'text-error' : 'text-theme-fg';
 }
 
 function clearAssetSessionCookie() {
@@ -82,6 +83,7 @@ function clearAssetSessionCookie() {
 
 export default function LoginModal({ open, onClose, onAuthChange }: LoginModalProps) {
   const { syncChatHistory, setStatus } = useChat();
+  const { dragStyle, onTitlePointerDown } = useWindowDrag();
   const [initialAuth] = useState(readStoredAuth);
   const [initialSessionAuth] = useState(() => readSessionAuth(initialAuth?.username || ''));
   const [username, setUsername] = useState(initialAuth?.username || '');
@@ -156,23 +158,30 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
       id="login"
       onClose={onClose}
       ariaLabel="同步登录"
-      backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3"
-      panelClassName="w-full max-w-md border-2 border-[#00aaaa] bg-black font-mono text-[#CCC] shadow-[8px_8px_0_#001f1f]"
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-12 backdrop-blur-xs"
+      panelClassName="w-full max-w-md bg-theme-bg font-mono text-body-14 text-theme-fg ring-1 ring-theme-fg/30"
+      panelStyle={dragStyle}
     >
-      <div className="flex items-center justify-between border-b-2 border-[#00aaaa] bg-black px-2 py-1 font-bold text-[#CCC]">
-        <span>SYNC</span>
+      {/* window title bar — drag handle */}
+      <div
+        className="flex h-26 shrink-0 cursor-grab touch-none items-center justify-between gap-4 border-b border-theme-fg/30 px-8"
+        onPointerDown={onTitlePointerDown}
+            title="拖拽移动 · 双击复位"
+      >
+        <span className="truncate">~/sync</span>
         <button
           type="button"
           onClick={onClose}
-          className="cursor-pointer text-[#CCC] hover:text-[#00aaaa]"
+          onPointerDown={(event) => event.stopPropagation()}
+          className="hit-x-4 hit-y-4 flex size-16 shrink-0 cursor-pointer items-center justify-center rounded-full border border-transparent bg-theme-fg text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg"
           aria-label="关闭登录"
         >
-          [X]
+          <svg viewBox="0 0 24 24" className="size-full shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
 
       <form
-        className="space-y-4 p-4"
+        className="space-y-16 p-12"
         onKeyDown={(event) => {
           // Block implicit form submission while an IME composition is active.
           if (event.nativeEvent.isComposing && event.key === 'Enter') event.preventDefault();
@@ -182,61 +191,61 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
           void syncHistory();
         }}
       >
-          <pre className={`overflow-x-auto border-2 border-[#555] bg-[#000022] p-3 text-xs leading-5 ${loginStatusColor(message)}`}>{loginStatusBox(message)}</pre>
-          <p className="text-xs leading-5 text-[#AAA]">
+          <pre className={`overflow-x-auto bg-theme-fg/10 p-8 text-body-10 ring-1 ring-theme-fg/30 ${loginStatusColor(message)}`}>{loginStatusBox(message)}</pre>
+          <p className="text-body-10 text-theme-dim">
             第一次输入名字和同步密钥就会自动创建账号。之后用同样的信息登录，就能同步聊天记录。
           </p>
 
-          <div className="space-y-3">
+          <div className="space-y-12">
             <label className="block">
-              <span className="mb-1 block text-xs text-[#ffff55]">名字</span>
+              <span className="mb-4 block text-body-10 uppercase text-theme-muted">名字</span>
               <input
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 disabled={syncing}
                 autoComplete="username"
-                className="h-9 w-full border-2 border-[#00aaaa] bg-black px-2 text-sm text-[#CCC] outline-none focus:border-[#ffff55] disabled:opacity-60"
+                className="h-32 w-full bg-theme-bg px-8 text-body-14 text-theme-fg outline-none ring-1 ring-theme-fg/30 placeholder:text-theme-muted focus:ring-theme-fg disabled:opacity-60"
                 placeholder="例如：PLAYER_1"
               />
             </label>
 
             <label className="block">
-              <span className="mb-1 block text-xs text-[#ffff55]">同步密钥</span>
+              <span className="mb-4 block text-body-10 uppercase text-theme-muted">同步密钥</span>
               <input
                 value={secret}
                 onChange={(event) => setSecret(event.target.value)}
                 disabled={syncing}
                 type="password"
                 autoComplete="current-password"
-                className="h-9 w-full border-2 border-[#00aaaa] bg-black px-2 text-sm text-[#CCC] outline-none focus:border-[#ffff55] disabled:opacity-60"
+                className="h-32 w-full bg-theme-bg px-8 text-body-14 text-theme-fg outline-none ring-1 ring-theme-fg/30 placeholder:text-theme-muted focus:ring-theme-fg disabled:opacity-60"
                 placeholder="至少 4 位"
               />
             </label>
           </div>
 
-          <div className="flex items-center justify-between gap-2 border-y-2 border-[#333] py-2 text-xs">
-            <span className="text-[#888]">LAST SYNC</span>
-            <span className="text-[#00aaaa]">{formatSyncTime(syncedAt)}</span>
+          <div className="flex items-center justify-between gap-8 border-y border-theme-fg/30 py-8 text-body-10 uppercase">
+            <span className="text-theme-muted">LAST SYNC</span>
+            <span className="text-theme-fg">{formatSyncTime(syncedAt)}</span>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-8">
             <button
               type="button"
               onClick={logout}
               disabled={syncing}
-              className="h-9 cursor-pointer border-2 border-[#777] bg-black text-xs text-[#CCC] hover:border-[#ff5555] hover:text-[#ff5555] disabled:cursor-wait disabled:opacity-60"
+              className="h-32 cursor-pointer text-body-10 uppercase text-theme-dim ring-1 ring-theme-fg/30 hover:bg-theme-fg/10 hover:text-theme-fg disabled:cursor-wait disabled:opacity-60"
             >
               退出登录
             </button>
             <button
               type="submit"
               disabled={syncing}
-              className="h-9 cursor-pointer border-2 border-[#ffff55] bg-[#00aaaa] text-xs text-black shadow-[4px_4px_0_#555] hover:bg-[#00cccc] active:translate-x-1 active:translate-y-1 active:shadow-none disabled:cursor-wait disabled:opacity-60"
+              className="h-32 cursor-pointer border border-transparent bg-theme-fg text-body-10 uppercase text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg disabled:cursor-wait disabled:opacity-60"
             >
               {syncing ? '同步中...' : '登录并同步'}
             </button>
           </div>
-          <p className="text-[0.7rem] leading-5 text-[#777]">
+          <p className="text-body-10 text-theme-muted">
             退出登录不会删除聊天记录，下次用同样的名字和同步密钥登录还能继续同步。
           </p>
       </form>

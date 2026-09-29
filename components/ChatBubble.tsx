@@ -24,12 +24,12 @@ interface ChatBubbleProps {
   };
   isPending?: boolean;
   isRegenerating?: boolean;
-  messageIndex: number;
   disabled?: boolean;
   canRegenerate?: boolean;
   onDelete?: (messageId: string) => void;
   onEdit?: (messageId: string, prompt: string) => void;
   onRegenerate?: (messageId: string) => void;
+  onUseAsReference?: (hit: ImageHit, index: number) => void;
 }
 
 function getExt(link: string, isData: boolean) {
@@ -63,7 +63,7 @@ function RegenerateIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true">
       <path d="M0 0h22v22H0z" fill="none" />
-      <path fill="currentColor" d="M22 11v1h-1v1h-1v1h-1v1h-2v-1h-1v-1h-1v-1h-1v-1h3V9h-1V7h-1V6h-2V5H9v1H7v1H6v2H5v4h1v2h1v1h2v1h4v-1h3v2h-2v1H8v-1H6v-1H5v-1H4v-2H3V8h1V6h1V5h1V4h2V3h6v1h2v1h1v1h1v2h1v3z" />
+      <path fill="currentColor" d="M22 11v1h-1v1h-1v1h-1v1h-1v1h-2v-1h-1v-1h-1v-1h-1v-1h3V9h-1V7h-1V6h-2V5H9v1H7v1H6v2H5v4h1v2h1v1h2v1h4v-1h3v2h-2v1H8v-1H6v-1H5v-1H4v-2H3V8h1V6h1V5h1V4h2V3h6v1h2v1h1v1h1v2h1v3z" />
     </svg>
   );
 }
@@ -90,7 +90,7 @@ function CopyFailedIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true">
       <path d="M0 0h22v22H0z" fill="none" />
-      <path fill="currentColor" d="M16 17h-1v-1h-1v-1h-1v-1h-1v-1h-2v1H9v1H8v1H7v1H6v-1H5v-1h1v-1h1v-1h1v-1h1v-2H8V9H7V8H6V7H5V6h1V5h1v1h1v1h1v1h1v1h2V8h1V7h1V6h1V5h1v1h1v1h-1v1h-1v1h-1v1h-1v2h1v1h1v1h1v1h1v1h-1Z" />
+      <path fill="currentColor" d="M16 17h-1v-1h-1v-1h-1v-1h-1v-1h-2v1H9v1H8v1H7v1H6v-1H5v-1h1v-1h1v-1h1v-1h1v-2H8V9H7V8H6V7H5V6h1V5h1v1h1v1h1v1h1v1h2V8h1V7h1V6h1V5h1v1h1v1h-1v1h-1v1h-1v1h-1v1h1v1h1v1h1v1h1v1h-1Z" />
     </svg>
   );
 }
@@ -119,12 +119,12 @@ const ChatBubble = React.memo(function ChatBubble({
   message,
   isPending = false,
   isRegenerating = false,
-  messageIndex,
   disabled = false,
   canRegenerate = false,
   onDelete,
   onEdit,
   onRegenerate,
+  onUseAsReference,
 }: ChatBubbleProps) {
   const { role, prompt, images, extra } = message;
   const visibleImages = images.filter((hit) => hit.dataUrl || hit.url);
@@ -200,8 +200,8 @@ const ChatBubble = React.memo(function ChatBubble({
     setEditing(false);
   };
 
-  const actionButtonClass = 'flex h-7 w-7 items-center justify-center border-2 border-[#555] bg-black text-base leading-none text-[#AAA] cursor-pointer hover:border-[#00aaaa] hover:text-[#00aaaa] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-[#555] disabled:hover:text-[#AAA]';
-  const copyButtonClass = `${actionButtonClass} ${copyTextStatus === 'copied' ? '!border-[#00aaaa] !text-[#00aaaa] hover:!border-[#00aaaa] hover:!text-[#00aaaa]' : copyTextStatus === 'failed' ? '!border-[#ff5555] !text-[#ff5555] hover:!border-[#ff5555] hover:!text-[#ff5555]' : ''}`;
+  const actionButtonClass = 'hit-x-4 hit-y-4 flex size-32 items-center justify-center text-theme-dim ring-1 ring-theme-fg/30 cursor-pointer hover:bg-theme-fg hover:text-theme-bg hover:ring-theme-fg disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-theme-dim disabled:hover:ring-theme-fg/30';
+  const copyButtonClass = `${actionButtonClass} ${copyTextStatus === 'copied' ? 'text-theme-fg ring-theme-fg hover:text-theme-bg' : copyTextStatus === 'failed' ? 'text-error ring-error/60 hover:bg-error hover:text-black hover:ring-error' : ''}`;
   const copyButtonContent = copyTextStatus === 'idle'
     ? <CopyIcon />
     : copyTextStatus === 'copied'
@@ -212,26 +212,22 @@ const ChatBubble = React.memo(function ChatBubble({
   return (
     <>
       <div
-        className={`group relative flex flex-col gap-1 mb-3 ${role === 'user' ? 'items-end text-right' : 'items-start'}`}
+        className={`group relative mb-12 flex flex-col gap-6 ${role === 'user' ? 'items-end text-right' : 'items-start'}`}
       >
-        <div className={`flex items-center gap-2 px-1 ${role === 'user' ? 'flex-row-reverse' : ''}`}>
-          <span className={`text-xs ${role === 'user' ? 'text-[#00aaaa]' : 'text-[#CCC]'}`}>
-            {role === 'user' ? 'You' : 'Assistant'}
+        <div className={`relative flex w-full items-center gap-8 px-4 font-mono text-body-10 uppercase ${role === 'user' ? 'flex-row-reverse' : ''}`}>
+          <span className="text-theme-muted">
+            {role === 'user' ? '[You]' : '[Assistant]'}
           </span>
-          <span className="text-[0.65rem] text-[#999]">#{messageIndex + 1}</span>
-          {showEdited && <span className="text-[0.65rem] text-[#888]">已编辑</span>}
+          {showEdited && <span className="text-theme-dim">已编辑</span>}
         </div>
-        <div className={`w-fit max-w-full min-w-0 ${role === 'user' ? 'bg-[#007a7a] text-white border-2 border-[#007a7a] p-3' : 'bg-[#111] text-[#CCC] border-2 border-[#AAA] p-3'}`}>
+        <div className={`w-full min-w-0 p-12 ring-1 ${role === 'user' ? 'bg-theme-fg text-theme-bg' : ''} ${extra === 'error' ? 'ring-error' : 'ring-theme-fg/30'}`}>
           {extra === 'error' ? (
-            <div className="flex flex-col gap-1">
-              <span className="text-xs text-[#ff5555] uppercase font-bold">[ 错误 ]</span>
-              <span className="text-sm break-all">{prompt}</span>
-            </div>
+            <span className="break-all">{prompt}</span>
           ) : (
             <>
               {role === 'user' && (
                 editing ? (
-                  <div className="flex flex-col gap-2 text-left" onClick={(event) => event.stopPropagation()}>
+                  <div className="flex flex-col gap-8 text-left" onClick={(event) => event.stopPropagation()}>
                     <textarea
                       value={editDraft}
                       onChange={(event) => setEditDraft(event.target.value)}
@@ -245,16 +241,17 @@ const ChatBubble = React.memo(function ChatBubble({
                           setEditDraft(prompt);
                         }
                       }}
-                      className="min-w-[16rem] max-w-full bg-black/20 border-2 border-white/70 text-white text-sm font-mono p-2 outline-none resize-y"
+                      className="min-w-64 max-w-full resize-y bg-transparent p-8 font-mono text-body-14 text-theme-bg outline-none ring-1 ring-theme-bg/50"
                       rows={3}
                       autoFocus
+                      aria-label="编辑消息"
                     />
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end gap-6">
                       <button
                         type="button"
                         onClick={saveEdit}
                         disabled={!editDraft.trim() || disabled}
-                        className="border-2 border-white/70 text-white px-2 py-0.5 text-xs font-mono cursor-pointer disabled:opacity-40"
+                        className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-bg/50 hover:bg-theme-bg hover:text-theme-fg disabled:opacity-40"
                       >
                         保存
                       </button>
@@ -264,24 +261,27 @@ const ChatBubble = React.memo(function ChatBubble({
                           setEditing(false);
                           setEditDraft(prompt);
                         }}
-                        className="border-2 border-white/70 text-white px-2 py-0.5 text-xs font-mono cursor-pointer"
+                        className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-bg/50 hover:bg-theme-bg hover:text-theme-fg"
                       >
                         取消
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <p className="text-sm break-words">{prompt}</p>
+                  <p className="break-words">{prompt}</p>
                 )
               )}
               {role === 'bot' && (
                 <div>
                   {isPending && !message.text && !message.thinking && visibleImages.length === 0 && !message.code && !message.extra && (
-                    <span className="animate-pulse text-sm">{isRegenerating ? '重新生成中...' : '生成中...'}</span>
+                    <span className="text-theme-dim">
+                      {isRegenerating ? '重新生成中' : '生成中'}
+                      <span aria-hidden className="ml-4 inline-block h-12 w-6 animate-blink bg-theme-dim align-middle motion-reduce:hidden" />
+                    </span>
                   )}
                   {message.thinking && (
                     <details
-                      className="mb-2 border border-[#444] bg-black/40"
+                      className="mb-8 font-mono text-body-10 ring-1 ring-theme-fg/30"
                       open={thinkingOpen}
                       onToggle={(event) => {
                         // Programmatic open changes echo back through toggle —
@@ -293,36 +293,36 @@ const ChatBubble = React.memo(function ChatBubble({
                         setThinkingOpen(event.currentTarget.open);
                       }}
                     >
-                      <summary className="cursor-pointer select-none px-2 py-1 text-xs text-[#888] hover:text-[#00aaaa]">
+                      <summary className="cursor-pointer px-8 py-4 uppercase text-theme-muted underline decoration-dotted underline-offset-2 hover:text-theme-fg">
                         {message.thinkingDone ? '[ 思考过程 ]' : '[ 思考中... ]'}
                       </summary>
-                      <div className="border-t border-[#333] px-2 py-2 text-xs text-[#999] whitespace-pre-wrap break-words leading-relaxed">
+                      <div className="border-t border-theme-fg/30 px-8 py-8 text-theme-dim whitespace-pre-wrap break-words">
                         {message.thinking}
                       </div>
                     </details>
                   )}
                   {message.text && (
-                    <div className="text-sm break-words mb-2">
+                    <div className="mb-8 break-words">
                       <MarkdownRenderer content={message.text} />
                     </div>
                   )}
                   {visibleImages.length > 0 && (
-                    <div className={visibleImages.length > 1 ? 'grid grid-cols-2 gap-2 mb-2' : 'mb-2'}>
+                    <div className={visibleImages.length > 1 ? 'mb-8 grid grid-cols-2 gap-8' : 'mb-8'}>
                       {visibleImages.map((hit, i) => {
                         const src = hit.dataUrl || hit.url || '';
                         const key = imageKey(hit, i);
                         return (
-                          <div key={key} className="relative group">
+                          <div key={key} className="group relative">
                             {imgErrors.has(key) ? (
-                              <div className="flex items-center justify-center min-h-[100px] bg-black text-[#ff5555] text-xs p-2">
+                              <div className="flex min-h-100 items-center justify-center p-8 text-body-10 uppercase text-error ring-1 ring-error/60">
                                 图片加载失败
                               </div>
                             ) : (
                               <img
                                 src={src}
-                                alt={`Generated ${i + 1}`}
+                                alt={`生成的图片 ${i + 1}`}
                                 draggable={false}
-                                className="max-w-full cursor-pointer object-contain checkerboard max-h-[300px]"
+                                className="checkerboard max-h-300 max-w-full cursor-pointer object-contain"
                                 loading="lazy" decoding="async"
                                 onClick={() => setLightbox(src)}
                                 onDragStart={(event) => event.preventDefault()}
@@ -333,7 +333,7 @@ const ChatBubble = React.memo(function ChatBubble({
                               />
                             )}
                             {visibleImages.length > 1 && (
-                              <span className="absolute top-1 left-1 bg-black/70 text-white text-xs px-1 pointer-events-none">
+                              <span className="pointer-events-none absolute left-4 top-4 bg-theme-bg/80 px-2 font-mono text-body-10 text-theme-fg ring-1 ring-theme-fg/30">
                                 #{i + 1}/{visibleImages.length}
                               </span>
                             )}
@@ -343,37 +343,45 @@ const ChatBubble = React.memo(function ChatBubble({
                     </div>
                   )}
                   {message.code && (
-                    <details className="mt-1">
-                      <summary className="cursor-pointer text-xs text-[#CCC] hover:text-[#00aaaa] select-none">
+                    <details className="mt-4 font-mono text-body-10 ring-1 ring-theme-fg/30">
+                      <summary className="cursor-pointer px-8 py-4 uppercase text-theme-muted underline decoration-dotted underline-offset-2 hover:text-theme-fg">
                         [ 查看原始响应 ]
                       </summary>
-                      <pre className="mt-1 p-2 bg-black border border-[#AAA] text-xs text-[#CCC] max-h-40 overflow-auto whitespace-pre-wrap break-all">
+                      <pre className="max-h-160 overflow-auto whitespace-pre-wrap break-all border-t border-theme-fg/30 bg-theme-fg/10 px-8 py-8 text-theme-dim">
                         {message.code}
                       </pre>
                     </details>
                   )}
                   {message.extra && message.extra !== 'error' && (
-                    <p className="text-xs text-[#CCC] mt-1 break-all">{message.extra}</p>
+                    <p className="mt-4 break-all font-mono text-body-10 text-theme-dim">{message.extra}</p>
                   )}
                   {visibleImages.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
+                    <div className="mt-8 flex flex-wrap gap-8">
                       {visibleImages.map((hit, i) => {
                         const link = hit.dataUrl || hit.url || '';
                         const isData = !!hit.dataUrl;
                         return (
-                          <span key={imageKey(hit, i)} className="flex gap-2">
+                          <span key={imageKey(hit, i)} className="flex gap-6">
                             <button
                               onClick={() => setLightbox(link)}
-                              className="btn-retro text-xs px-2 py-0.5"
+                              className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10"
                             >
                               放大
                             </button>
                             <button
                               onClick={() => downloadHit(hit, i)}
-                              className="btn-retro text-xs px-2 py-0.5"
+                              className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10"
                             >
                               {isData ? '下载' : '打开'}
                             </button>
+                            {onUseAsReference && (
+                              <button
+                                onClick={() => onUseAsReference(hit, i)}
+                                className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10"
+                              >
+                                参考
+                              </button>
+                            )}
                           </span>
                         );
                       })}
@@ -386,7 +394,7 @@ const ChatBubble = React.memo(function ChatBubble({
         </div>
         {!editing && (
           <div
-            className={`flex flex-wrap gap-1 ${role === 'user' ? 'justify-end' : 'justify-start'}`}
+            className={`flex flex-wrap gap-6 font-mono text-body-14 ${role === 'user' ? 'justify-end' : 'justify-start'}`}
             onClick={(event) => event.stopPropagation()}
           >
             {role === 'user' ? (
@@ -420,7 +428,7 @@ const ChatBubble = React.memo(function ChatBubble({
                   type="button"
                   onClick={requestDelete}
                   disabled={disabled || !onDelete}
-                  className={`${actionButtonClass} ${confirmingDelete ? 'text-[#ff5555]' : ''}`}
+                  className={`${actionButtonClass} ${confirmingDelete ? 'text-error ring-error/60' : ''}`}
                   aria-label={confirmingDelete ? '确认删除消息' : '删除消息'}
                   title={confirmingDelete ? '确认删除' : '删除'}
                 >
@@ -453,7 +461,7 @@ const ChatBubble = React.memo(function ChatBubble({
                   type="button"
                   onClick={requestDelete}
                   disabled={disabled || !onDelete}
-                  className={`${actionButtonClass} ${confirmingDelete ? 'text-[#ff5555]' : ''}`}
+                  className={`${actionButtonClass} ${confirmingDelete ? 'text-error ring-error/60' : ''}`}
                   aria-label={confirmingDelete ? '确认删除消息' : '删除消息'}
                   title={confirmingDelete ? '确认删除' : '删除'}
                 >
@@ -471,21 +479,21 @@ const ChatBubble = React.memo(function ChatBubble({
           id={`chat-lightbox-${message.id}`}
           onClose={() => setLightbox(null)}
           ariaLabel="查看大图"
-          backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
+          backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-16"
           panelClassName="flex items-center justify-center max-w-full max-h-[95vh]"
         >
           <button
             onClick={() => setLightbox(null)}
-            className="fixed top-3 right-3 text-white text-2xl hover:text-[#ff5555] cursor-pointer font-mono z-10"
+            className="fixed right-12 top-12 z-10 flex size-26 cursor-pointer items-center justify-center rounded-full border border-transparent bg-theme-fg text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg"
             aria-label="关闭大图"
           >
-            [X]
+            <svg viewBox="0 0 24 24" className="size-full shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
           <img
             src={lightbox}
-            alt="Full size"
+            alt="大图预览"
             draggable={false}
-            className="max-w-full max-h-[95vh] object-contain checkerboard"
+            className="checkerboard max-h-[95vh] max-w-full object-contain"
             decoding="async"
             onDragStart={(event) => event.preventDefault()}
           />

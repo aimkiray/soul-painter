@@ -1,7 +1,7 @@
 import type { AppConfig, AppOptions, ImageHit, ImageRef } from '@/types';
 import type { ChatReferenceImage, ChatTurnSnapshot } from '@/contexts/ChatContext';
 import { USER_ABORT_SENTINEL } from '@/lib/api';
-import { uploadChatImage } from '@/lib/chat-asset-client';
+import { imageHitToStoredUrl, uploadChatImage } from '@/lib/chat-asset-client';
 import { getChatProviderConfig, getActiveChatModel } from '@/lib/chat-config';
 
 export type RunMode = ChatTurnSnapshot['mode'];
@@ -57,6 +57,22 @@ export async function imageRefToReferenceImage(image: ImageRef, signal?: AbortSi
   return mask ? { image: storedImage, mask } : { image: storedImage };
 }
 
+// data: URLs fetch locally; remote URLs go through /api/chat-assets because
+// provider CDNs don't send CORS headers to us.
+export async function hitToFile(hit: ImageHit, index = 0): Promise<File | null> {
+  let link = hit.dataUrl || '';
+  if (!link) link = (await imageHitToStoredUrl(hit)) || '';
+  if (!link) return null;
+  try {
+    const blob = await (await fetch(link)).blob();
+    if (!blob.type.startsWith('image/')) return null;
+    const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+    return new File([blob], `ref-${Date.now()}-${index + 1}.${ext}`, { type: blob.type });
+  } catch {
+    return null;
+  }
+}
+
 export function createTurnSnapshot(
   config: AppConfig,
   options: AppOptions,
@@ -70,6 +86,7 @@ export function createTurnSnapshot(
     model: config.model,
     chatModel: chatProvider.model,
     chatApiFormat: chatProvider.format,
+    chatEffort: mode === 'chat' ? config.chatEffort : undefined,
     size: resolvedSize,
     n: config.n,
     quality: config.quality,

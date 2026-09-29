@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useChat } from '@/contexts/ChatContext';
 import type { ChatMessage, ChatSession } from '@/contexts/ChatContext';
 import { registerModalLayer } from '@/lib/modal-stack';
@@ -10,7 +11,6 @@ interface ChatSidebarProps {
   open: boolean;
   collapsed: boolean;
   onClose: () => void;
-  onToggleCollapse: () => void;
 }
 
 interface MenuState {
@@ -19,8 +19,13 @@ interface MenuState {
   top: number;
 }
 
+const SIDEBAR_MIN_W = 160;
+const SIDEBAR_MAX_W = 480;
+const SIDEBAR_DEFAULT_W = 256;
 const MENU_WIDTH = 128;
-const MENU_HEIGHT = 114;
+const MENU_HEIGHT = 112;
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE = 10;
 
 function formatSessionTime(timestamp: number) {
   if (!timestamp || !Number.isFinite(timestamp)) return '--:--';
@@ -32,20 +37,26 @@ function formatSessionTime(timestamp: number) {
 
 function messagePreview(message: ChatMessage | undefined) {
   if (!message) return '空会话';
-  if (message.role === 'user' && message.prompt.trim()) return message.prompt.trim();
+  if (message.role === 'user' && message.prompt.trim())
+    return message.prompt.trim();
   if (message.role === 'bot') {
     if (message.extra === 'error') return '请求失败';
     if (message.text.trim()) return message.text.trim();
-    if (message.images.length > 0) return `生成 ${message.images.length} 张图片`;
+    if (message.images.length > 0)
+      return `生成 ${message.images.length} 张图片`;
   }
   return '空会话';
 }
 
 function latestPreview(messages: ChatMessage[]) {
-  const latest = [...messages].reverse().find((message) => (
-    (message.role === 'user' && message.prompt.trim())
-    || (message.role === 'bot' && (message.text.trim() || message.images.length > 0 || message.extra))
-  ));
+  const latest = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        (message.role === 'user' && message.prompt.trim()) ||
+        (message.role === 'bot' &&
+          (message.text.trim() || message.images.length > 0 || message.extra)),
+    );
   return messagePreview(latest);
 }
 
@@ -53,7 +64,6 @@ export default function ChatSidebar({
   open,
   collapsed,
   onClose,
-  onToggleCollapse,
 }: ChatSidebarProps) {
   const {
     sessions,
@@ -67,12 +77,42 @@ export default function ChatSidebar({
   } = useChat();
 
   const [menuState, setMenuState] = useState<MenuState | null>(null);
-  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(
+    null,
+  );
   const [renameDraft, setRenameDraft] = useState('');
-  const [confirmClearSessionId, setConfirmClearSessionId] = useState<string | null>(null);
-  const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState<string | null>(null);
+  const [confirmClearSessionId, setConfirmClearSessionId] = useState<
+    string | null
+  >(null);
+  const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState<
+    string | null
+  >(null);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_W);
 
   const orderedSessions = sessions;
+
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressPosRef = useRef({ x: 0, y: 0 });
+  const suppressRowClickRef = useRef(false);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => cancelLongPress, [cancelLongPress]);
+
+  const openMenuAt = useCallback((sessionId: string, x: number, y: number) => {
+    const left = Math.min(Math.max(x, 8), Math.max(8, window.innerWidth - MENU_WIDTH - 8));
+    const top = Math.min(Math.max(y, 8), Math.max(8, window.innerHeight - MENU_HEIGHT - 8));
+    setMenuState({ sessionId, left, top });
+    setConfirmClearSessionId(null);
+    setConfirmDeleteSessionId(null);
+  }, []);
 
   const closeTools = useCallback(() => {
     setMenuState(null);
@@ -86,18 +126,26 @@ export default function ChatSidebar({
     onClose();
   }, [closeTools, onClose]);
 
-  const toggleCollapse = useCallback(() => {
-    closeTools();
-    onToggleCollapse();
-  }, [closeTools, onToggleCollapse]);
-
   useEffect(() => {
     if (!menuState && !renamingSessionId) return;
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.closest('[data-chat-sidebar-panel], [data-chat-sidebar-menu]')) return;
-      closeTools();
+      const inside = target instanceof Element
+        ? {
+            menu: !!target.closest('[data-chat-sidebar-menu]'),
+            panel: !!target.closest('[data-chat-sidebar-panel]'),
+            rename: !!target.closest('[data-chat-rename]'),
+          }
+        : { menu: false, panel: false, rename: false };
+      // Presses on the menu itself keep it open; anywhere else dismisses it —
+      // including blank space inside the panel. The rename editor survives
+      // presses inside the panel but still closes on outside presses.
+      if (inside.menu || inside.rename) return;
+      setMenuState(null);
+      setConfirmClearSessionId(null);
+      setConfirmDeleteSessionId(null);
+      if (!inside.panel) setRenamingSessionId(null);
     };
 
     document.addEventListener('pointerdown', handlePointerDown);
@@ -125,6 +173,19 @@ export default function ChatSidebar({
     };
   }, [closeTools, menuState]);
 
+  // Menu focus lifecycle: opening hands focus to the first item; closing
+  // returns it to the kebab that opened the menu — unless a rename input or
+  // the drawer teardown is about to claim it.
+  useEffect(() => {
+    if (menuState) {
+      menuRef.current
+        ?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')
+        ?.focus();
+      return;
+    }
+    if (!renamingSessionId) menuTriggerRef.current?.focus();
+  }, [menuState, renamingSessionId]);
+
   const handleNewSession = () => {
     closeTools();
     createChatSession();
@@ -145,68 +206,44 @@ export default function ChatSidebar({
     setConfirmDeleteSessionId(null);
   };
 
-  const openMenu = useCallback((sessionId: string, button: HTMLButtonElement) => {
-    const rect = button.getBoundingClientRect();
-    const maxLeft = Math.max(8, window.innerWidth - MENU_WIDTH - 8);
-    const iconLeft = rect.left + rect.width / 2 - 11;
-    const left = Math.min(Math.max(iconLeft, 8), maxLeft);
-    const belowTop = rect.bottom + 4;
-    const aboveTop = rect.top - MENU_HEIGHT - 4;
-    const spaceBelow = window.innerHeight - rect.bottom - 8;
-    const spaceAbove = rect.top - 8;
-    const above = spaceBelow < MENU_HEIGHT && spaceAbove > spaceBelow;
-    const top = Math.max(8, Math.min(above ? aboveTop : belowTop, window.innerHeight - MENU_HEIGHT - 8));
-
-    setMenuState((current) => current?.sessionId === sessionId ? null : { sessionId, left, top });
-    setConfirmClearSessionId(null);
-    setConfirmDeleteSessionId(null);
-  }, []);
-
   const commitRename = () => {
     const nextTitle = renameDraft.trim();
-    if (renamingSessionId && nextTitle) renameChatSession(renamingSessionId, nextTitle);
+    if (renamingSessionId && nextTitle)
+      renameChatSession(renamingSessionId, nextTitle);
     setRenamingSessionId(null);
     setRenameDraft('');
   };
 
-  const panel = (mobile: boolean) => (
-    <div data-chat-sidebar-panel className="flex h-full min-h-0 w-full min-w-0 flex-col bg-black text-[#CCC] font-mono">
-      <div className="shrink-0 border-b-2 border-[#AAA] px-2 pb-2 pt-0 lg:pt-1">
-        <div className="flex items-center justify-between gap-2 lg:mb-1">
-          <span className="text-sm text-[#00aaaa]">聊天</span>
-          <button
-            type="button"
-            onClick={mobile ? closeSidebar : toggleCollapse}
-            className="flex h-8 items-center justify-center bg-transparent p-0 text-[#CCC] cursor-pointer hover:text-[#00aaaa] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00aaaa]"
-            aria-label={mobile ? '关闭聊天列表' : '收起聊天列表'}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="2 2 18 18" aria-hidden="true" className="block h-5 w-5">
-              <path fill="currentColor" d="M12 16h-2v-1H9v-1H8v-1H7v-1H6v-2h1V9h1V8h1V7h1V6h2v2h-1v1h-1v1h6v2h-6v1h1v1h1m6 6H4v-1H3v-1H2V4h1V3h1V2h14v1h1v1h1v14h-1v1h-1m-1-1v-1h1V5h-1V4H5v1H4v12h1v1Z" />
-            </svg>
-          </button>
-        </div>
+  const panel = () => (
+    <div
+      data-chat-sidebar-panel
+      className="flex h-full min-h-0 w-full min-w-0 flex-col bg-theme-bg font-mono text-theme-fg"
+    >
+      {/* window title bar */}
+      <div className="flex h-26 shrink-0 items-center justify-between gap-4 border-b border-theme-fg/30 px-8">
+        <span className="truncate">~/sessions</span>
+      </div>
+      <div className="shrink-0 px-8 py-8 lg:pr-2">
         <button
           type="button"
           onClick={handleNewSession}
-          className="h-9 w-full border-2 border-[#00aaaa] bg-[#00aaaa] px-3 text-left text-sm text-black cursor-pointer"
+          className="h-28 w-full cursor-pointer border border-transparent bg-theme-fg px-8 text-left text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg"
         >
           + 新建聊天
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2">
-        <div className="space-y-1">
+      {/* ls -l listing: sessions as files */}
+      <div className="@container scroll-fade-y flex-1 overflow-y-auto px-8 py-8 lg:pr-2">
+        <div className="flex flex-col gap-6">
           {orderedSessions.map((session) => {
             const active = session.id === activeSessionId;
             const loading = isSessionLoading(session.id);
 
             return (
-              <div
-                key={session.id}
-                className={`group relative border-2 ${active ? 'border-[#00aaaa] bg-[#061616]' : 'border-[#555] bg-black hover:border-[#AAA]'}`}
-              >
+              <div key={session.id} className="group relative">
                 {renamingSessionId === session.id ? (
-                  <div className="p-2">
+                  <div data-chat-rename className="ring-1 ring-theme-fg/30 p-8">
                     <input
                       value={renameDraft}
                       onChange={(event) => setRenameDraft(event.target.value)}
@@ -219,23 +256,24 @@ export default function ChatSidebar({
                           setRenamingSessionId(null);
                         }
                       }}
-                      className="mb-2 w-full bg-black border-2 border-[#00aaaa] px-2 py-1 text-sm text-[#CCC] outline-none"
+                      className="mb-8 w-full bg-theme-bg px-8 py-4 font-mono text-body-14 text-theme-fg outline-none ring-1 ring-theme-fg"
                       autoFocus
                       maxLength={24}
+                      aria-label="会话名称"
                     />
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end gap-8">
                       <button
                         type="button"
                         onClick={commitRename}
                         disabled={!renameDraft.trim()}
-                        className="border-2 border-[#00aaaa] px-2 py-0.5 text-xs text-[#00aaaa] cursor-pointer disabled:opacity-40"
+                        className="cursor-pointer px-8 py-2 text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg hover:text-theme-bg disabled:opacity-40"
                       >
                         保存
                       </button>
                       <button
                         type="button"
                         onClick={() => setRenamingSessionId(null)}
-                        className="border-2 border-[#AAA] px-2 py-0.5 text-xs text-[#CCC] cursor-pointer"
+                        className="cursor-pointer px-8 py-2 text-body-10 uppercase text-theme-dim ring-1 ring-theme-fg/30 hover:bg-theme-fg/10"
                       >
                         取消
                       </button>
@@ -245,31 +283,73 @@ export default function ChatSidebar({
                   <>
                     <button
                       type="button"
-                      onClick={() => handleSwitchSession(session.id)}
-                      className="block w-full min-w-0 px-2 py-2 pr-11 text-left cursor-pointer"
+                      onClick={() => {
+                        // Swallow the click that follows a long-press trigger —
+                        // the gesture already opened the menu.
+                        if (suppressRowClickRef.current) {
+                          suppressRowClickRef.current = false;
+                          return;
+                        }
+                        handleSwitchSession(session.id);
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        cancelLongPress();
+                        suppressRowClickRef.current = true;
+                        menuTriggerRef.current = event.currentTarget;
+                        openMenuAt(session.id, event.clientX, event.clientY);
+                      }}
+                      onPointerDown={(event) => {
+                        if (event.pointerType === 'mouse') return;
+                        const { clientX, clientY } = event;
+                        cancelLongPress();
+                        longPressPosRef.current = { x: clientX, y: clientY };
+                        longPressTimerRef.current = setTimeout(() => {
+                          longPressTimerRef.current = null;
+                          suppressRowClickRef.current = true;
+                          menuTriggerRef.current = event.currentTarget;
+                          openMenuAt(session.id, clientX, clientY);
+                        }, LONG_PRESS_MS);
+                      }}
+                      onPointerMove={(event) => {
+                        if (!longPressTimerRef.current) return;
+                        const dx = event.clientX - longPressPosRef.current.x;
+                        const dy = event.clientY - longPressPosRef.current.y;
+                        if (Math.hypot(dx, dy) > LONG_PRESS_MOVE) cancelLongPress();
+                      }}
+                      onPointerUp={cancelLongPress}
+                      onPointerCancel={cancelLongPress}
+                      onPointerLeave={cancelLongPress}
+                      className={`grid min-h-28 w-full min-w-0 grid-cols-[minmax(0,1fr)] items-center gap-x-[2ch] px-8 py-4 text-left cursor-pointer ring-1 ${
+                        active
+                          ? 'bg-theme-fg text-theme-bg ring-theme-fg'
+                          : 'ring-theme-fg/30 hover:bg-theme-fg/10 hover:ring-theme-fg/60'
+                      } @min-[180px]:grid-cols-[minmax(0,1fr)_auto_auto]`}
                       aria-current={active ? 'true' : undefined}
                     >
-                      <span className="block truncate text-sm text-[#EEE]">{session.title}</span>
-                      <span className="mt-0.5 block truncate text-xs text-[#888]">
-                        消息 {session.messages.length} · {formatSessionTime(session.updatedAt)}
-                        {loading ? ' · 生成中' : ''}
+                      <span className="min-w-0">
+                        <span className="block truncate font-semibold">
+                          {session.title}
+                        </span>
+                        <span
+                          className={`block truncate text-body-10 ${active ? 'opacity-80' : 'text-theme-muted'}`}
+                        >
+                          {latestPreview(session.messages)}
+                          {loading ? ' · 生成中' : ''}
+                        </span>
                       </span>
-                      <span className="mt-1 block truncate text-xs text-[#AAA]">{latestPreview(session.messages)}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        openMenu(session.id, event.currentTarget);
-                      }}
-                      className={`absolute right-0 top-0.5 flex h-7 w-7 items-center justify-center bg-transparent text-lg leading-none text-[#CCC] cursor-pointer transition-colors hover:text-[#00aaaa] focus-visible:text-[#00aaaa] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00aaaa] lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100 ${menuState?.sessionId === session.id ? 'lg:opacity-100 text-[#00aaaa]' : ''}`}
-                      aria-label="会话菜单"
-                      aria-expanded={menuState?.sessionId === session.id}
-                      aria-haspopup="menu"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 22 22" aria-hidden="true" className="block">
-                        <path d="M0 0h22v22H0z" fill="none" />
-                        <path fill="currentColor" d="M14 19h-2v-4H8v4H6v-4H3v-2h4V9H4V7h4V3h2v4h4V3h2v4h3v2h-4v4h3v2h-4m-1-2V9H9v4Z" />
-                      </svg>
+                      <span
+                        aria-hidden
+                        className={`hidden tabular-nums @min-[180px]:block ${active ? 'opacity-80' : 'text-theme-dim'}`}
+                      >
+                        {session.messages.length}m
+                      </span>
+                      <span
+                        aria-hidden
+                        className={`hidden tabular-nums @min-[180px]:block ${active ? 'opacity-80' : 'text-theme-dim'}`}
+                      >
+                        {formatSessionTime(session.updatedAt)}
+                      </span>
                     </button>
                   </>
                 )}
@@ -277,112 +357,199 @@ export default function ChatSidebar({
             );
           })}
         </div>
-
-        {menuState && (
-          <div
-            data-chat-sidebar-menu
-            className="fixed z-[60] w-32 border-2 border-[#AAA] bg-black text-[#CCC]"
-            style={{
-              left: `${menuState.left}px`,
-              top: `${menuState.top}px`,
-            }}
-            role="menu"
-            aria-label="会话菜单"
-          >
-            {(() => {
-              const session = sessions.find((item) => item.id === menuState.sessionId);
-              if (!session) return null;
-              const loading = isSessionLoading(session.id);
-              const canClear = session.messages.length > 0 && !loading;
-              const canDelete = !loading;
-
-              return (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => startRename(session)}
-                    className="block w-full px-3 py-2 text-left text-xs hover:bg-[#111] hover:text-[#00aaaa] cursor-pointer"
-                    role="menuitem"
-                  >
-                    改名
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (confirmClearSessionId === session.id) {
-                        clearChatSession(session.id);
-                        closeTools();
-                      } else {
-                        setConfirmClearSessionId(session.id);
-                        setConfirmDeleteSessionId(null);
-                      }
-                    }}
-                    disabled={!canClear}
-                    className="block w-full px-3 py-2 text-left text-xs hover:bg-[#111] hover:text-[#00aaaa] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                    role="menuitem"
-                  >
-                    {confirmClearSessionId === session.id ? '确认清空' : '清空'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (confirmDeleteSessionId === session.id) {
-                        deleteChatSession(session.id);
-                        closeTools();
-                      } else {
-                        setConfirmDeleteSessionId(session.id);
-                        setConfirmClearSessionId(null);
-                      }
-                    }}
-                    disabled={!canDelete}
-                    className="block w-full px-3 py-2 text-left text-xs text-[#ff5555] hover:bg-[#111] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                    role="menuitem"
-                  >
-                    {confirmDeleteSessionId === session.id ? '确认删除' : '删除'}
-                  </button>
-                </>
-              );
-            })()}
-          </div>
-        )}
       </div>
     </div>
   );
 
+  // The session menu is portaled once at component root — panel() renders in
+  // both the desktop aside and the mobile drawer, so a portal inside it would
+  // duplicate (and escape the hidden aside's display:none on mobile).
+  const menuPortal =
+    menuState &&
+    typeof document !== 'undefined' &&
+    createPortal(
+      <div
+        ref={menuRef}
+        data-chat-sidebar-menu
+        className="fixed z-[9998] flex w-128 flex-col gap-1 rounded-4 bg-theme-bg p-2 font-mono text-body-14 text-theme-fg ring-1 ring-theme-fg/30"
+        style={{
+          left: `${menuState.left}px`,
+          top: `${menuState.top}px`,
+        }}
+        role="menu"
+        aria-label="会话菜单"
+        onKeyDown={(event) => {
+          const items = Array.from(
+            menuRef.current?.querySelectorAll<HTMLButtonElement>(
+              '[role="menuitem"]:not(:disabled)',
+            ) ?? [],
+          );
+          if (!items.length) return;
+          const index = items.indexOf(
+            document.activeElement as HTMLButtonElement,
+          );
+          if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            items[(index + 1) % items.length].focus();
+          } else if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            items[(index - 1 + items.length) % items.length].focus();
+          } else if (event.key === 'Home') {
+            event.preventDefault();
+            items[0].focus();
+          } else if (event.key === 'End') {
+            event.preventDefault();
+            items[items.length - 1].focus();
+          } else if (event.key === 'Tab') {
+            event.preventDefault();
+            closeTools();
+          }
+        }}
+      >
+        {(() => {
+          const session = sessions.find(
+            (item) => item.id === menuState.sessionId,
+          );
+          if (!session) return null;
+          const loading = isSessionLoading(session.id);
+          const canClear = session.messages.length > 0 && !loading;
+          const canDelete = !loading;
+
+          return (
+            <>
+              <button
+                type="button"
+                onClick={() => startRename(session)}
+                className="block w-full cursor-pointer rounded-2 px-8 py-4 text-left hover:bg-theme-fg/10 focus:bg-theme-fg/10"
+                role="menuitem"
+              >
+                改名
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirmClearSessionId === session.id) {
+                    clearChatSession(session.id);
+                    closeTools();
+                  } else {
+                    setConfirmClearSessionId(session.id);
+                    setConfirmDeleteSessionId(null);
+                  }
+                }}
+                disabled={!canClear}
+                className="block w-full cursor-pointer rounded-2 px-8 py-4 text-left hover:bg-theme-fg/10 focus:bg-theme-fg/10 disabled:cursor-not-allowed disabled:opacity-40"
+                role="menuitem"
+              >
+                {confirmClearSessionId === session.id ? '确认清空' : '清空'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirmDeleteSessionId === session.id) {
+                    deleteChatSession(session.id);
+                    closeTools();
+                  } else {
+                    setConfirmDeleteSessionId(session.id);
+                    setConfirmClearSessionId(null);
+                  }
+                }}
+                disabled={!canDelete}
+                className="block w-full cursor-pointer rounded-2 px-8 py-4 text-left text-error hover:bg-theme-fg/10 focus:bg-theme-fg/10 disabled:cursor-not-allowed disabled:opacity-40"
+                role="menuitem"
+              >
+                {confirmDeleteSessionId === session.id ? '确认删除' : '删除'}
+              </button>
+            </>
+          );
+        })()}
+      </div>,
+      document.body,
+    );
+
   return (
     <>
+      {menuPortal}
       {open && (
         <Modal
           id="chat-sidebar-drawer"
           onClose={closeSidebar}
           ariaLabel="聊天列表"
           backdropClassName="absolute inset-0 z-40 bg-black/70 lg:hidden"
-          panelClassName="absolute inset-y-0 left-0 z-50 w-[clamp(240px,72vw,280px)] overflow-hidden border-r-2 border-[#AAA] bg-black lg:hidden"
+          panelClassName="absolute inset-y-0 left-0 z-50 w-[clamp(240px,72vw,280px)] overflow-hidden bg-theme-bg ring-1 ring-theme-fg/30 lg:hidden"
         >
-          {panel(true)}
+          {panel()}
         </Modal>
       )}
 
-      {collapsed ? (
-        <aside className="hidden w-[48px] shrink-0 bg-black lg:flex lg:flex-col lg:items-center" aria-label="聊天列表已收起">
-          <div className="shrink-0 w-full px-2 pb-2 pt-0 lg:pt-1">
-            <div className="flex items-center justify-center lg:mb-1">
-              <button
-                type="button"
-                onClick={toggleCollapse}
-                className="flex h-8 w-8 items-center justify-center bg-transparent p-0 text-[#CCC] cursor-pointer hover:text-[#00aaaa] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00aaaa]"
-                aria-label="展开聊天列表"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="2 2 18 18" aria-hidden="true" className="block h-5 w-5">
-                  <path fill="currentColor" d="M12 16h-2v-2h1v-1h1v-1H6v-2h6V9h-1V8h-1V6h2v1h1v1h1v1h1v1h1v2h-1v1h-1v1h-1v1h-1m6 5H4v-1H3v-1H2V4h1V3h1V2h14v1h1v1h1v14h-1v1h-1m-1-1v-1h1V5h-1V4H5v1H4v12h1v1Z" />
-                </svg>
-              </button>
-            </div>
+      {!collapsed && (
+        <aside
+          className="hidden shrink-0 overflow-hidden lg:flex"
+          style={{ width: `${sidebarWidth}px` }}
+          aria-label="聊天列表"
+        >
+          {panel()}
+          {/* Split-pane separator — the design's one resizable control.
+              Pointer-capture drag clamps the panel width; Arrow keys nudge,
+              Home/End snap to bounds, Enter/Space/double-click reset. */}
+          <div
+            role="separator"
+            tabIndex={0}
+            aria-label="调整会话列表宽度"
+            aria-orientation="vertical"
+            aria-valuenow={sidebarWidth}
+            aria-valuemin={SIDEBAR_MIN_W}
+            aria-valuemax={SIDEBAR_MAX_W}
+            className="group relative flex h-full w-12 shrink-0 cursor-col-resize touch-none items-center justify-center px-5 outline-none"
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              event.currentTarget.setPointerCapture(event.pointerId);
+              const startX = event.clientX;
+              const base = sidebarWidth;
+              const onMove = (moveEvent: PointerEvent) => {
+                setSidebarWidth(
+                  Math.min(
+                    SIDEBAR_MAX_W,
+                    Math.max(SIDEBAR_MIN_W, base + moveEvent.clientX - startX),
+                  ),
+                );
+              };
+              const onEnd = () => {
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onEnd);
+                window.removeEventListener('pointercancel', onEnd);
+              };
+              window.addEventListener('pointermove', onMove);
+              window.addEventListener('pointerup', onEnd);
+              window.addEventListener('pointercancel', onEnd);
+            }}
+            onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT_W)}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                event.preventDefault();
+                const step = event.key === 'ArrowLeft' ? -8 : 8;
+                setSidebarWidth((w) =>
+                  Math.min(SIDEBAR_MAX_W, Math.max(SIDEBAR_MIN_W, w + step)),
+                );
+              } else if (event.key === 'Home') {
+                event.preventDefault();
+                setSidebarWidth(SIDEBAR_MIN_W);
+              } else if (event.key === 'End') {
+                event.preventDefault();
+                setSidebarWidth(SIDEBAR_MAX_W);
+              } else if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setSidebarWidth(SIDEBAR_DEFAULT_W);
+              }
+            }}
+          >
+            {/* Continues the title bar's bottom hairline across the handle
+                zone so it meets the divider — otherwise a 12px gap shows. */}
+            <span aria-hidden className="absolute left-0 right-1/2 top-0 h-26 border-b border-theme-fg/30" />
+            <span
+              aria-hidden
+              className="h-full w-1 bg-theme-fg/30 transition-colors group-hover:bg-theme-fg/60 group-focus-visible:bg-theme-fg/60"
+            />
           </div>
-        </aside>
-      ) : (
-        <aside className="hidden w-[256px] shrink-0 overflow-hidden border-r-2 border-[#AAA] bg-black lg:flex" aria-label="聊天列表">
-          {panel(false)}
         </aside>
       )}
     </>

@@ -1,5 +1,5 @@
 import { AppConfig } from '@/types';
-import { CHAT_MODEL_PRESETS, CLAUDE_MODEL_PRESETS } from '@/lib/constants';
+import { CHAT_EFFORT_OPTIONS, CHAT_MODEL_PRESETS, CLAUDE_MODEL_PRESETS } from '@/lib/constants';
 import { mergeModelOptions, modelNamesToOptions, ModelOption, normalizeModelList } from '@/lib/model-options';
 
 export type ChatApiFormat = AppConfig['chatApiFormat'];
@@ -107,4 +107,8 @@ export function getChatProviderConfig(
 
 export function getActiveChatModel(config: AppConfig) {
   return config.chatModel;
+}
+
+export function normalizeChatEffort(value: unknown): string | undefined {
+  return CHAT_EFFORT_OPTIONS.some((option) => option === value) ? value as string : undefined;
 }

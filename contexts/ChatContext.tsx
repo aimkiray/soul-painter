@@ -63,6 +63,7 @@ export interface ChatTurnSnapshot {
   model: string;
   chatModel: string;
   chatApiFormat?: 'openai' | 'claude';
+  chatEffort?: string;
   size: string;
   n: number;
   quality: string;

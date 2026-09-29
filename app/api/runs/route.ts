@@ -102,6 +102,7 @@ function sanitizeConfig(config: ServerRunCreatePayload['config']): ServerRunCrea
     chatModel: config.chatModel,
     titleModel: config.titleModel,
     chatApiFormat: config.chatApiFormat,
+    chatEffort: config.chatEffort,
     openAIChatModels: config.openAIChatModels,
     customImageModels: config.customImageModels,
     customChatModels: config.customChatModels,

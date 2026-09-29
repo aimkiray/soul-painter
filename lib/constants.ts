@@ -20,12 +20,17 @@ export const SIZE_PRESETS = [
 
 export const IMAGE_MODEL_PRESETS = [
   { label: 'gpt-image-2', value: 'gpt-image-2' },
+  { label: 'gpt-image-2.5', value: 'gpt-image-2.5' },
 ] as const;
 
 export const CHAT_MODEL_PRESETS = [
   { label: 'gpt-5.6-sol', value: 'gpt-5.6-sol' },
-  { label: 'gpt-5.6-terra', value: 'gpt-5.6-terra' },
   { label: 'gpt-5.6-luna', value: 'gpt-5.6-luna' },
+  { label: 'gpt-5.6', value: 'gpt-5.6' },
+  { label: 'gpt-5.5', value: 'gpt-5.5' },
+  { label: 'gpt-6-astra', value: 'gpt-6-astra' },
+  { label: 'gpt-6-luna', value: 'gpt-6-luna' },
+  { label: 'codex-auto-review', value: 'codex-auto-review' },
 ] as const;
 
 export const CLAUDE_MODEL_PRESETS = [
@@ -34,6 +39,8 @@ export const CLAUDE_MODEL_PRESETS = [
   { label: 'claude-sonnet-5', value: 'claude-sonnet-5' },
   { label: 'claude-haiku-4-5', value: 'claude-haiku-4-5' },
 ] as const;
+
+export const CHAT_EFFORT_OPTIONS = ['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export const CHAT_API_FORMAT_OPTIONS = [
   { label: 'OpenAI Compatible', value: 'openai' },
@@ -56,8 +63,9 @@ export const DEFAULT_CONFIG = {
   mode: 'image',
   model: 'gpt-image-2',
   chatModel: 'gpt-5.6-sol',
-  titleModel: 'gpt-5.6-terra',
+  titleModel: 'gpt-5.6-sol',
   chatApiFormat: 'openai',
+  chatEffort: 'auto',
   openAIChatModels: CHAT_MODEL_PRESETS.map((option) => option.value),
   customImageModels: [],
   customChatModels: [],

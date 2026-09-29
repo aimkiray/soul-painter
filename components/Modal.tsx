@@ -10,6 +10,7 @@ interface ModalProps {
   ariaLabel: string;
   backdropClassName?: string;
   panelClassName?: string;
+  panelStyle?: React.CSSProperties;
   closeOnBackdropClick?: boolean;
   children: React.ReactNode;
 }
@@ -25,6 +26,7 @@ export default function Modal({
   ariaLabel,
   backdropClassName = '',
   panelClassName = '',
+  panelStyle,
   closeOnBackdropClick = true,
   children,
 }: ModalProps) {
@@ -90,9 +92,10 @@ export default function Modal({
         aria-modal="true"
         aria-label={ariaLabel}
         tabIndex={-1}
+        style={panelStyle}
         className={`focus:outline-none ${panelClassName}`}
         onKeyDown={(event) => {
-          if (event.key !== 'Tab') return;
+          if (event.key !== 'Tab' || event.defaultPrevented) return;
           const panel = panelRef.current;
           if (!panel) return;
           const focusables = Array.from(

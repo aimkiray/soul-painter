@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useCallback, useRef, useEffect } from 'react';
+import React, { useCallback, useRef, useEffect, useMemo } from 'react';
 import { useChat } from '@/contexts/ChatContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useImages } from '@/contexts/ImageContext';
+import { hitToFile } from '@/lib/image-ref-utils';
+import type { ImageHit } from '@/types';
 import ChatBubble from './ChatBubble';
 
-const CHAT_CONTENT_CLASS = 'chat-content-width px-2 sm:px-3';
+const CHAT_CONTENT_CLASS = 'chat-content-width';
 
 function isPendingBotMessage(message: { role: string; prompt: string; images: unknown[]; text: string; code: string; extra: string; serverRunId?: string }) {
   return message.role === 'bot'
@@ -25,12 +27,13 @@ interface ChatAreaProps {
 
 export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMessageId = null }: ChatAreaProps) {
   const { config } = useConfig();
-  const { hasImages } = useImages();
+  const { hasImages, addFiles } = useImages();
   const {
     messages,
     isLoading,
     activeSessionId,
     deleteMessage,
+    setStatus,
   } = useChat();
   const isActiveSessionLoading = isLoading;
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -47,9 +50,41 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
     (messageId: string) => deleteMessage(messageId, activeSessionId),
     [deleteMessage, activeSessionId],
   );
+  const addingRefKeysRef = useRef(new Set<string>());
+  const handleUseAsReference = useCallback((hit: ImageHit, index: number) => {
+    const key = `${index}:${(hit.dataUrl || hit.url || '').slice(0, 80)}`;
+    if (addingRefKeysRef.current.has(key)) return;
+    addingRefKeysRef.current.add(key);
+    void (async () => {
+      try {
+        const file = await hitToFile(hit, index);
+        if (!file) {
+          setStatus('参考图添加失败', 'err');
+          return;
+        }
+        await addFiles([file]);
+        setStatus(
+          config.mode === 'chat' ? '参考图已加入；切换到 IMG 模式后才会随请求发送' : '已加入参考图',
+          config.mode === 'chat' ? 'warn' : 'ok',
+        );
+      } finally {
+        addingRefKeysRef.current.delete(key);
+      }
+    })();
+  }, [addFiles, setStatus, config.mode]);
   const lastUserIndex = messages.findLastIndex((message) => message.role === 'user');
   const hasAssistantForCurrentTurn = lastUserIndex >= 0
     && messages.slice(lastUserIndex + 1).some((message) => message.role === 'bot');
+  // One pass: regenerate is offered on bot messages that follow a user prompt.
+  const seenUserPromptByIndex = useMemo(() => {
+    const flags: boolean[] = [];
+    let seen = false;
+    for (const message of messages) {
+      flags.push(seen);
+      if (message.role === 'user' && message.prompt.trim()) seen = true;
+    }
+    return flags;
+  }, [messages]);
   const hasActiveAssistantMessage = isActiveSessionLoading && (
     hasAssistantForCurrentTurn
     || messages.some((message) => isPendingBotMessage(message) || message.id === pendingMessageId)
@@ -78,13 +113,29 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
     bottomRef.current?.scrollIntoView({ behavior: isActiveSessionLoading ? 'auto' : 'smooth' });
   }, [messages, isActiveSessionLoading]);
 
+  // Images have no reserved height — they expand the content column as they
+  // finish loading, after the session-switch scroll has already run. Keep the
+  // view pinned to the bottom while near-bottom (scrolling up releases it).
+  useEffect(() => {
+    const content = scrollRef.current?.firstElementChild;
+    if (!content) return;
+    const observer = new ResizeObserver(() => {
+      if (isNearBottomRef.current) bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [activeSessionId, messages.length]);
+
   if (messages.length === 0 && !isActiveSessionLoading) {
     return (
-      <div className="chat-scroll-gutter flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col">
+      <div className="flex-1 overflow-y-auto py-8 sm:py-16 flex flex-col" role="log" aria-live="off" aria-label="聊天记录">
         <div className={`${CHAT_CONTENT_CLASS} flex-1 flex flex-col`}>
-          <div className="m-auto flex flex-col items-center justify-center text-center px-4 py-8 select-none">
-            <p className="text-[#00aaaa] text-sm tracking-normal">{emptyTitle}</p>
-            <p className="text-[#CCC] text-sm mt-1">{emptySubtitle}</p>
+          <div className="m-auto flex flex-col items-center justify-center px-16 py-32 text-center font-mono">
+            <p className="text-body-14 uppercase text-theme-fg">
+              {emptyTitle}
+              <span aria-hidden className="ml-4 inline-block h-14 w-8 animate-blink bg-theme-fg align-middle motion-reduce:hidden" />
+            </p>
+            <p className="mt-4 text-body-14 text-theme-muted">{emptySubtitle}</p>
           </div>
         </div>
       </div>
@@ -92,19 +143,28 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
   }
 
   return (
-    <div className="chat-scroll-gutter flex-1 overflow-y-auto py-2 sm:py-4 flex flex-col" id="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
+    <div
+      className="scroll-fade-y -mx-2 flex-1 overflow-y-auto overflow-x-hidden px-2 py-8 sm:py-16 flex flex-col"
+      id="chat-scroll"
+      ref={scrollRef}
+      onScroll={handleScroll}
+      role="log"
+      aria-live="off"
+      aria-label="聊天记录"
+    >
+      <span className="sr-only" role="status">
+        {isActiveSessionLoading ? '生成中' : messages.at(-1)?.extra === 'error' ? '上一次生成失败' : ''}
+      </span>
       <div className={`${CHAT_CONTENT_CLASS} flex flex-col`}>
         {messages.map((msg, i) => {
           const isRegeneratingMessage = msg.id === pendingMessageId;
           const isServerRunPending = !!msg.serverRunId && isPendingBotMessage(msg);
           const isMessagePending = isRegeneratingMessage || isServerRunPending;
-          const canRegenerate = msg.role === 'bot'
-            && messages.slice(0, i).some((message) => message.role === 'user' && message.prompt.trim());
+          const canRegenerate = msg.role === 'bot' && seenUserPromptByIndex[i];
           return (
             <ChatBubble
               key={msg.id}
               message={msg}
-              messageIndex={i}
               isPending={isMessagePending}
               isRegenerating={isRegeneratingMessage}
               disabled={isLoading}
@@ -112,14 +172,18 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
               onDelete={handleDelete}
               onEdit={onEditMessage}
               onRegenerate={onRegenerateMessage}
+              onUseAsReference={handleUseAsReference}
             />
           );
         })}
         {isActiveSessionLoading && !hasActiveAssistantMessage && (
-          <div className="flex flex-col gap-1 mb-3 items-start">
-            <span className="text-xs px-1 text-[#CCC]">Assistant</span>
-            <div className="w-fit max-w-full min-w-0 bg-[#111] text-[#CCC] border-2 border-[#AAA] py-2 px-3">
-              <span className="animate-pulse text-sm">生成中...</span>
+          <div className="mb-12 flex flex-col items-start gap-4">
+            <span className="px-4 font-mono text-body-10 uppercase text-theme-muted">Assistant</span>
+            <div className="w-fit max-w-full min-w-0 px-12 py-8 ring-1 ring-theme-fg/30">
+              <span className="text-theme-dim">
+                生成中
+                <span aria-hidden className="ml-4 inline-block h-12 w-6 animate-blink bg-theme-dim align-middle motion-reduce:hidden" />
+              </span>
             </div>
           </div>
         )}

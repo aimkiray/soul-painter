@@ -12,7 +12,7 @@ import {
   OPTS_STORAGE_KEY,
   LOCAL_DATA_CLEARED_STORAGE_KEY,
 } from '@/lib/constants';
-import { getClaudeChatModelOptions, getOpenAIChatModelOptions } from '@/lib/chat-config';
+import { getClaudeChatModelOptions, getOpenAIChatModelOptions, normalizeChatEffort } from '@/lib/chat-config';
 import { mergeModelOptions, normalizeModelList } from '@/lib/model-options';
 import { isLocalDataCleared, markLocalDataCleared, clearLocalDataClearedMarker } from '@/lib/local-data-cleared';
 import { clear } from 'idb-keyval';
@@ -165,6 +165,8 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
       if (sp.get('titlemodel')) urlConfig.titleModel = sp.get('titlemodel')!;
       if (sp.get('chatApiFormat')) urlConfig.chatApiFormat = normalizeChatApiFormat(sp.get('chatApiFormat'));
       if (sp.get('chatformat')) urlConfig.chatApiFormat = normalizeChatApiFormat(sp.get('chatformat'));
+      if (sp.get('chatEffort')) urlConfig.chatEffort = normalizeChatEffort(sp.get('chatEffort')) ?? DEFAULT_CONFIG.chatEffort;
+      if (sp.get('chateffort')) urlConfig.chatEffort = normalizeChatEffort(sp.get('chateffort')) ?? DEFAULT_CONFIG.chatEffort;
       if (sp.get('claudeBaseUrl')) urlConfig.claudeBaseUrl = sp.get('claudeBaseUrl')!;
       if (sp.get('claudebaseurl')) urlConfig.claudeBaseUrl = sp.get('claudebaseurl')!;
       if (sp.get('claudeApiKey')) urlConfig.claudeApiKey = sp.get('claudeApiKey')!;
@@ -217,6 +219,7 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
     customImageModels: normalizeModelList(storedConfig.customImageModels),
     customChatModels: normalizeModelList(storedConfig.customChatModels),
     chatApiFormat: normalizeChatApiFormat(urlConfig.chatApiFormat ?? storedConfig.chatApiFormat),
+    chatEffort: normalizeChatEffort(urlConfig.chatEffort ?? storedConfig.chatEffort) ?? runtimeDefaults.chatEffort,
     claudeBaseUrl: urlConfig.claudeBaseUrl ?? storedConfig.claudeBaseUrl ?? (
       storedConfig.chatApiFormat === 'claude' ? storedConfig.chatBaseUrl || '' : runtimeDefaults.claudeBaseUrl
     ),

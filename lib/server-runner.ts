@@ -1,5 +1,5 @@
 import type { AppConfig, AppOptions, ImageHit } from '@/types';
-import { getChatProviderConfig, type ChatApiFormat } from '@/lib/chat-config';
+import { getChatProviderConfig, normalizeChatEffort, type ChatApiFormat } from '@/lib/chat-config';
 import type { ChatReferenceImage, ChatTurnSnapshot } from '@/contexts/ChatContext';
 import type { RequestBody } from '@/lib/request-helpers';
 import type { ServerRunRecord, ServerRunResult } from '@/lib/server-runs';
@@ -536,11 +536,13 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
   const format = run.request.chatApiFormat || run.config.chatApiFormat;
   const target = chatTarget(config, format, runAllowsServerDefaults(run.id));
   const streaming = Boolean(run.request.streaming && run.options.streaming);
-  const body = {
+  const body: Record<string, unknown> = {
     model: run.request.chatModel || config.chatModel,
     messages: buildChatMessages(run.historyMessages, run.prompt, run.request.systemPrompt || '', run.request.contextLimit),
     stream: streaming,
   };
+  const effort = normalizeChatEffort(run.request.chatEffort || config.chatEffort);
+  if (format !== 'claude' && effort && effort !== 'auto') body.reasoning_effort = effort;
   const upstreamBody = format === 'claude' ? toClaudeMessagesBody(body) : body;
   const upstreamPath = format === 'claude' ? '/messages' : '/chat/completions';
 

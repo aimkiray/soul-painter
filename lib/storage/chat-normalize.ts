@@ -1,6 +1,7 @@
 import type { ImageHit } from '@/types';
 import type { ChatMessage, ChatReferenceImage, ChatSession, ChatSyncTombstone, ChatTurnSnapshot } from '@/contexts/ChatContext';
 import { normalizeChatImageHit } from '@/lib/chat-asset-client';
+import { normalizeChatEffort } from '@/lib/chat-config';
 import { normalizeChatTitle } from '@/lib/title';
 import { CHAT_MESSAGES_MAX, CHAT_SESSIONS_MAX } from '@/lib/constants';
 
@@ -152,6 +153,7 @@ export function normalizeStoredTurnSnapshot(value: unknown): ChatTurnSnapshot | 
     model: typeof raw.model === 'string' ? raw.model : '',
     chatModel: typeof raw.chatModel === 'string' ? raw.chatModel : '',
     chatApiFormat: raw.chatApiFormat === 'claude' ? 'claude' : raw.chatApiFormat === 'openai' ? 'openai' : undefined,
+    chatEffort: normalizeChatEffort(raw.chatEffort),
     size: typeof raw.size === 'string' ? raw.size : 'auto',
     n: typeof raw.n === 'number' && Number.isFinite(raw.n) ? raw.n : 1,
     quality: typeof raw.quality === 'string' ? raw.quality : 'auto',
