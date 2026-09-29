@@ -36,8 +36,8 @@ iOS:
 
 <table>
   <tr>
-    <td width="50%" align="center"><img src="docs/screenshots/mobile-drawer.png" alt="Slide-out session drawer"></td>
-    <td width="50%" align="center"><img src="docs/screenshots/mobile-chat.png" alt="Mobile chat with two-row controls"></td>
+    <td width="50%" align="center"><img src="docs/screenshots/ios-drawer.png" alt="Slide-out session drawer"></td>
+    <td width="50%" align="center"><img src="docs/screenshots/ios-chat.png" alt="Mobile chat with two-row controls"></td>
   </tr>
   <tr>
     <td align="center">Session drawer</td>
