@@ -184,10 +184,6 @@ npm run lint     # ESLint
 npm run test     # Vitest unit tests
 ```
 
-## Credits
-
-Inspired by 米醋画图.
-
 ## License
 
 MIT
