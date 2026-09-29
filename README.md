@@ -6,13 +6,13 @@ A monochrome terminal-desktop AI image generation and chat tool — text-to-imag
 
 Desktop (4K):
 
-| Chat mode | Generate → 参考 (use as reference) |
+| Chat mode | Generate → reuse as reference |
 |:---:|:---:|
-| ![Chat with streamed replies and message actions](docs/screenshots/desktop-chat.png) | ![Generated image piped into ~/refs](docs/screenshots/desktop-generate.png) |
+| <img src="docs/screenshots/desktop-chat.png" width="640" alt="Chat with streamed replies and message actions"> | <img src="docs/screenshots/desktop-generate.png" width="640" alt="Generated image piped into ~/refs"> |
 
 | Session context menu | `~/config` settings window |
 |:---:|:---:|
-| ![Right-click a session card to rename, clear or delete](docs/screenshots/desktop-context-menu.png) | ![Draggable settings window](docs/screenshots/desktop-settings.png) |
+| <img src="docs/screenshots/desktop-context-menu.png" width="640" alt="Right-click a session card to rename, clear or delete"> | <img src="docs/screenshots/desktop-settings.png" width="640" alt="Draggable settings window"> |
 
 Swappable palettes — `matrix` on desktop:
 
@@ -22,11 +22,12 @@ iOS:
 
 | Session drawer | Chat + composer |
 |:---:|:---:|
-| ![Slide-out session drawer](docs/screenshots/mobile-drawer.png) | ![Mobile chat with two-row controls](docs/screenshots/mobile-chat.png) |
+| <img src="docs/screenshots/mobile-drawer.png" width="320" alt="Slide-out session drawer"> | <img src="docs/screenshots/mobile-chat.png" width="320" alt="Mobile chat with two-row controls"> |
 
 ## Features
 
 - **Terminal Desktop UI** — Full-viewport shell with hairline borders, draggable modal windows, and monospace typography (Inter + Ubuntu Mono)
+- **Bilingual UI** — English and Chinese interface; defaults to English, switchable from the header toggle
 - **Swappable Themes** — Seven terminal palettes (default, matrix, amber, solarized-dark, monokai, nord, dracula), cycled with `T` or the toolbar button
 - **Text-to-Image** — Describe what you want, generate images via API
 - **Image-to-Image** — Upload reference images and describe edits
@@ -36,7 +37,7 @@ iOS:
 - **Server Runs** — Prompts execute as durable server-side runs that survive reloads and restarts; progress streams over SSE and can be cancelled mid-flight
 - **Custom Sizes** — Pick a preset aspect ratio or type a custom `WxH` size
 - **Session Sidebar** — Resizable split pane (drag, arrow keys, double-click to reset); right-click or long-press a session for rename/clear/delete; collapses via the header button
-- **Message Actions** — Edit-and-resend, regenerate, copy, and delete on any chat message; generated images offer 放大/下载/参考 (lightbox, download, use as reference)
+- **Message Actions** — Edit-and-resend, regenerate, copy, and delete on any chat message; generated images offer lightbox, download, and reuse-as-reference
 - **Auto Compression** — Oversized images (>1.5MB or any edge >3840px) are automatically downscaled
 - **Chat History Sync** — Optional server-side sync across browsers via a username + sync secret; first login creates the account
 - **Model Gate** — Optional lock on model selection; triple-tap the footer version stamp to unlock
@@ -122,7 +123,7 @@ Chat settings can save separate OpenAI Compatible and Claude Compatible credenti
 
 1. **Drag & drop**, **paste**, or click the **attachment button** to add reference images
 2. Click a thumbnail to toggle selection — all selected images join the request
-3. Optionally click **编辑** on a selected thumbnail to open the mask editor — paint red overlay on areas to modify
+3. Optionally click **Edit** on a selected thumbnail to open the mask editor — paint red overlay on areas to modify
 4. Type instructions describing the desired edits
 5. Send
 
@@ -133,6 +134,7 @@ Chat settings can save separate OpenAI Compatible and Claude Compatible credenti
 | `Enter` / `Ctrl+Enter` | Send prompt |
 | `Shift+Enter` | New line |
 | `T` | Cycle theme |
+| `L` | Switch UI language (English / 中文) |
 | `Y` | Open sync login |
 | `S` / `F1` | Open settings |
 | `D` | Toggle debug panel |
@@ -183,6 +185,10 @@ npm run start    # Production server (port 3010)
 npm run lint     # ESLint
 npm run test     # Vitest unit tests
 ```
+
+## Credits
+
+Design language inspired by [edoardolunardi.dev](https://edoardolunardi.dev).
 
 ## License
 
