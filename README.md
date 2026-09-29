@@ -6,13 +6,27 @@ A monochrome terminal-desktop AI image generation and chat tool — text-to-imag
 
 Desktop (4K):
 
-| Chat mode | Generate → reuse as reference |
-|:---:|:---:|
-| <img src="docs/screenshots/desktop-chat.png" width="640" alt="Chat with streamed replies and message actions"> | <img src="docs/screenshots/desktop-generate.png" width="640" alt="Generated image piped into ~/refs"> |
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-chat.png" alt="Chat with streamed replies and message actions"></td>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-generate.png" alt="Generated image piped into ~/refs"></td>
+  </tr>
+  <tr>
+    <td align="center">Chat mode</td>
+    <td align="center">Generate → reuse as reference</td>
+  </tr>
+</table>
 
-| Session context menu | `~/config` settings window |
-|:---:|:---:|
-| <img src="docs/screenshots/desktop-context-menu.png" width="640" alt="Right-click a session card to rename, clear or delete"> | <img src="docs/screenshots/desktop-settings.png" width="640" alt="Draggable settings window"> |
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-context-menu.png" alt="Right-click a session card to rename, clear or delete"></td>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-settings.png" alt="Draggable settings window"></td>
+  </tr>
+  <tr>
+    <td align="center">Session context menu</td>
+    <td align="center"><code>~/config</code> settings window</td>
+  </tr>
+</table>
 
 Swappable palettes — `matrix` on desktop:
 
@@ -20,9 +34,16 @@ Swappable palettes — `matrix` on desktop:
 
 iOS:
 
-| Session drawer | Chat + composer |
-|:---:|:---:|
-| <img src="docs/screenshots/mobile-drawer.png" width="320" alt="Slide-out session drawer"> | <img src="docs/screenshots/mobile-chat.png" width="320" alt="Mobile chat with two-row controls"> |
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/mobile-drawer.png" alt="Slide-out session drawer"></td>
+    <td width="50%" align="center"><img src="docs/screenshots/mobile-chat.png" alt="Mobile chat with two-row controls"></td>
+  </tr>
+  <tr>
+    <td align="center">Session drawer</td>
+    <td align="center">Chat + composer</td>
+  </tr>
+</table>
 
 ## Features
 
