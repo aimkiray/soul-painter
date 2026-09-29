@@ -2,6 +2,28 @@
 
 A monochrome terminal-desktop AI image generation and chat tool — text-to-image, image-to-image editing, and inpainting with mask painting, styled as a terminal window manager.
 
+## Screenshots
+
+Desktop (4K):
+
+| Chat mode | Generate → 参考 (use as reference) |
+|:---:|:---:|
+| ![Chat with streamed replies and message actions](docs/screenshots/desktop-chat.png) | ![Generated image piped into ~/refs](docs/screenshots/desktop-generate.png) |
+
+| Session context menu | `~/config` settings window |
+|:---:|:---:|
+| ![Right-click a session card to rename, clear or delete](docs/screenshots/desktop-context-menu.png) | ![Draggable settings window](docs/screenshots/desktop-settings.png) |
+
+Swappable palettes — `matrix` on desktop:
+
+![Matrix theme](docs/screenshots/desktop-theme.png)
+
+iOS:
+
+| Session drawer | Chat + composer |
+|:---:|:---:|
+| ![Slide-out session drawer](docs/screenshots/mobile-drawer.png) | ![Mobile chat with two-row controls](docs/screenshots/mobile-chat.png) |
+
 ## Features
 
 - **Terminal Desktop UI** — Full-viewport shell with hairline borders, draggable modal windows, and monospace typography (Inter + Ubuntu Mono)
