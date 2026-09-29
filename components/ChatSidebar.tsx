@@ -4,7 +4,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useChat } from '@/contexts/ChatContext';
 import type { ChatMessage, ChatSession } from '@/contexts/ChatContext';
+import { useI18n } from '@/contexts/I18nContext';
 import { registerModalLayer } from '@/lib/modal-stack';
+import { DEFAULT_CHAT_TITLE, LEGACY_CHAT_TITLE } from '@/lib/storage/chat-normalize';
+import type { Lang, MsgKey } from '@/lib/i18n';
 import Modal from './Modal';
 
 interface ChatSidebarProps {
@@ -27,28 +30,36 @@ const MENU_HEIGHT = 112;
 const LONG_PRESS_MS = 500;
 const LONG_PRESS_MOVE = 10;
 
-function formatSessionTime(timestamp: number) {
+function formatSessionTime(timestamp: number, lang: Lang) {
   if (!timestamp || !Number.isFinite(timestamp)) return '--:--';
-  return new Date(timestamp).toLocaleTimeString('zh-CN', {
+  return new Date(timestamp).toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', {
     hour: '2-digit',
     minute: '2-digit',
   });
 }
 
-function messagePreview(message: ChatMessage | undefined) {
-  if (!message) return '空会话';
+type TFunc = (key: MsgKey, vars?: Record<string, string | number>) => string;
+
+// Auto-managed titles are stored as Chinese constants; render them localized.
+// Manually renamed titles pass through untouched.
+function sessionTitleText(title: string, t: TFunc) {
+  return title === DEFAULT_CHAT_TITLE || title === LEGACY_CHAT_TITLE ? t('untitledChat') : title;
+}
+
+function messagePreview(message: ChatMessage | undefined, t: TFunc) {
+  if (!message) return t('emptySession');
   if (message.role === 'user' && message.prompt.trim())
     return message.prompt.trim();
   if (message.role === 'bot') {
-    if (message.extra === 'error') return '请求失败';
+    if (message.extra === 'error') return t('requestFailed');
     if (message.text.trim()) return message.text.trim();
     if (message.images.length > 0)
-      return `生成 ${message.images.length} 张图片`;
+      return t('generatedCount', { n: message.images.length });
   }
-  return '空会话';
+  return t('emptySession');
 }
 
-function latestPreview(messages: ChatMessage[]) {
+function latestPreview(messages: ChatMessage[], t: TFunc) {
   const latest = [...messages]
     .reverse()
     .find(
@@ -57,7 +68,7 @@ function latestPreview(messages: ChatMessage[]) {
         (message.role === 'bot' &&
           (message.text.trim() || message.images.length > 0 || message.extra)),
     );
-  return messagePreview(latest);
+  return messagePreview(latest, t);
 }
 
 export default function ChatSidebar({
@@ -75,6 +86,7 @@ export default function ChatSidebar({
     clearChatSession,
     deleteChatSession,
   } = useChat();
+  const { lang, t } = useI18n();
 
   const [menuState, setMenuState] = useState<MenuState | null>(null);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(
@@ -229,7 +241,7 @@ export default function ChatSidebar({
           onClick={handleNewSession}
           className="h-28 w-full cursor-pointer border border-transparent bg-theme-fg px-8 text-left text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg"
         >
-          + 新建聊天
+          {t('newChat')}
         </button>
       </div>
 
@@ -259,7 +271,7 @@ export default function ChatSidebar({
                       className="mb-8 w-full bg-theme-bg px-8 py-4 font-mono text-body-14 text-theme-fg outline-none ring-1 ring-theme-fg"
                       autoFocus
                       maxLength={24}
-                      aria-label="会话名称"
+                      aria-label={t('sessionName')}
                     />
                     <div className="flex justify-end gap-8">
                       <button
@@ -268,14 +280,14 @@ export default function ChatSidebar({
                         disabled={!renameDraft.trim()}
                         className="cursor-pointer px-8 py-2 text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg hover:text-theme-bg disabled:opacity-40"
                       >
-                        保存
+                        {t('save')}
                       </button>
                       <button
                         type="button"
                         onClick={() => setRenamingSessionId(null)}
                         className="cursor-pointer px-8 py-2 text-body-10 uppercase text-theme-dim ring-1 ring-theme-fg/30 hover:bg-theme-fg/10"
                       >
-                        取消
+                        {t('cancel')}
                       </button>
                     </div>
                   </div>
@@ -329,13 +341,13 @@ export default function ChatSidebar({
                     >
                       <span className="min-w-0">
                         <span className="block truncate font-semibold">
-                          {session.title}
+                          {sessionTitleText(session.title, t)}
                         </span>
                         <span
                           className={`block truncate text-body-10 ${active ? 'opacity-80' : 'text-theme-muted'}`}
                         >
-                          {latestPreview(session.messages)}
-                          {loading ? ' · 生成中' : ''}
+                          {latestPreview(session.messages, t)}
+                          {loading ? t('generatingSuffix') : ''}
                         </span>
                       </span>
                       <span
@@ -348,7 +360,7 @@ export default function ChatSidebar({
                         aria-hidden
                         className={`hidden tabular-nums @min-[180px]:block ${active ? 'opacity-80' : 'text-theme-dim'}`}
                       >
-                        {formatSessionTime(session.updatedAt)}
+                        {formatSessionTime(session.updatedAt, lang)}
                       </span>
                     </button>
                   </>
@@ -377,7 +389,7 @@ export default function ChatSidebar({
           top: `${menuState.top}px`,
         }}
         role="menu"
-        aria-label="会话菜单"
+        aria-label={t('sessionMenu')}
         onKeyDown={(event) => {
           const items = Array.from(
             menuRef.current?.querySelectorAll<HTMLButtonElement>(
@@ -423,7 +435,7 @@ export default function ChatSidebar({
                 className="block w-full cursor-pointer rounded-2 px-8 py-4 text-left hover:bg-theme-fg/10 focus:bg-theme-fg/10"
                 role="menuitem"
               >
-                改名
+                {t('rename')}
               </button>
               <button
                 type="button"
@@ -440,7 +452,7 @@ export default function ChatSidebar({
                 className="block w-full cursor-pointer rounded-2 px-8 py-4 text-left hover:bg-theme-fg/10 focus:bg-theme-fg/10 disabled:cursor-not-allowed disabled:opacity-40"
                 role="menuitem"
               >
-                {confirmClearSessionId === session.id ? '确认清空' : '清空'}
+                {confirmClearSessionId === session.id ? t('confirmClear') : t('clear')}
               </button>
               <button
                 type="button"
@@ -457,7 +469,7 @@ export default function ChatSidebar({
                 className="block w-full cursor-pointer rounded-2 px-8 py-4 text-left text-error hover:bg-theme-fg/10 focus:bg-theme-fg/10 disabled:cursor-not-allowed disabled:opacity-40"
                 role="menuitem"
               >
-                {confirmDeleteSessionId === session.id ? '确认删除' : '删除'}
+                {confirmDeleteSessionId === session.id ? t('confirmDelete') : t('delete')}
               </button>
             </>
           );
@@ -473,7 +485,7 @@ export default function ChatSidebar({
         <Modal
           id="chat-sidebar-drawer"
           onClose={closeSidebar}
-          ariaLabel="聊天列表"
+          ariaLabel={t('chatList')}
           backdropClassName="absolute inset-0 z-40 bg-black/70 lg:hidden"
           panelClassName="absolute inset-y-0 left-0 z-50 w-[clamp(240px,72vw,280px)] overflow-hidden bg-theme-bg ring-1 ring-theme-fg/30 lg:hidden"
         >
@@ -485,7 +497,7 @@ export default function ChatSidebar({
         <aside
           className="hidden shrink-0 overflow-hidden lg:flex"
           style={{ width: `${sidebarWidth}px` }}
-          aria-label="聊天列表"
+          aria-label={t('chatList')}
         >
           {panel()}
           {/* Split-pane separator — the design's one resizable control.
@@ -494,7 +506,7 @@ export default function ChatSidebar({
           <div
             role="separator"
             tabIndex={0}
-            aria-label="调整会话列表宽度"
+            aria-label={t('resizeSidebar')}
             aria-orientation="vertical"
             aria-valuenow={sidebarWidth}
             aria-valuemin={SIDEBAR_MIN_W}

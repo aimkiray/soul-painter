@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useI18n } from '@/contexts/I18nContext';
 import { useImages } from '@/contexts/ImageContext';
 import {
   BACKGROUND_OPTIONS,
@@ -12,6 +13,7 @@ import {
   SIZE_PRESETS,
 } from '@/lib/constants';
 import { CUSTOM_SIZE_PATTERN, formatSizeDisplay } from '@/lib/size';
+import { localizeSizeLabel } from '@/lib/i18n';
 
 import MenuSelect, { type MenuSelectGroup } from '@/components/MenuSelect';
 import {
@@ -23,6 +25,7 @@ import {
 
 export default function ImageParamSettings() {
   const { config, updateConfig } = useConfig();
+  const { lang, t } = useI18n();
   const { images, selectedIndices } = useImages();
   const [customSize, setCustomSize] = useState(false);
   const [sizeInvalid, setSizeInvalid] = useState(false);
@@ -36,20 +39,20 @@ export default function ImageParamSettings() {
       label: group,
       options: SIZE_PRESETS.filter(s => s.group === group).map(s => ({
         value: s.value,
-        label: s.value === ORIGINAL_ASPECT_SIZE ? originalAspectLabel : s.label,
+        label: s.value === ORIGINAL_ASPECT_SIZE ? localizeSizeLabel(lang, originalAspectLabel) : localizeSizeLabel(lang, s.label),
       })),
     })),
-    { options: [{ value: '__custom__', label: '自定义...' }] },
+    { options: [{ value: '__custom__', label: t('customSize') }] },
   ];
 
   return (
     <fieldset className={`${fieldsetClass} lg:col-span-2`}>
-              <legend className={legendClass}>图像参数</legend>
+              <legend className={legendClass}>{t('imageParams')}</legend>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
                 <div className="sm:col-span-2 lg:col-span-1">
-                  <span className={labelClass}>尺寸</span>
+                  <span className={labelClass}>{t('sizeLabel')}</span>
                   <MenuSelect
-                    ariaLabel="尺寸"
+                    ariaLabel={t('sizeLabel')}
                     value={(customSize || !sizeIsPreset) ? '__custom__' : config.size}
                     groups={sizeGroups}
                     onSelect={(v) => {
@@ -60,7 +63,7 @@ export default function ImageParamSettings() {
                   {(customSize || !sizeIsPreset) && (
                     <input
                       type="text"
-                      aria-label="自定义尺寸"
+                      aria-label={t('customSizeAria')}
                       value={config.size}
                       onChange={(e) => { updateConfig('size', e.target.value); setSizeInvalid(false); }}
                       onBlur={(e) => setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.target.value.trim()))}
@@ -73,7 +76,7 @@ export default function ImageParamSettings() {
                         }
                       }}
                       placeholder="WxH"
-                      title={sizeInvalid ? '格式如 1024x1024' : undefined}
+                      title={sizeInvalid ? t('sizeFormatHint') : undefined}
                       aria-invalid={sizeInvalid || undefined}
                       className={`${inputClass} mt-4 ${sizeInvalid ? 'ring-error focus:ring-error' : ''}`}
                     />
@@ -81,9 +84,9 @@ export default function ImageParamSettings() {
                 </div>
 
                 <div>
-                  <span className={labelClass}>数量</span>
+                  <span className={labelClass}>{t('countLabel')}</span>
                   <MenuSelect
-                    ariaLabel="生成数量"
+                    ariaLabel={t('countAria')}
                     value={String(config.n)}
                     groups={[{ options: [1, 2, 3, 4, 5, 10, 20].map(v => ({ value: String(v), label: String(v) })) }]}
                     onSelect={(v) => updateConfig('n', parseInt(v, 10))}
@@ -91,9 +94,9 @@ export default function ImageParamSettings() {
                 </div>
 
                 <div>
-                  <span className={labelClass}>质量</span>
+                  <span className={labelClass}>{t('qualityLabel')}</span>
                   <MenuSelect
-                    ariaLabel="质量"
+                    ariaLabel={t('qualityLabel')}
                     value={config.quality}
                     groups={[{ options: QUALITY_OPTIONS.map(q => ({ value: q, label: q })) }]}
                     onSelect={(v) => updateConfig('quality', v)}
@@ -101,9 +104,9 @@ export default function ImageParamSettings() {
                 </div>
 
                 <div>
-                  <span className={labelClass}>格式</span>
+                  <span className={labelClass}>{t('formatLabel')}</span>
                   <MenuSelect
-                    ariaLabel="格式"
+                    ariaLabel={t('formatLabel')}
                     value={config.format}
                     groups={[{ options: FORMAT_OPTIONS.map(f => ({ value: f, label: f.toUpperCase() })) }]}
                     onSelect={(v) => updateConfig('format', v)}
@@ -111,9 +114,9 @@ export default function ImageParamSettings() {
                 </div>
 
                 <div>
-                  <span className={labelClass}>背景</span>
+                  <span className={labelClass}>{t('backgroundLabel')}</span>
                   <MenuSelect
-                    ariaLabel="背景"
+                    ariaLabel={t('backgroundLabel')}
                     value={config.background}
                     groups={[{ options: BACKGROUND_OPTIONS.map(b => ({ value: b, label: b })) }]}
                     onSelect={(v) => updateConfig('background', v)}
@@ -121,9 +124,9 @@ export default function ImageParamSettings() {
                 </div>
 
                 <div>
-                  <span className={labelClass}>审核</span>
+                  <span className={labelClass}>{t('moderationLabel')}</span>
                   <MenuSelect
-                    ariaLabel="审核级别"
+                    ariaLabel={t('moderationAria')}
                     value={config.moderation}
                     groups={[{ options: MODERATION_OPTIONS.map(m => ({ value: m, label: m })) }]}
                     onSelect={(v) => updateConfig('moderation', v)}
@@ -132,11 +135,11 @@ export default function ImageParamSettings() {
 
                 {(config.format === 'jpeg' || config.format === 'webp') && (
                   <div>
-                    <span className={labelClass}>压缩率</span>
+                    <span className={labelClass}>{t('compressionLabel')}</span>
                     <label className="flex h-32 items-center gap-8 bg-theme-bg px-8 font-mono text-body-14 text-theme-fg ring-1 ring-theme-fg/30">
                       <input
                         type="range"
-                        aria-label="压缩率"
+                        aria-label={t('compressionLabel')}
                         min={0}
                         max={100}
                         value={config.compression}

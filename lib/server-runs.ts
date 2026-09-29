@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatTurnSnapshot } from '@/contexts/ChatContext';
+import type { Lang } from '@/lib/i18n';
 import type { AppConfig, AppOptions, ImageHit } from '@/types';
 import { SERVER_RUN_PENDING_STORAGE_KEY } from '@/lib/constants';
 
@@ -29,6 +30,7 @@ export interface ServerRunCreatePayload {
   options: AppOptions;
   request: ChatTurnSnapshot;
   historyMessages: ChatMessage[];
+  lang?: Lang;
 }
 
 export interface ServerRunRecord extends Omit<ServerRunCreatePayload, 'accessToken'> {

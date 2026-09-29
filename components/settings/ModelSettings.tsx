@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useI18n } from '@/contexts/I18nContext';
 import {
   IMAGE_MODEL_PRESETS,
 } from '@/lib/constants';
@@ -30,6 +31,7 @@ import {
 
 export default function ModelSettings() {
   const { config, updateConfig, modelDefaults } = useConfig();
+  const { t } = useI18n();
   const [newImageModel, setNewImageModel] = useState('');
   const [newChatModel, setNewChatModel] = useState('');
   const [newClaudeModel, setNewClaudeModel] = useState('');
@@ -149,13 +151,13 @@ export default function ModelSettings() {
   };
   return (
     <fieldset className={fieldsetClass}>
-              <legend className={legendClass}>模型</legend>
+              <legend className={legendClass}>{t('modelSection')}</legend>
               <div className="space-y-8">
                 <div>
-                  <span className={labelClass}>图片模型</span>
+                  <span className={labelClass}>{t('imageModelLabel')}</span>
                   <div className="space-y-4">
                     <MenuSelect
-                      ariaLabel="图片模型"
+                      ariaLabel={t('imageModelLabel')}
                       value={config.model}
                       groups={imageModelGroups}
                       onSelect={(v) => updateConfig('model', v)}
@@ -166,12 +168,12 @@ export default function ModelSettings() {
                         value={newImageModel}
                         onChange={(e) => setNewImageModel(e.target.value)}
                         onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addImageModel(); } }}
-                        aria-label="添加图片模型"
-                        placeholder="添加图片模型"
+                        aria-label={t('addImageModel')}
+                        placeholder={t('addImageModel')}
                         className={addRowInputClass}
                       />
                       <button onClick={addImageModel} className={addRowButtonClass}>
-                        添加
+                        {t('add')}
                       </button>
                     </div>
                     {config.customImageModels.length > 0 && (
@@ -180,7 +182,7 @@ export default function ModelSettings() {
                           <div key={model} className="flex min-w-0 items-center gap-8 px-8 py-4 ring-1 ring-theme-fg/30">
                             <span className="min-w-0 flex-1 truncate font-mono text-body-10 text-theme-fg">{model}</span>
                             <button onClick={() => deleteImageModel(model)} className="cursor-pointer font-mono text-body-10 uppercase text-error hover:text-theme-fg">
-                              删除
+                              {t('delete')}
                             </button>
                           </div>
                         ))}
@@ -190,15 +192,15 @@ export default function ModelSettings() {
                 </div>
 
                 <div>
-                  <span className={labelClass}>聊天模型</span>
+                  <span className={labelClass}>{t('chatModelLabel')}</span>
                   <div className="space-y-4">
                     <MenuSelect
-                      ariaLabel="聊天模型"
+                      ariaLabel={t('chatModelLabel')}
                       value={activeChatChoice}
                       groups={chatModelGroups}
                       onSelect={selectChatModel}
                     />
-                    <p className={hintClass}>当前会使用 {activeChatProviderLabel} 连接配置</p>
+                    <p className={hintClass}>{t('connUsedHint', { provider: activeChatProviderLabel })}</p>
                   </div>
                 </div>
 
@@ -207,26 +209,26 @@ export default function ModelSettings() {
                     <span>OpenAI Compatible</span>
                   </div>
                   <div className="space-y-4">
-                    <span className={labelClass}>标题模型</span>
+                    <span className={labelClass}>{t('titleModel')}</span>
                     <MenuSelect
-                      ariaLabel="标题模型（OpenAI）"
+                      ariaLabel={t('titleModelOpenai')}
                       value={config.titleModel}
                       groups={titleModelGroups}
                       onSelect={(v) => updateConfig('titleModel', v)}
                     />
-                    <p className={hintClass}>用于第一轮回复后自动总结聊天标题</p>
+                    <p className={hintClass}>{t('titleModelHint')}</p>
                     <div className="flex min-w-0 gap-4">
                       <input
                         type="text"
                         value={newChatModel}
                         onChange={(e) => setNewChatModel(e.target.value)}
                         onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addChatModel(); } }}
-                        aria-label="添加 OpenAI Compatible 模型"
-                        placeholder="添加 OpenAI Compatible 模型"
+                        aria-label={t('addOpenaiModel')}
+                        placeholder={t('addOpenaiModel')}
                         className={addRowInputClass}
                       />
                       <button onClick={addChatModel} className={addRowButtonClass}>
-                        添加
+                        {t('add')}
                       </button>
                     </div>
                     {config.customChatModels.length > 0 && (
@@ -235,7 +237,7 @@ export default function ModelSettings() {
                           <div key={model} className="flex min-w-0 items-center gap-8 px-8 py-4 ring-1 ring-theme-fg/30">
                             <span className="min-w-0 flex-1 truncate font-mono text-body-10 text-theme-fg">{model}</span>
                             <button onClick={() => deleteChatModel(model)} className="cursor-pointer font-mono text-body-10 uppercase text-error hover:text-theme-fg">
-                              删除
+                              {t('delete')}
                             </button>
                           </div>
                         ))}
@@ -249,26 +251,26 @@ export default function ModelSettings() {
                     <span>Claude Compatible</span>
                   </div>
                   <div className="space-y-4">
-                    <span className={labelClass}>标题模型</span>
+                    <span className={labelClass}>{t('titleModel')}</span>
                     <MenuSelect
-                      ariaLabel="标题模型（Claude）"
+                      ariaLabel={t('titleModelClaude')}
                       value={config.claudeTitleModel}
                       groups={claudeTitleModelGroups}
                       onSelect={(v) => updateConfig('claudeTitleModel', v)}
                     />
-                    <p className={hintClass}>Claude 格式下用于第一轮回复后自动总结聊天标题</p>
+                    <p className={hintClass}>{t('titleModelHintClaude')}</p>
                     <div className="flex min-w-0 gap-4">
                       <input
                         type="text"
                         value={newClaudeModel}
                         onChange={(e) => setNewClaudeModel(e.target.value)}
                         onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') { e.preventDefault(); addClaudeModel(); } }}
-                        aria-label="添加 Claude 模型"
-                        placeholder="添加 Claude 模型"
+                        aria-label={t('addClaudeModel')}
+                        placeholder={t('addClaudeModel')}
                         className={addRowInputClass}
                       />
                       <button onClick={addClaudeModel} className={addRowButtonClass}>
-                        添加
+                        {t('add')}
                       </button>
                     </div>
                     {config.customClaudeModels.length > 0 && (
@@ -277,7 +279,7 @@ export default function ModelSettings() {
                           <div key={model} className="flex min-w-0 items-center gap-8 px-8 py-4 ring-1 ring-theme-fg/30">
                             <span className="min-w-0 flex-1 truncate font-mono text-body-10 text-theme-fg">{model}</span>
                             <button onClick={() => deleteClaudeModel(model)} className="cursor-pointer font-mono text-body-10 uppercase text-error hover:text-theme-fg">
-                              删除
+                              {t('delete')}
                             </button>
                           </div>
                         ))}
@@ -287,13 +289,13 @@ export default function ModelSettings() {
                 </div>
 
                 <div>
-                  <span className={labelClass}>系统提示词</span>
+                  <span className={labelClass}>{t('systemPrompt')}</span>
                   <textarea
-                    aria-label="系统提示词"
+                    aria-label={t('systemPrompt')}
                     value={config.systemPrompt}
                     onChange={(e) => updateConfig('systemPrompt', e.target.value)}
                     rows={4}
-                    placeholder="仅聊天模式使用"
+                    placeholder={t('systemPromptPh')}
                     className={`${inputClass} resize-y min-h-24`}
                   />
                 </div>

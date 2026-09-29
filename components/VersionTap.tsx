@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
+import { useI18n } from '@/contexts/I18nContext';
 
 const MODEL_GATE_UNLOCK_TAPS = 3;
 
@@ -10,6 +11,7 @@ const MODEL_GATE_UNLOCK_TAPS = 3;
 export default function VersionTap() {
   const { modelGateEnabled, modelGateUnlocked, setModelGateUnlocked } = useConfig();
   const { setStatus } = useChat();
+  const { t } = useI18n();
   const [tapping, setTapping] = useState(false);
   const [locallyUnlocked, setLocallyUnlocked] = useState(false);
   const titleUnlocked = modelGateUnlocked || locallyUnlocked;
@@ -55,14 +57,14 @@ export default function VersionTap() {
       if (latest?.unlocked) {
         setLocallyUnlocked(true);
         setModelGateUnlocked(true);
-        setStatus('模型访问已解锁', 'ok');
+        setStatus(t('modelUnlocked'), 'ok');
       } else {
         const taps = Math.min(localTapsRef.current, MODEL_GATE_UNLOCK_TAPS);
-        setStatus(`版本号确认已记录 ${taps}/${MODEL_GATE_UNLOCK_TAPS}`, 'warn');
+        setStatus(t('tapRecorded', { taps, total: MODEL_GATE_UNLOCK_TAPS }), 'warn');
       }
     } catch {
       pendingTapsRef.current = 0;
-      if (mountedRef.current) setStatus('解锁状态同步失败', 'err');
+      if (mountedRef.current) setStatus(t('unlockSyncFailed'), 'err');
     } finally {
       processingRef.current = false;
       if (mountedRef.current) setTapping(false);
@@ -90,7 +92,7 @@ export default function VersionTap() {
       type="button"
       onClick={handleVersionClick}
       className={`hit-x-8 hit-y-4 shrink-0 cursor-pointer text-theme-dim hover:text-theme-fg ${tapping ? 'animate-pulse motion-reduce:animate-none' : ''}`}
-      title="版本信息"
+      title={t('versionInfo')}
     >
       v1.0
     </button>

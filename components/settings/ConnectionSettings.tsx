@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useI18n } from '@/contexts/I18nContext';
 import {
   fieldsetClass,
   legendClass,
@@ -24,16 +25,17 @@ export default function ConnectionSettings() {
     serverAccessRequired,
     serverAccessConfigured,
   } = useConfig();
+  const { t } = useI18n();
   const [showKey, setShowKey] = useState(false);
   const [showChatKey, setShowChatKey] = useState(false);
   const [showClaudeKey, setShowClaudeKey] = useState(false);
 
-  const keySourceLabel = {
-    url: 'URL 预填',
-    user: '自定义',
-    server: '服务端默认',
-    none: '未配置',
-  }[keySource];
+  const keySourceLabel = t(({
+    url: 'srcUrl',
+    user: 'srcUser',
+    server: 'srcServer',
+    none: 'srcNone',
+  } as const)[keySource]);
 
   const keySourceColor = {
     url: 'text-theme-dim',
@@ -42,12 +44,12 @@ export default function ConnectionSettings() {
     none: 'text-error',
   }[keySource];
 
-  const chatKeySourceLabel = {
-    user: '自定义',
-    server: '服务端默认',
-    inherit: '继承图像配置',
-    none: '未配置',
-  }[chatKeySource];
+  const chatKeySourceLabel = t(({
+    user: 'srcUser',
+    server: 'srcServer',
+    inherit: 'srcInherit',
+    none: 'srcNone',
+  } as const)[chatKeySource]);
 
   const chatKeySourceColor = {
     user: 'text-theme-dim',
@@ -56,11 +58,11 @@ export default function ConnectionSettings() {
     none: 'text-error',
   }[chatKeySource];
 
-  const claudeKeySourceLabel = {
-    user: '自定义',
-    server: '服务端默认',
-    none: '未配置',
-  }[claudeKeySource];
+  const claudeKeySourceLabel = t(({
+    user: 'srcUser',
+    server: 'srcServer',
+    none: 'srcNone',
+  } as const)[claudeKeySource]);
 
   const claudeKeySourceColor = {
     user: 'text-theme-dim',
@@ -70,27 +72,27 @@ export default function ConnectionSettings() {
 
   return (
     <fieldset className={fieldsetClass}>
-              <legend className={legendClass}>连接配置</legend>
+              <legend className={legendClass}>{t('connConfig')}</legend>
               <div className="space-y-12">
                 {(serverAccessRequired || serverAccessConfigured) && (
                   <div>
-                    <label className={labelClass} htmlFor="cfg-server-access-token">服务端访问令牌</label>
+                    <label className={labelClass} htmlFor="cfg-server-access-token">{t('serverToken')}</label>
                     <input
                       id="cfg-server-access-token"
                       type="password"
                       value={config.serverAccessToken}
                       onChange={(e) => updateConfig('serverAccessToken', e.target.value)}
-                      placeholder="由部署者提供的 SERVER_ACCESS_TOKEN"
+                      placeholder={t('serverTokenPh')}
                       className={inputClass}
                     />
                     <p className={hintClass}>
-                      {serverAccessRequired ? '使用服务端默认 API Key 时必须填写。' : '仅在服务端启用访问令牌时需要。'}
+                      {serverAccessRequired ? t('serverTokenRequired') : t('serverTokenHint')}
                     </p>
                   </div>
                 )}
                 <div>
                   <div className={firstProviderHeadingClass}>
-                    <span>图像</span>
+                    <span>{t('imageSection')}</span>
                   </div>
 
                   <div className="space-y-8">
@@ -114,14 +116,14 @@ export default function ConnectionSettings() {
                       <div className="flex min-w-0 gap-4">
                         <input
                           type={showKey ? 'text' : 'password'}
-                          aria-label="图像 API Key"
+                          aria-label={t('imageApiKey')}
                           value={config.apiKey}
                           onChange={(e) => updateConfig('apiKey', e.target.value)}
-                          placeholder="留空使用默认 Key"
+                          placeholder={t('emptyUseDefault')}
                           className={addRowInputClass}
                         />
                         <button onClick={() => setShowKey(!showKey)} className={addRowButtonClass}>
-                          {showKey ? '隐藏' : '显示'}
+                          {showKey ? t('hide') : t('show')}
                         </button>
                       </div>
                     </div>
@@ -157,11 +159,11 @@ export default function ConnectionSettings() {
                           aria-label="OpenAI API Key"
                           value={config.chatApiKey}
                           onChange={(e) => updateConfig('chatApiKey', e.target.value)}
-                          placeholder="留空使用默认 Key"
+                          placeholder={t('emptyUseDefault')}
                           className={addRowInputClass}
                         />
                         <button onClick={() => setShowChatKey(!showChatKey)} className={addRowButtonClass}>
-                          {showChatKey ? '隐藏' : '显示'}
+                          {showChatKey ? t('hide') : t('show')}
                         </button>
                       </div>
                     </div>
@@ -197,11 +199,11 @@ export default function ConnectionSettings() {
                           aria-label="Claude API Key"
                           value={config.claudeApiKey}
                           onChange={(e) => updateConfig('claudeApiKey', e.target.value)}
-                          placeholder="留空使用默认 Key"
+                          placeholder={t('emptyUseDefault')}
                           className={addRowInputClass}
                         />
                         <button onClick={() => setShowClaudeKey(!showClaudeKey)} className={addRowButtonClass}>
-                          {showClaudeKey ? '隐藏' : '显示'}
+                          {showClaudeKey ? t('hide') : t('show')}
                         </button>
                       </div>
                     </div>
@@ -209,7 +211,7 @@ export default function ConnectionSettings() {
                 </div>
 
                 <p className={hintClass}>
-                  聊天会按所选模型自动使用对应连接配置。
+                  {t('autoConnHint')}
                 </p>
               </div>
             </fieldset>

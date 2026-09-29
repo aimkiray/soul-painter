@@ -3,7 +3,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
+import { useI18n } from '@/contexts/I18nContext';
 import { useImages } from '@/contexts/ImageContext';
+import { localizeSizeLabel } from '@/lib/i18n';
 import { IMAGE_MODEL_PRESETS, CHAT_EFFORT_OPTIONS, chatSessionPromptStorageKey, ORIGINAL_ASPECT_SIZE, REPEATER_MODEL_LABEL, SIZE_PRESETS } from '@/lib/constants';
 import { COMPOSER_FRAME_CLASS } from '@/lib/layout';
 import { isLocalDataCleared } from '@/lib/local-data-cleared';
@@ -36,6 +38,7 @@ function readStoredPrompt(sessionId: string) {
 
 export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProps) {
   const { config, updateConfig, options, modelGateEnabled, modelGateUnlocked } = useConfig();
+  const { lang, t } = useI18n();
   // Drafts live in ChatContext so they survive tab switches / remounts.
   const { activeSessionId, promptDrafts, setPromptDraft } = useChat();
   const { images, hasImages, selectedIndices, addFiles } = useImages();
@@ -124,10 +127,10 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
       label: group,
       options: SIZE_PRESETS.filter(s => s.group === group).map(s => ({
         value: s.value,
-        label: s.value === ORIGINAL_ASPECT_SIZE ? originalAspectLabel : s.label,
+        label: s.value === ORIGINAL_ASPECT_SIZE ? localizeSizeLabel(lang, originalAspectLabel) : localizeSizeLabel(lang, s.label),
       })),
     })),
-    { options: [{ value: '__custom__', label: '自定义...' }] },
+    { options: [{ value: '__custom__', label: t('customSize') }] },
   ];
   const chatModelGroups: MenuSelectGroup[] = [
     {
@@ -147,8 +150,8 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
     options: CHAT_EFFORT_OPTIONS.map((effort) => ({ value: effort, label: effort })),
   }];
   const placeholderText = config.mode === 'chat'
-    ? '输入聊天内容...'
-    : hasImages ? '描述如何使用/修改参考图...' : '描述你要生成的画面内容...';
+    ? t('phChat')
+    : hasImages ? t('phRefEdit') : t('phGenerate');
   const selectChatModel = (value: string) => {
     const choice = parseChatModelChoice(value);
     if (!choice) return;
@@ -167,7 +170,7 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
             <div
               className="grid h-32 w-128 shrink-0 grid-cols-2 overflow-hidden bg-theme-bg ring-1 ring-theme-fg/30"
               role="radiogroup"
-              aria-label="生成模式"
+              aria-label={t('genMode')}
             >
               {([
                 ['image', 'IMG'],
@@ -199,7 +202,7 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
             {imageModeActive ? (
               <>
                 <MenuSelect
-                  ariaLabel="图片模型"
+                  ariaLabel={t('imageModel')}
                   value={lockedRepeaterMode ? '__gated__' : config.model}
                   groups={lockedRepeaterMode ? gatedGroup : imageModelGroups}
                   onSelect={(v) => updateConfig('model', v)}
@@ -208,7 +211,7 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
                   className="min-w-100 flex-1 sm:flex-[0.7]"
                 />
                 <MenuSelect
-                  ariaLabel="图片尺寸"
+                  ariaLabel={t('imageSize')}
                   value={(customSize || !sizeIsPreset) ? '__custom__' : config.size}
                   groups={sizeGroups}
                   onSelect={(v) => {
@@ -229,8 +232,8 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
                       onBlur={e=>setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.target.value.trim()))}
                       onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if(e.key==='Enter'){e.preventDefault();setSizeInvalid(!CUSTOM_SIZE_PATTERN.test(e.currentTarget.value.trim()));e.currentTarget.blur()}}}
                       placeholder="WxH"
-                      aria-label="自定义尺寸"
-                      title={sizeInvalid ? '格式如 1024x1024' : undefined}
+                      aria-label={t('customSizeAria')}
+                      title={sizeInvalid ? t('sizeFormatHint') : undefined}
                       aria-invalid={sizeInvalid || undefined}
                       className={`h-32 w-full bg-theme-bg px-8 font-mono text-body-14 text-theme-fg outline-none ring-1 ${sizeInvalid ? 'ring-error' : 'ring-theme-fg/30 focus:ring-theme-fg'}`}
                     />
@@ -240,7 +243,7 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
             ) : (
               <>
                 <MenuSelect
-                  ariaLabel="聊天模型"
+                  ariaLabel={t('chatModel')}
                   value={lockedRepeaterMode ? '__gated__' : activeChatChoice}
                   groups={lockedRepeaterMode ? gatedGroup : chatModelGroups}
                   onSelect={selectChatModel}
@@ -249,7 +252,7 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
                   className="min-w-160 flex-1"
                 />
                 <MenuSelect
-                  ariaLabel="推理强度"
+                  ariaLabel={t('effortLevel')}
                   value={config.chatEffort}
                   groups={effortGroups}
                   onSelect={(v) => updateConfig('chatEffort', v)}
@@ -277,17 +280,17 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
             onChange={e=>setPrompt(e.target.value)}
             onKeyDown={kd}
             rows={1}
-            aria-label="提示词"
+            aria-label={t('promptLabel')}
             className="col-start-1 row-start-1 h-full w-0 min-w-full resize-none overflow-y-auto wrap-anywhere bg-transparent p-8 font-mono text-body-14 text-theme-fg outline-none [scrollbar-width:none]"
             placeholder={placeholderText}
           />
         </div>
         <div className="flex w-40 shrink-0 flex-col gap-8">
-          <button onClick={()=>fileInputRef.current?.click()} className="flex flex-1 cursor-pointer items-center justify-center text-theme-dim ring-1 ring-theme-fg/30 hover:bg-theme-fg/10 hover:text-theme-fg" aria-label="添加参考图"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" className="size-16"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" strokeLinecap="square" strokeWidth="2" d="m20.506 12.313l-7.778 7.778a6 6 0 0 1-8.485-8.485l7.778-7.778a4 4 0 1 1 5.657 5.657L9.9 17.263a2 2 0 1 1-2.829-2.829l7.071-7.07"/></svg></button>
+          <button onClick={()=>fileInputRef.current?.click()} className="flex flex-1 cursor-pointer items-center justify-center text-theme-dim ring-1 ring-theme-fg/30 hover:bg-theme-fg/10 hover:text-theme-fg" aria-label={t('addRef')}><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" className="size-16"><path d="M0 0h24v24H0z" fill="none"/><path fill="none" stroke="currentColor" strokeLinecap="square" strokeWidth="2" d="m20.506 12.313l-7.778 7.778a6 6 0 0 1-8.485-8.485l7.778-7.778a4 4 0 1 1 5.657 5.657L9.9 17.263a2 2 0 1 1-2.829-2.829l7.071-7.07"/></svg></button>
           {busy && onCancel ? (
-            <button onClick={onCancel} className="flex flex-1 cursor-pointer items-center justify-center bg-error font-semibold text-black hover:bg-transparent hover:text-error ring-1 ring-transparent hover:ring-error" aria-label="停止"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" className="size-12" aria-hidden="true"><rect width="12" height="12" fill="currentColor" /></svg></button>
+            <button onClick={onCancel} className="flex flex-1 cursor-pointer items-center justify-center bg-error font-semibold text-black hover:bg-transparent hover:text-error ring-1 ring-transparent hover:ring-error" aria-label={t('stop')}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" className="size-12" aria-hidden="true"><rect width="12" height="12" fill="currentColor" /></svg></button>
           ) : (
-            <button onClick={send} disabled={busy||!prompt.trim()} className="flex flex-1 cursor-pointer items-center justify-center bg-theme-fg font-semibold text-theme-bg ring-1 ring-theme-fg/30 hover:bg-transparent hover:text-theme-fg hover:ring-theme-fg disabled:cursor-not-allowed disabled:opacity-40" aria-label="发送">{busy?<span className="animate-pulse motion-reduce:animate-none">...</span>:'>'}</button>
+            <button onClick={send} disabled={busy||!prompt.trim()} className="flex flex-1 cursor-pointer items-center justify-center bg-theme-fg font-semibold text-theme-bg ring-1 ring-theme-fg/30 hover:bg-transparent hover:text-theme-fg hover:ring-theme-fg disabled:cursor-not-allowed disabled:opacity-40" aria-label={t('send')}>{busy?<span className="animate-pulse motion-reduce:animate-none">...</span>:'>'}</button>
           )}
         </div>
         <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e=>{if(e.target.files?.length){addFiles(e.target.files).catch(()=>{});e.target.value=''}}} />

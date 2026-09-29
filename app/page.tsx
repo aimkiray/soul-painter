@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect } from 'react';
+import { I18nProvider, useI18n } from '@/contexts/I18nContext';
 import { ConfigProvider } from '@/contexts/ConfigContext';
 import { ChatProvider, useChat } from '@/contexts/ChatContext';
 import { ImageProvider, useImages } from '@/contexts/ImageContext';
@@ -53,6 +54,7 @@ function HomeInner() {
 
   const { isLoading, toggleDebug } = useChat();
   const { editingIndex, closeEditor } = useImages();
+  const { lang, setLang } = useI18n();
 
   // Contract: useGlobalImageDrop(enabled) — drop/paste only while no modal
   // layer is open.
@@ -63,7 +65,7 @@ function HomeInner() {
   useGlobalImageDrop(imageDropEnabled);
 
   // F1/S open settings, T cycles the terminal palette, D toggles ~/debug,
-  // Y opens ~/sync.
+  // Y opens ~/sync, L switches the UI language.
   // event.code is layout-independent; hotkeys fire only with no modifiers, on
   // non-editable targets, and while no modal/menu layer is open.
   useEffect(() => {
@@ -81,11 +83,13 @@ function HomeInner() {
         toggleDebug();
       } else if (event.code === 'KeyY') {
         setLoginOpen(true);
+      } else if (event.code === 'KeyL') {
+        setLang(lang === 'zh' ? 'en' : 'zh');
       }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [toggleDebug]);
+  }, [toggleDebug, lang, setLang]);
 
   // iOS zoom guard: focusing a field swaps maximum-scale=1 into the viewport
   // meta so Safari doesn't auto-zoom the fixed composer; restored on blur.
@@ -256,13 +260,15 @@ function HomeInner() {
 export default function Home() {
   return (
     <ErrorBoundary>
-      <ConfigProvider>
-        <ChatProvider>
-          <ImageProvider>
-            <HomeInner />
-          </ImageProvider>
-        </ChatProvider>
-      </ConfigProvider>
+      <I18nProvider>
+        <ConfigProvider>
+          <ChatProvider>
+            <ImageProvider>
+              <HomeInner />
+            </ImageProvider>
+          </ChatProvider>
+        </ConfigProvider>
+      </I18nProvider>
     </ErrorBoundary>
   );
 }

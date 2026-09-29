@@ -4,6 +4,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useImages } from '@/contexts/ImageContext';
+import { useI18n } from '@/contexts/I18nContext';
 import { useWindowDrag } from '@/hooks/useWindowDrag';
 import Modal from './Modal';
 
@@ -13,6 +14,7 @@ interface ImageEditorProps {
 
 export default function ImageEditor({ onClose }: ImageEditorProps) {
   const { images, editingIndex, persistMask, closeEditor } = useImages();
+  const { t } = useI18n();
   const [tool, setTool] = useState<'brush' | 'eraser'>('brush');
   const [brushSize, setBrushSize] = useState(32);
   const { dragStyle, onTitlePointerDown } = useWindowDrag();
@@ -251,7 +253,7 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
     <Modal
       id={`image-editor-${editingIndex}`}
       onClose={handleCancel}
-      ariaLabel={`编辑第 ${editingIndex + 1} 张图片`}
+      ariaLabel={t('editImageN', { n: editingIndex + 1 })}
       backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8"
       panelClassName="relative w-full max-w-lg bg-theme-bg font-mono text-body-14 text-theme-fg ring-1 ring-theme-fg/30"
       panelStyle={dragStyle}
@@ -261,14 +263,14 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
         <div
           className="flex h-26 shrink-0 cursor-grab touch-none items-center justify-between gap-4 border-b border-theme-fg/30 px-8"
           onPointerDown={onTitlePointerDown}
-            title="拖拽移动 · 双击复位"
+            title={t('dragMoveReset')}
         >
           <span className="truncate">~/refs/{editingIndex + 1}/mask{imageSizeLabel}</span>
           <button
             onClick={handleCancel}
             onPointerDown={(event) => event.stopPropagation()}
             className="hit-x-4 hit-y-4 flex size-16 shrink-0 cursor-pointer items-center justify-center rounded-full border border-transparent bg-theme-fg text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg"
-            aria-label="取消编辑"
+            aria-label={t('cancelEdit')}
           >
             <svg viewBox="0 0 24 24" className="size-full shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
@@ -294,19 +296,19 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
 
           <div className="mt-12 flex flex-wrap items-center gap-8">
             {/* Segmented tool toggle */}
-            <div className="flex shrink-0 ring-1 ring-theme-fg/30" role="radiogroup" aria-label="编辑工具">
+            <div className="flex shrink-0 ring-1 ring-theme-fg/30" role="radiogroup" aria-label={t('editTools')}>
               <button
                 onClick={() => setTool('brush')}
                 role="radio"
                 aria-checked={tool === 'brush'}
                 className={`cursor-pointer px-10 py-4 text-body-10 uppercase ${tool === 'brush' ? 'bg-theme-fg text-theme-bg' : 'text-theme-dim hover:bg-theme-fg/10 hover:text-theme-fg'}`}
-              >笔刷</button>
+              >{t('brush')}</button>
               <button
                 onClick={() => setTool('eraser')}
                 role="radio"
                 aria-checked={tool === 'eraser'}
                 className={`cursor-pointer px-10 py-4 text-body-10 uppercase ${tool === 'eraser' ? 'bg-theme-fg text-theme-bg' : 'text-theme-dim hover:bg-theme-fg/10 hover:text-theme-fg'}`}
-              >擦除</button>
+              >{t('erase')}</button>
             </div>
 
             {/* Brush size slider */}
@@ -315,7 +317,7 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
                 type="range"
                 min={8}
                 max={100}
-                aria-label="笔刷大小"
+                aria-label={t('brushSize')}
                 value={brushSize}
                 onChange={(e) => setBrushSize(parseInt(e.target.value, 10))}
                 className="min-w-60 flex-1 accent-theme-fg"
@@ -325,13 +327,13 @@ export default function ImageEditor({ onClose }: ImageEditorProps) {
 
             {/* Actions */}
             <button onClick={handleClear} className="shrink-0 cursor-pointer px-10 py-4 text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10">
-              清除
+              {t('clearMask')}
             </button>
             <button onClick={handleCancel} className="shrink-0 cursor-pointer px-10 py-4 text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10">
-              取消
+              {t('cancel')}
             </button>
             <button onClick={handleDone} className="shrink-0 cursor-pointer border border-transparent bg-theme-fg px-12 py-4 text-body-10 uppercase text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg">
-              保存
+              {t('save')}
             </button>
           </div>
         </div>

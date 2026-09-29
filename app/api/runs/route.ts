@@ -230,6 +230,7 @@ export async function POST(request: NextRequest) {
     options: body.options,
     request: body.request,
     historyMessages: body.historyMessages,
+    lang: body.lang === 'en' || body.lang === 'zh' ? body.lang : undefined,
     accessTokenHash: hashAccessToken(body.id, body.accessToken),
     status: 'queued',
     createdAt: now,

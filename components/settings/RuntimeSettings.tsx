@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useI18n } from '@/contexts/I18nContext';
 
 
 import MenuSelect from '@/components/MenuSelect';
@@ -30,6 +31,7 @@ function OptionToggle({ label, pressed, onToggle }: { label: string; pressed: bo
 
 export default function RuntimeSettings() {
   const { options, updateOption } = useConfig();
+  const { t } = useI18n();
 
   const commitTimeout = (input: HTMLInputElement) => {
     const parsed = parseInt(input.value, 10);
@@ -41,14 +43,14 @@ export default function RuntimeSettings() {
 
   return (
     <fieldset className={`${fieldsetClass} lg:col-span-2`}>
-              <legend className={legendClass}>运行设置</legend>
+              <legend className={legendClass}>{t('runtimeSection')}</legend>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-start">
                 <div className="space-y-12 px-8 py-8">
                   <div className="min-h-58">
-                    <span className={labelClass}>请求超时（秒）</span>
+                    <span className={labelClass}>{t('timeoutLabel')}</span>
                     <input
                       key={options.timeout}
-                      aria-label="请求超时（秒）"
+                      aria-label={t('timeoutLabel')}
                       type="number"
                       defaultValue={options.timeout}
                       onBlur={(e) => commitTimeout(e.currentTarget)}
@@ -62,21 +64,21 @@ export default function RuntimeSettings() {
                   </div>
 
                   <div className="min-h-58">
-                    <span className={labelClass}>上下文数量限制</span>
+                    <span className={labelClass}>{t('contextLimit')}</span>
                     <MenuSelect
-                      ariaLabel="上下文数量限制"
+                      ariaLabel={t('contextLimit')}
                       value={String(options.contextLimit)}
                       groups={[{ options: [0, 1, 2, 3, 4, 5].map(v => ({ value: String(v), label: String(v) })) }]}
                       onSelect={(v) => updateOption('contextLimit', Math.max(0, Math.min(5, parseInt(v, 10) || 0)))}
                     />
-                    <p className={hintClass}>0 表示不带上下文，最多保留最近 5 轮对话</p>
+                    <p className={hintClass}>{t('contextLimitHint')}</p>
                   </div>
                 </div>
 
                 <div className="space-y-12 px-8 py-8">
-                  <OptionToggle label="渐进加载" pressed={options.streaming} onToggle={() => updateOption('streaming', !options.streaming)} />
-                  <OptionToggle label="提交后清空参考图" pressed={options.clearOnSubmit} onToggle={() => updateOption('clearOnSubmit', !options.clearOnSubmit)} />
-                  <OptionToggle label="重启后加载上次 Prompt" pressed={options.persistPrompt} onToggle={() => updateOption('persistPrompt', !options.persistPrompt)} />
+                  <OptionToggle label={t('optStreaming')} pressed={options.streaming} onToggle={() => updateOption('streaming', !options.streaming)} />
+                  <OptionToggle label={t('optClearRefs')} pressed={options.clearOnSubmit} onToggle={() => updateOption('clearOnSubmit', !options.clearOnSubmit)} />
+                  <OptionToggle label={t('optPersistPrompt')} pressed={options.persistPrompt} onToggle={() => updateOption('persistPrompt', !options.persistPrompt)} />
                 </div>
               </div>
             </fieldset>

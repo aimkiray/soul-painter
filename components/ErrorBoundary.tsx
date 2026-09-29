@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { currentLang, t as translate } from '@/lib/i18n';
 
 interface Props {
   children: React.ReactNode;
@@ -62,10 +63,10 @@ export class ErrorBoundary extends React.Component<Props, State> {
       if (this.props.compact) {
         return (
           <div role="alert" className="m-8 flex flex-col gap-8 p-12 font-mono text-body-14 text-theme-fg ring-1 ring-error">
-            <span className="uppercase">[ 模块崩溃 ]</span>
-            <span className="line-clamp-3 break-all text-theme-dim">{this.state.error?.message || '未知错误'}</span>
+            <span className="uppercase">{translate(currentLang(), 'moduleCrash')}</span>
+            <span className="line-clamp-3 break-all text-theme-dim">{this.state.error?.message || translate(currentLang(), 'unknownError')}</span>
             <button type="button" onClick={() => this.reboot()} className="self-start bg-theme-fg px-8 py-2 text-theme-bg">
-              重试
+              {translate(currentLang(), 'retry')}
             </button>
           </div>
         );
@@ -91,7 +92,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             <span className="text-[#54fcfc]">{'Detecting primary master  ... REFS.IMG\n'}</span>
             <span className="text-[#54fcfc]">{'Detecting primary slave   ... PROMPT.SYS\n\n'}</span>
             <span className="text-white">{'BOOT FAILURE\n'}</span>
-            <span className="line-clamp-3 break-all">{`${this.state.error?.message || '未知错误'}\n`}</span>
+            <span className="line-clamp-3 break-all">{`${this.state.error?.message || translate(currentLang(), 'unknownError')}\n`}</span>
           </div>
           <div className="flex items-center justify-between bg-[#a8a8a8] px-8 py-2 text-[#000080]">
             <span>Press any key to reboot</span>

@@ -5,6 +5,8 @@
 import React, { useState } from 'react';
 import { ImageHit } from '@/types';
 import { writeClipboardText } from '@/lib/clipboard';
+import { useI18n } from '@/contexts/I18nContext';
+import { translateServerMessage } from '@/lib/i18n';
 import MarkdownRenderer from './MarkdownRenderer';
 import Modal from './Modal';
 
@@ -127,6 +129,7 @@ const ChatBubble = React.memo(function ChatBubble({
   onUseAsReference,
 }: ChatBubbleProps) {
   const { role, prompt, images, extra } = message;
+  const { lang, t } = useI18n();
   const visibleImages = images.filter((hit) => hit.dataUrl || hit.url);
   const [lightbox, setLightbox] = useState<string | null>(null);
   // Error flags are keyed to the current images array — a new array identity
@@ -216,13 +219,13 @@ const ChatBubble = React.memo(function ChatBubble({
       >
         <div className={`relative flex w-full items-center gap-8 px-4 font-mono text-body-10 uppercase ${role === 'user' ? 'flex-row-reverse' : ''}`}>
           <span className="text-theme-muted">
-            {role === 'user' ? '[You]' : '[Assistant]'}
+            {role === 'user' ? t('youLabel') : t('assistantLabel')}
           </span>
-          {showEdited && <span className="text-theme-dim">已编辑</span>}
+          {showEdited && <span className="text-theme-dim">{t('edited')}</span>}
         </div>
         <div className={`w-full min-w-0 p-12 ring-1 ${role === 'user' ? 'bg-theme-fg text-theme-bg' : ''} ${extra === 'error' ? 'ring-error' : 'ring-theme-fg/30'}`}>
           {extra === 'error' ? (
-            <span className="break-all">{prompt}</span>
+            <span className="break-all">{translateServerMessage(lang, prompt)}</span>
           ) : (
             <>
               {role === 'user' && (
@@ -244,7 +247,7 @@ const ChatBubble = React.memo(function ChatBubble({
                       className="min-w-64 max-w-full resize-y bg-transparent p-8 font-mono text-body-14 text-theme-bg outline-none ring-1 ring-theme-bg/50"
                       rows={3}
                       autoFocus
-                      aria-label="编辑消息"
+                      aria-label={t('editMessage')}
                     />
                     <div className="flex justify-end gap-6">
                       <button
@@ -253,7 +256,7 @@ const ChatBubble = React.memo(function ChatBubble({
                         disabled={!editDraft.trim() || disabled}
                         className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-bg/50 hover:bg-theme-bg hover:text-theme-fg disabled:opacity-40"
                       >
-                        保存
+                        {t('save')}
                       </button>
                       <button
                         type="button"
@@ -263,7 +266,7 @@ const ChatBubble = React.memo(function ChatBubble({
                         }}
                         className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-bg/50 hover:bg-theme-bg hover:text-theme-fg"
                       >
-                        取消
+                        {t('cancel')}
                       </button>
                     </div>
                   </div>
@@ -275,7 +278,7 @@ const ChatBubble = React.memo(function ChatBubble({
                 <div>
                   {isPending && !message.text && !message.thinking && visibleImages.length === 0 && !message.code && !message.extra && (
                     <span className="text-theme-dim">
-                      {isRegenerating ? '重新生成中' : '生成中'}
+                      {isRegenerating ? t('regenerating') : t('generating')}
                       <span aria-hidden className="ml-4 inline-block h-12 w-6 animate-blink bg-theme-dim align-middle motion-reduce:hidden" />
                     </span>
                   )}
@@ -294,7 +297,7 @@ const ChatBubble = React.memo(function ChatBubble({
                       }}
                     >
                       <summary className="cursor-pointer px-8 py-4 uppercase text-theme-muted underline decoration-dotted underline-offset-2 hover:text-theme-fg">
-                        {message.thinkingDone ? '[ 思考过程 ]' : '[ 思考中... ]'}
+                        {message.thinkingDone ? t('thinkingDone') : t('thinkingLive')}
                       </summary>
                       <div className="border-t border-theme-fg/30 px-8 py-8 text-theme-dim whitespace-pre-wrap break-words">
                         {message.thinking}
@@ -315,12 +318,12 @@ const ChatBubble = React.memo(function ChatBubble({
                           <div key={key} className="group relative">
                             {imgErrors.has(key) ? (
                               <div className="flex min-h-100 items-center justify-center p-8 text-body-10 uppercase text-error ring-1 ring-error/60">
-                                图片加载失败
+                                {t('imageLoadFailed')}
                               </div>
                             ) : (
                               <img
                                 src={src}
-                                alt={`生成的图片 ${i + 1}`}
+                                alt={t('generatedImageAlt', { n: i + 1 })}
                                 draggable={false}
                                 className="checkerboard max-h-300 max-w-full cursor-pointer object-contain"
                                 loading="lazy" decoding="async"
@@ -345,7 +348,7 @@ const ChatBubble = React.memo(function ChatBubble({
                   {message.code && (
                     <details className="mt-4 font-mono text-body-10 ring-1 ring-theme-fg/30">
                       <summary className="cursor-pointer px-8 py-4 uppercase text-theme-muted underline decoration-dotted underline-offset-2 hover:text-theme-fg">
-                        [ 查看原始响应 ]
+                        {t('viewRaw')}
                       </summary>
                       <pre className="max-h-160 overflow-auto whitespace-pre-wrap break-all border-t border-theme-fg/30 bg-theme-fg/10 px-8 py-8 text-theme-dim">
                         {message.code}
@@ -366,20 +369,20 @@ const ChatBubble = React.memo(function ChatBubble({
                               onClick={() => setLightbox(link)}
                               className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10"
                             >
-                              放大
+                              {t('zoom')}
                             </button>
                             <button
                               onClick={() => downloadHit(hit, i)}
                               className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10"
                             >
-                              {isData ? '下载' : '打开'}
+                              {isData ? t('download') : t('openImage')}
                             </button>
                             {onUseAsReference && (
                               <button
                                 onClick={() => onUseAsReference(hit, i)}
                                 className="cursor-pointer px-12 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-fg/30 hover:bg-theme-fg/10"
                               >
-                                参考
+                                {t('useAsRef')}
                               </button>
                             )}
                           </span>
@@ -409,8 +412,8 @@ const ChatBubble = React.memo(function ChatBubble({
                   }}
                   disabled={disabled}
                   className={actionButtonClass}
-                  aria-label="编辑并重发"
-                  title="编辑并重发"
+                  aria-label={t('editResend')}
+                  title={t('editResend')}
                 >
                   <EditIcon />
                 </button>
@@ -419,8 +422,8 @@ const ChatBubble = React.memo(function ChatBubble({
                   onClick={() => { void handleCopyText(); }}
                   disabled={!prompt.trim()}
                   className={copyButtonClass}
-                  aria-label={copyTextStatus === 'copied' ? '已复制消息' : copyTextStatus === 'failed' ? '复制失败' : '复制消息'}
-                  title={copyTextStatus === 'copied' ? '已复制' : copyTextStatus === 'failed' ? '复制失败' : '复制'}
+                  aria-label={copyTextStatus === 'copied' ? t('copiedMessage') : copyTextStatus === 'failed' ? t('copyFailed') : t('copyMessage')}
+                  title={copyTextStatus === 'copied' ? t('copied') : copyTextStatus === 'failed' ? t('copyFailed') : t('copy')}
                 >
                   {copyButtonContent}
                 </button>
@@ -429,8 +432,8 @@ const ChatBubble = React.memo(function ChatBubble({
                   onClick={requestDelete}
                   disabled={disabled || !onDelete}
                   className={`${actionButtonClass} ${confirmingDelete ? 'text-error ring-error/60' : ''}`}
-                  aria-label={confirmingDelete ? '确认删除消息' : '删除消息'}
-                  title={confirmingDelete ? '确认删除' : '删除'}
+                  aria-label={confirmingDelete ? t('confirmDeleteMessage') : t('deleteMessage')}
+                  title={confirmingDelete ? t('confirmDelete') : t('delete')}
                 >
                   <DeleteIcon />
                 </button>
@@ -442,8 +445,8 @@ const ChatBubble = React.memo(function ChatBubble({
                   onClick={() => onRegenerate?.(message.id)}
                   disabled={disabled || !canRegenerate || !onRegenerate}
                   className={actionButtonClass}
-                  aria-label="重新生成"
-                  title="重新生成"
+                  aria-label={t('regenerate')}
+                  title={t('regenerate')}
                 >
                   <RegenerateIcon />
                 </button>
@@ -452,8 +455,8 @@ const ChatBubble = React.memo(function ChatBubble({
                   onClick={() => { void handleCopyText(); }}
                   disabled={!message.text.trim()}
                   className={copyButtonClass}
-                  aria-label={copyTextStatus === 'copied' ? '已复制消息' : copyTextStatus === 'failed' ? '复制失败' : '复制消息'}
-                  title={copyTextStatus === 'copied' ? '已复制' : copyTextStatus === 'failed' ? '复制失败' : '复制'}
+                  aria-label={copyTextStatus === 'copied' ? t('copiedMessage') : copyTextStatus === 'failed' ? t('copyFailed') : t('copyMessage')}
+                  title={copyTextStatus === 'copied' ? t('copied') : copyTextStatus === 'failed' ? t('copyFailed') : t('copy')}
                 >
                   {copyButtonContent}
                 </button>
@@ -462,8 +465,8 @@ const ChatBubble = React.memo(function ChatBubble({
                   onClick={requestDelete}
                   disabled={disabled || !onDelete}
                   className={`${actionButtonClass} ${confirmingDelete ? 'text-error ring-error/60' : ''}`}
-                  aria-label={confirmingDelete ? '确认删除消息' : '删除消息'}
-                  title={confirmingDelete ? '确认删除' : '删除'}
+                  aria-label={confirmingDelete ? t('confirmDeleteMessage') : t('deleteMessage')}
+                  title={confirmingDelete ? t('confirmDelete') : t('delete')}
                 >
                   <DeleteIcon />
                 </button>
@@ -478,20 +481,20 @@ const ChatBubble = React.memo(function ChatBubble({
         <Modal
           id={`chat-lightbox-${message.id}`}
           onClose={() => setLightbox(null)}
-          ariaLabel="查看大图"
+          ariaLabel={t('viewLarge')}
           backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-16"
           panelClassName="flex items-center justify-center max-w-full max-h-[95vh]"
         >
           <button
             onClick={() => setLightbox(null)}
             className="fixed right-12 top-12 z-10 flex size-26 cursor-pointer items-center justify-center rounded-full border border-transparent bg-theme-fg text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg"
-            aria-label="关闭大图"
+            aria-label={t('closeLarge')}
           >
             <svg viewBox="0 0 24 24" className="size-full shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
           <img
             src={lightbox}
-            alt="大图预览"
+            alt={t('largePreviewAlt')}
             draggable={false}
             className="checkerboard max-h-[95vh] max-w-full object-contain"
             decoding="async"

@@ -2,6 +2,8 @@
 
 import React, { useState } from 'react';
 import { useChat } from '@/contexts/ChatContext';
+import { useI18n } from '@/contexts/I18nContext';
+import { translateServerMessage } from '@/lib/i18n';
 import { CHAT_SYNC_AUTH_STORAGE_KEY, CHAT_SYNC_SESSION_AUTH_STORAGE_KEY } from '@/lib/constants';
 import { useWindowDrag } from '@/hooks/useWindowDrag';
 import Modal from './Modal';
@@ -50,10 +52,10 @@ function readSessionAuth(username: string): { secret: string; syncedAt?: number 
   }
 }
 
-function formatSyncTime(value?: number) {
+function formatSyncTime(value: number | undefined, lang: 'zh' | 'en') {
   if (!value) return 'NO DATA';
   try {
-    return new Date(value).toLocaleString();
+    return new Date(value).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US');
   } catch {
     return 'UNKNOWN';
   }
@@ -73,6 +75,7 @@ function clearAssetSessionCookie() {
 
 export default function LoginModal({ open, onClose, onAuthChange }: LoginModalProps) {
   const { syncChatHistory, setStatus } = useChat();
+  const { lang, t } = useI18n();
   const { dragStyle, onTitlePointerDown } = useWindowDrag();
   const [initialAuth] = useState(readStoredAuth);
   const [initialSessionAuth] = useState(() => readSessionAuth(initialAuth?.username || ''));
@@ -111,7 +114,9 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
       onAuthChange?.(syncedUsername);
       setMessage(result.assetMigrationWarning ? 'SYNC WARNING' : result.applied ? 'SYNC COMPLETE' : 'SYNC QUEUED');
       setStatus(
-        result.assetMigrationWarning || (result.applied ? '聊天记录已同步' : '聊天已更新，将继续后台同步'),
+        result.assetMigrationWarning
+          ? translateServerMessage(lang, result.assetMigrationWarning)
+          : result.applied ? t('syncDone') : t('syncUpdating'),
         result.assetMigrationWarning || !result.applied ? 'warn' : 'ok',
       );
     } catch (error) {
@@ -126,7 +131,7 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
         onAuthChange?.('');
       }
       setMessage(authRejected ? 'AUTH FAILED' : 'SYNC FAILED');
-      setStatus(text, 'err');
+      setStatus(translateServerMessage(lang, text), 'err');
     } finally {
       setSyncing(false);
     }
@@ -140,14 +145,14 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
     setSyncedAt(undefined);
     onAuthChange?.('');
     setMessage('SIGNED OUT');
-    setStatus('已退出登录', 'warn');
+    setStatus(t('loggedOut'), 'warn');
   };
 
   return (
     <Modal
       id="login"
       onClose={onClose}
-      ariaLabel="同步登录"
+      ariaLabel={t('syncLoginTitle')}
       backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-12 backdrop-blur-xs"
       panelClassName="w-full max-w-md bg-theme-bg font-mono text-body-14 text-theme-fg ring-1 ring-theme-fg/30"
       panelStyle={dragStyle}
@@ -156,7 +161,7 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
       <div
         className="flex h-26 shrink-0 cursor-grab touch-none items-center justify-between gap-4 border-b border-theme-fg/30 px-8"
         onPointerDown={onTitlePointerDown}
-            title="拖拽移动 · 双击复位"
+            title={t('dragMoveReset')}
       >
         <span className="truncate">~/sync</span>
         <button
@@ -164,7 +169,7 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
           onClick={onClose}
           onPointerDown={(event) => event.stopPropagation()}
           className="hit-x-4 hit-y-4 flex size-16 shrink-0 cursor-pointer items-center justify-center rounded-full border border-transparent bg-theme-fg text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg"
-          aria-label="关闭登录"
+          aria-label={t('closeLogin')}
         >
           <svg viewBox="0 0 24 24" className="size-full shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
@@ -188,24 +193,24 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
             </div>
           </div>
           <p className="text-body-10 text-theme-dim">
-            第一次输入名字和同步密钥就会自动创建账号。之后用同样的信息登录，就能同步聊天记录。
+            {t('loginIntro')}
           </p>
 
           <div className="space-y-12">
             <label className="block">
-              <span className="mb-4 block text-body-10 uppercase text-theme-muted">名字</span>
+              <span className="mb-4 block text-body-10 uppercase text-theme-muted">{t('nameLabel')}</span>
               <input
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 disabled={syncing}
                 autoComplete="username"
                 className="h-32 w-full bg-theme-bg px-8 text-body-14 text-theme-fg outline-none ring-1 ring-theme-fg/30 placeholder:text-theme-muted focus:ring-theme-fg disabled:opacity-60"
-                placeholder="例如：PLAYER_1"
+                placeholder={t('namePh')}
               />
             </label>
 
             <label className="block">
-              <span className="mb-4 block text-body-10 uppercase text-theme-muted">同步密钥</span>
+              <span className="mb-4 block text-body-10 uppercase text-theme-muted">{t('secretLabel')}</span>
               <input
                 value={secret}
                 onChange={(event) => setSecret(event.target.value)}
@@ -213,14 +218,14 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
                 type="password"
                 autoComplete="current-password"
                 className="h-32 w-full bg-theme-bg px-8 text-body-14 text-theme-fg outline-none ring-1 ring-theme-fg/30 placeholder:text-theme-muted focus:ring-theme-fg disabled:opacity-60"
-                placeholder="至少 4 位"
+                placeholder={t('secretPh')}
               />
             </label>
           </div>
 
           <div className="flex items-center justify-between gap-8 border-y border-theme-fg/30 py-8 text-body-10 uppercase">
             <span className="text-theme-muted">LAST SYNC</span>
-            <span className="text-theme-fg">{formatSyncTime(syncedAt)}</span>
+            <span className="text-theme-fg">{formatSyncTime(syncedAt, lang)}</span>
           </div>
 
           <div className="grid grid-cols-2 gap-8">
@@ -230,18 +235,18 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
               disabled={syncing}
               className="h-32 cursor-pointer text-body-10 uppercase text-theme-dim ring-1 ring-theme-fg/30 hover:bg-theme-fg/10 hover:text-theme-fg disabled:cursor-wait disabled:opacity-60"
             >
-              退出登录
+              {t('logout')}
             </button>
             <button
               type="submit"
               disabled={syncing}
               className="h-32 cursor-pointer border border-transparent bg-theme-fg text-body-10 uppercase text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg disabled:cursor-wait disabled:opacity-60"
             >
-              {syncing ? '同步中...' : '登录并同步'}
+              {syncing ? t('syncing') : t('loginAndSync')}
             </button>
           </div>
           <p className="text-body-10 text-theme-muted">
-            退出登录不会删除聊天记录，下次用同样的名字和同步密钥登录还能继续同步。
+            {t('logoutNote')}
           </p>
       </form>
     </Modal>

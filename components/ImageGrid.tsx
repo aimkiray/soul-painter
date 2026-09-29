@@ -4,9 +4,13 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useImages } from '@/contexts/ImageContext';
+import { useI18n } from '@/contexts/I18nContext';
 import type { ImageRef } from '@/types';
+import type { MsgKey } from '@/lib/i18n';
 import { COMPOSER_FRAME_CLASS } from '@/lib/layout';
 import { canvasHasStrokes } from '@/lib/mask';
+
+type TFunc = (key: MsgKey, vars?: Record<string, string | number>) => string;
 
 interface ImageGridProps {
   layout: 'strip' | 'sidebar';
@@ -28,9 +32,9 @@ function imageHasMaskStrokes(img: ImageRef): boolean {
   return result;
 }
 
-const Placeholder = ({ className }: { className?: string }) => (
+const Placeholder = ({ className, label }: { className?: string; label: string }) => (
   <div className={`flex items-center justify-center border border-dashed border-theme-fg/30 ${className || ''}`}>
-    <span className="animate-pulse font-mono text-body-10 uppercase text-theme-muted motion-reduce:animate-none">处理中</span>
+    <span className="animate-pulse font-mono text-body-10 uppercase text-theme-muted motion-reduce:animate-none">{label}</span>
   </div>
 );
 
@@ -39,9 +43,11 @@ const COMPRESSED_BADGE_MS = 3000;
 function ThumbnailEditButton({
   index,
   onEdit,
+  t,
 }: {
   index: number;
   onEdit: (index: number) => void;
+  t: TFunc;
 }) {
   return (
     <button
@@ -50,15 +56,16 @@ function ThumbnailEditButton({
         onEdit(index);
       }}
       className="absolute inset-x-0 bottom-0 flex h-22 cursor-pointer items-center justify-center border-t border-theme-fg/30 bg-theme-bg/80 font-mono text-body-10 uppercase text-theme-fg hover:bg-theme-fg hover:text-theme-bg"
-      aria-label={`编辑第 ${index + 1} 张图片`}
+      aria-label={t('editImageN', { n: index + 1 })}
     >
-      编辑
+      {t('editThumb')}
     </button>
   );
 }
 
 export default function ImageGrid({ layout }: ImageGridProps) {
   const { images, openEditor, removeImage, selectedIndices, toggleSelect, pendingCount } = useImages();
+  const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(false);
   const [compressedBadgeUrls, setCompressedBadgeUrls] = useState<Set<string>>(new Set());
   const seenCompressedUrlsRef = useRef<Set<string>>(new Set());
@@ -137,14 +144,14 @@ export default function ImageGrid({ layout }: ImageGridProps) {
         <div className="flex h-26 shrink-0 items-center justify-between gap-4 border-b border-theme-fg/30 px-8">
           <span className="truncate">
             ~/refs
-            {selectedCount > 0 && <span className="ml-4 text-theme-muted">已选 {selectedCount}</span>}
+            {selectedCount > 0 && <span className="ml-4 text-theme-muted">{t('selectedCount', { n: selectedCount })}</span>}
           </span>
           <button
             onClick={() => { const indices = [...selectedIndices].sort((a, b) => b - a); indices.forEach((idx) => removeImage(idx)); }}
             className="hit-y-4 cursor-pointer text-body-10 uppercase text-error disabled:cursor-not-allowed disabled:opacity-40"
             disabled={selectedCount === 0}
           >
-            删除选中
+            {t('deleteSelected')}
           </button>
         </div>
 
@@ -160,7 +167,7 @@ export default function ImageGrid({ layout }: ImageGridProps) {
                   type="button"
                   onClick={() => toggleSelect(i)}
                   aria-pressed={isSelected}
-                  aria-label={`参考图 ${i + 1}`}
+                  aria-label={t('refImageN', { n: i + 1 })}
                   className={`relative aspect-square w-full cursor-pointer overflow-hidden bg-theme-bg ring-1 ${isSelected ? 'ring-theme-fg' : 'ring-theme-fg/30'}`}
                 >
                   <img
@@ -176,14 +183,14 @@ export default function ImageGrid({ layout }: ImageGridProps) {
                   )}
                   <span className="absolute left-2 top-2 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-fg ring-1 ring-theme-fg/30">#{i + 1}</span>
                   {isSelected && <span className="absolute right-2 top-2 size-10 bg-theme-fg"></span>}
-                  {showCompressedBadge && <span className="absolute right-2 top-16 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-dim ring-1 ring-theme-fg/30">已缩小</span>}
+                  {showCompressedBadge && <span className="absolute right-2 top-16 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-dim ring-1 ring-theme-fg/30">{t('compressedBadge')}</span>}
                   {hasMask && <span className={`absolute left-2 flex items-center bg-theme-fg px-2 py-2 text-body-10 leading-none text-theme-bg ${isSelected ? 'bottom-24' : 'bottom-2'}`}>mask</span>}
-                  {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} />}
+                  {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} t={t} />}
                 </button>
               );
             })}
             {pendingCount > 0 && Array.from({ length: pendingCount }).map((_, i) => (
-              <Placeholder key={`ph-${i}`} className="aspect-square" />
+              <Placeholder key={`ph-${i}`} className="aspect-square" label={t('processing')} />
             ))}
           </div>
         </div>
@@ -203,11 +210,11 @@ export default function ImageGrid({ layout }: ImageGridProps) {
             {collapsed ? '~/refs ▸' : '~/refs ▾'}
           </button>
           {selectedCount > 0 && (
-            <span className="text-body-10 uppercase text-theme-muted">已选 {selectedCount}</span>
+            <span className="text-body-10 uppercase text-theme-muted">{t('selectedCount', { n: selectedCount })}</span>
           )}
         </span>
         <span className="flex items-center gap-8">
-          <button onClick={() => { const indices = [...selectedIndices].sort((a, b) => b - a); indices.forEach((idx) => removeImage(idx)); }} className="hit-y-4 cursor-pointer text-body-10 uppercase text-error disabled:cursor-not-allowed disabled:opacity-40" disabled={selectedCount === 0}>删除选中</button>
+          <button onClick={() => { const indices = [...selectedIndices].sort((a, b) => b - a); indices.forEach((idx) => removeImage(idx)); }} className="hit-y-4 cursor-pointer text-body-10 uppercase text-error disabled:cursor-not-allowed disabled:opacity-40" disabled={selectedCount === 0}>{t('deleteSelected')}</button>
         </span>
       </div>
 
@@ -222,7 +229,7 @@ export default function ImageGrid({ layout }: ImageGridProps) {
                 type="button"
                 onClick={() => toggleSelect(i)}
                 aria-pressed={isSelected}
-                aria-label={`参考图 ${i + 1}`}
+                aria-label={t('refImageN', { n: i + 1 })}
                 className="relative shrink-0"
               >
                 <img
@@ -239,13 +246,13 @@ export default function ImageGrid({ layout }: ImageGridProps) {
                 )}
                 <span className="absolute left-2 top-2 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-fg ring-1 ring-theme-fg/30">#{i + 1}</span>
                 {isSelected && <span className="absolute right-2 top-2 size-10 bg-theme-fg"></span>}
-                {showCompressedBadge && <span className="absolute right-2 top-16 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-dim ring-1 ring-theme-fg/30">已缩小</span>}
-                {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} />}
+                {showCompressedBadge && <span className="absolute right-2 top-16 flex h-12 items-center bg-theme-bg/80 px-2 text-body-10 text-theme-dim ring-1 ring-theme-fg/30">{t('compressedBadge')}</span>}
+                {isSelected && <ThumbnailEditButton index={i} onEdit={openEditor} t={t} />}
               </button>
             );
           })}
           {pendingCount > 0 && Array.from({ length: pendingCount }).map((_, i) => (
-            <Placeholder key={`mph-${i}`} className="size-64 shrink-0" />
+            <Placeholder key={`mph-${i}`} className="size-64 shrink-0" label={t('processing')} />
           ))}
         </div>
       )}

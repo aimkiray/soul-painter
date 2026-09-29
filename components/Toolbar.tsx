@@ -2,6 +2,7 @@
 
 import React, { useSyncExternalStore } from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useI18n } from '@/contexts/I18nContext';
 import { cycleTheme, readTheme, THEME_EVENT } from '@/lib/theme';
 import type { ThemeName } from '@/lib/theme';
 
@@ -39,6 +40,7 @@ function SidebarIcon({ open }: { open: boolean }) {
 
 export default function Toolbar({ onOpenLogin, syncUsername = '', onOpenSettings, onOpenChatSidebar, chatSidebarOpen = false }: ToolbarProps) {
   const { modelGateEnabled, modelGateUnlocked } = useConfig();
+  const { lang, setLang, t } = useI18n();
   const theme = useSyncExternalStore<ThemeName>(
     (onChange) => {
       window.addEventListener(THEME_EVENT, onChange);
@@ -63,13 +65,13 @@ export default function Toolbar({ onOpenLogin, syncUsername = '', onOpenSettings
             type="button"
             onClick={onOpenChatSidebar}
             className="hit-y-8 flex items-center px-4 text-body-14 text-theme-muted hover:text-theme-fg lg:-ml-8"
-            aria-label={chatSidebarOpen ? '关闭聊天列表' : '打开聊天列表'}
+            aria-label={chatSidebarOpen ? t('closeSidebar') : t('openSidebar')}
             aria-expanded={chatSidebarOpen}
           >
             <SidebarIcon open={chatSidebarOpen} />
           </button>
         )}
-        <h1 className="whitespace-nowrap font-semibold">{lockedRepeaterMode ? '复读机' : '灵魂画师'}</h1>
+        <h1 className="whitespace-nowrap font-semibold">{lockedRepeaterMode ? t('repeaterMode') : t('appTitle')}</h1>
         <span className="hidden text-theme-muted lg:block">~/soul-painter</span>
       </div>
 
@@ -86,12 +88,12 @@ export default function Toolbar({ onOpenLogin, syncUsername = '', onOpenSettings
               type="button"
               onClick={onOpenLogin}
               className={actionClass}
-              aria-label={syncUsername ? `同步账号：${syncUsername}` : '打开同步登录'}
-              title={syncUsername ? `同步账号：${syncUsername} (press Y)` : '同步登录 (press Y)'}
+              aria-label={syncUsername ? t('syncAccount', { name: syncUsername }) : t('openSyncLogin')}
+              title={`${syncUsername ? t('syncAccount', { name: syncUsername }) : t('syncLogin')} (press Y)`}
             >
               <Kbd letter="Y" />
               <span className={`max-w-32 truncate ${syncUsername ? 'text-theme-fg' : ''}`}>
-                {syncUsername || '同步'}
+                {syncUsername || t('sync')}
               </span>
             </button>
           )}
@@ -100,8 +102,8 @@ export default function Toolbar({ onOpenLogin, syncUsername = '', onOpenSettings
             type="button"
             onClick={() => cycleTheme()}
             className={actionClass}
-            aria-label="切换主题"
-            title="切换主题 (press T)"
+            aria-label={t('toggleTheme')}
+            title={`${t('toggleTheme')} (press T)`}
           >
             <Kbd letter="T" />
             <span>{theme}</span>
@@ -111,11 +113,22 @@ export default function Toolbar({ onOpenLogin, syncUsername = '', onOpenSettings
             type="button"
             onClick={onOpenSettings}
             className={actionClass}
-            aria-label="打开设置"
-            title="打开设置 (press S)"
+            aria-label={t('openSettings')}
+            title={`${t('openSettings')} (press S)`}
           >
             <Kbd letter="S" />
-            <span>设置</span>
+            <span>{t('settings')}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}
+            className={actionClass}
+            aria-label={lang === 'zh' ? t('switchToEnglish') : t('switchToChinese')}
+            title={`${lang === 'zh' ? t('switchToEnglish') : t('switchToChinese')} (press L)`}
+          >
+            <Kbd letter="L" />
+            <span>{lang === 'zh' ? 'EN' : '中'}</span>
           </button>
 
         </div>

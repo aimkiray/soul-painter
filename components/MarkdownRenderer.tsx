@@ -6,6 +6,7 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { writeClipboardText } from '@/lib/clipboard';
+import { useI18n } from '@/contexts/I18nContext';
 
 interface MarkdownRendererProps {
   content: string;
@@ -21,6 +22,7 @@ function extractText(node: React.ReactNode): string {
 }
 
 function MarkdownCodeBlock({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
   const [copyStatus, setCopyStatus] = React.useState<'idle' | 'copied' | 'failed'>('idle');
   const feedbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const codeText = extractText(children);
@@ -42,10 +44,10 @@ function MarkdownCodeBlock({ children }: { children: React.ReactNode }) {
   };
 
   const buttonText = copyStatus === 'copied'
-    ? '已复制'
+    ? t('copied')
     : copyStatus === 'failed'
-      ? '失败'
-      : '复制';
+      ? t('copyFailed')
+      : t('copy');
   const statusClass = copyStatus === 'copied'
     ? 'ring-theme-fg text-theme-fg'
     : copyStatus === 'failed'
@@ -59,8 +61,8 @@ function MarkdownCodeBlock({ children }: { children: React.ReactNode }) {
         onClick={() => { void handleCopy(); }}
         disabled={!codeText}
         className={`absolute right-4 top-4 z-10 cursor-pointer bg-theme-bg px-8 py-2 font-mono text-body-10 uppercase ring-1 disabled:cursor-not-allowed disabled:opacity-40 ${statusClass}`}
-        aria-label={copyStatus === 'copied' ? '已复制代码' : copyStatus === 'failed' ? '复制代码失败' : '复制代码'}
-        title={copyStatus === 'copied' ? '已复制' : copyStatus === 'failed' ? '复制失败' : '复制代码'}
+        aria-label={copyStatus === 'copied' ? t('copiedCode') : copyStatus === 'failed' ? t('copyCodeFailed') : t('copyCode')}
+        title={copyStatus === 'copied' ? t('copied') : copyStatus === 'failed' ? t('copyFailed') : t('copyCode')}
       >
         {buttonText}
       </button>

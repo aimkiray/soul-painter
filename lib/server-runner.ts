@@ -366,7 +366,9 @@ async function generateRunTitle(run: ServerRunRecord, assistantText: string, sig
     messages: [
       {
         role: 'system',
-        content: 'Summarize this conversation into a concise Chinese chat title. Return only the final title without quotes, punctuation, markdown, or reasoning.',
+        content: run.lang === 'en'
+          ? 'Summarize this conversation into a concise English chat title. Return only the final title without quotes, punctuation, markdown, or reasoning.'
+          : 'Summarize this conversation into a concise Chinese chat title. Return only the final title without quotes, punctuation, markdown, or reasoning.',
       },
       {
         role: 'user',

@@ -3,6 +3,7 @@
 import React, { useCallback, useRef, useEffect, useMemo } from 'react';
 import { useChat } from '@/contexts/ChatContext';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useI18n } from '@/contexts/I18nContext';
 import { useImages } from '@/contexts/ImageContext';
 import { hitToFile } from '@/lib/image-ref-utils';
 import type { ImageHit } from '@/types';
@@ -27,6 +28,7 @@ interface ChatAreaProps {
 
 export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMessageId = null }: ChatAreaProps) {
   const { config } = useConfig();
+  const { t } = useI18n();
   const { hasImages, addFiles } = useImages();
   const {
     messages,
@@ -59,19 +61,19 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
       try {
         const file = await hitToFile(hit, index);
         if (!file) {
-          setStatus('参考图添加失败', 'err');
+          setStatus(t('refAddFailed'), 'err');
           return;
         }
         await addFiles([file]);
         setStatus(
-          config.mode === 'chat' ? '参考图已加入；切换到 IMG 模式后才会随请求发送' : '已加入参考图',
+          config.mode === 'chat' ? t('refAddedChatMode') : t('refAdded'),
           config.mode === 'chat' ? 'warn' : 'ok',
         );
       } finally {
         addingRefKeysRef.current.delete(key);
       }
     })();
-  }, [addFiles, setStatus, config.mode]);
+  }, [addFiles, setStatus, config.mode, t]);
   const lastUserIndex = messages.findLastIndex((message) => message.role === 'user');
   const hasAssistantForCurrentTurn = lastUserIndex >= 0
     && messages.slice(lastUserIndex + 1).some((message) => message.role === 'bot');
@@ -95,10 +97,10 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
       ? 'EDIT READY'
       : 'IMG READY';
   const emptySubtitle = config.mode === 'chat'
-    ? '等待输入'
+    ? t('waitingInput')
     : hasImages
-      ? '参考图已就绪'
-      : '等待描述';
+      ? t('refsReady')
+      : t('waitingDesc');
 
   // Switching sessions always lands at the latest message — reset the
   // near-bottom flag so auto-scroll isn't suppressed by the previous
@@ -128,7 +130,7 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
 
   if (messages.length === 0 && !isActiveSessionLoading) {
     return (
-      <div className="flex-1 overflow-y-auto py-8 sm:py-16 flex flex-col" role="log" aria-live="off" aria-label="聊天记录">
+      <div className="flex-1 overflow-y-auto py-8 sm:py-16 flex flex-col" role="log" aria-live="off" aria-label={t('chatLog')}>
         <div className={`${CHAT_CONTENT_CLASS} flex-1 flex flex-col`}>
           <div className="m-auto flex flex-col items-center justify-center px-16 py-32 text-center font-mono">
             <p className="text-body-14 uppercase text-theme-fg">
@@ -150,10 +152,10 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
       onScroll={handleScroll}
       role="log"
       aria-live="off"
-      aria-label="聊天记录"
+      aria-label={t('chatLog')}
     >
       <span className="sr-only" role="status">
-        {isActiveSessionLoading ? '生成中' : messages.at(-1)?.extra === 'error' ? '上一次生成失败' : ''}
+        {isActiveSessionLoading ? t('generating') : messages.at(-1)?.extra === 'error' ? t('lastGenFailed') : ''}
       </span>
       <div className={`${CHAT_CONTENT_CLASS} flex flex-col`}>
         {messages.map((msg, i) => {
@@ -178,10 +180,10 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
         })}
         {isActiveSessionLoading && !hasActiveAssistantMessage && (
           <div className="mb-12 flex flex-col items-start gap-4">
-            <span className="px-4 font-mono text-body-10 uppercase text-theme-muted">Assistant</span>
+            <span className="px-4 font-mono text-body-10 uppercase text-theme-muted">{t('assistantLabel')}</span>
             <div className="w-fit max-w-full min-w-0 px-12 py-8 ring-1 ring-theme-fg/30">
               <span className="text-theme-dim">
-                生成中
+                {t('generating')}
                 <span aria-hidden className="ml-4 inline-block h-12 w-6 animate-blink bg-theme-dim align-middle motion-reduce:hidden" />
               </span>
             </div>

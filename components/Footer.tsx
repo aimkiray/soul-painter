@@ -3,11 +3,14 @@
 import React from 'react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useChat } from '@/contexts/ChatContext';
+import { useI18n } from '@/contexts/I18nContext';
+import { translateServerMessage } from '@/lib/i18n';
 import VersionTap from './VersionTap';
 
 export default function Footer() {
   const { statusText, statusType } = useChat();
   const { config } = useConfig();
+  const { lang, t } = useI18n();
 
   const statusColor = statusType === 'err' ? 'text-error'
     : statusType === 'ok' ? 'text-theme-fg'
@@ -19,14 +22,14 @@ export default function Footer() {
   return (
     <footer className="flex h-26 shrink-0 items-center justify-between gap-8 border-t border-theme-fg/30 px-8 font-mono text-body-10 uppercase lg:px-16">
       {statusText ? (
-        <span role="status" aria-live="polite" className={`truncate ${statusColor}`}>{statusText}</span>
+        <span role="status" aria-live="polite" className={`truncate ${statusColor}`}>{translateServerMessage(lang, statusText)}</span>
       ) : (
         <span className="flex min-w-0 items-center gap-8 overflow-hidden whitespace-nowrap text-theme-dim">
-          <span className="text-theme-fg">[READY]</span>
-          <span className="hidden md:inline">MODE {modeLabel}</span>
-          <span className="hidden md:inline">INPUT PROMPT</span>
-          <span>OUTPUT {outputLabel}</span>
-          <span className="hidden text-theme-muted lg:inline">[T]THEME [Y]SYNC [S]SETTINGS [D]DEBUG</span>
+          <span className="text-theme-fg">{t('ready')}</span>
+          <span className="hidden md:inline">{t('footerMode', { mode: modeLabel })}</span>
+          <span className="hidden md:inline">{t('footerInput')}</span>
+          <span>{t('footerOutput', { output: outputLabel })}</span>
+          <span className="hidden text-theme-muted lg:inline">{t('footerHotkeys')}</span>
         </span>
       )}
       <span className="flex shrink-0 items-center gap-8 tabular-nums">
@@ -34,7 +37,7 @@ export default function Footer() {
           href="https://github.com/aimkiray/soul-painter"
           target="_blank"
           rel="noreferrer"
-          aria-label="GitHub 仓库"
+          aria-label={t('githubRepo')}
           title="github.com/aimkiray/soul-painter"
           className="hit-x-8 hit-y-4 cursor-pointer text-theme-dim hover:text-theme-fg"
         >

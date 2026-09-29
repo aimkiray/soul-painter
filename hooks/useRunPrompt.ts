@@ -24,6 +24,7 @@ import {
   type ServerRunPublicRecord,
 } from '@/lib/server-runs';
 import { USER_ABORT_SENTINEL } from '@/lib/api';
+import { currentLang } from '@/lib/i18n';
 import { splitStreamEventBlocks } from '@/lib/stream-utils';
 import type { ImageRef } from '@/types';
 
@@ -714,6 +715,7 @@ export function useRunPrompt() {
         options: { ...options, streaming: shouldStream },
         request: normalizedRequest,
         historyMessages: sessionMessages,
+        lang: currentLang(),
       }, requestController.signal);
       if (cancelRequestedRef.current) {
         // The cancel landed while the POST was in flight and could not abort
