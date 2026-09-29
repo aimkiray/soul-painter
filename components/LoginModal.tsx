@@ -59,16 +59,6 @@ function formatSyncTime(value?: number) {
   }
 }
 
-function loginStatusBox(message: string) {
-  const status = `STATUS: ${message.toUpperCase()}`.slice(0, 24).padEnd(24, ' ');
-  return [
-    '╔══════════════════════════╗',
-    `║ ${'CHAT SYNC: READY'.padEnd(24, ' ')} ║`,
-    `║ ${status} ║`,
-    '╚══════════════════════════╝',
-  ].join('\n');
-}
-
 function loginStatusColor(message: string) {
   return message === 'AUTH FAILED' ? 'text-error' : 'text-theme-fg';
 }
@@ -191,7 +181,12 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
           void syncHistory();
         }}
       >
-          <pre className={`overflow-x-auto bg-theme-fg/10 p-8 text-body-10 ring-1 ring-theme-fg/30 ${loginStatusColor(message)}`}>{loginStatusBox(message)}</pre>
+          <div className={`bg-theme-fg/10 p-8 ring-1 ring-theme-fg/30 ${loginStatusColor(message)}`}>
+            <div className="px-8 py-4 font-mono text-body-10 uppercase ring-1 ring-theme-fg/50">
+              <div>CHAT SYNC: READY</div>
+              <div className="truncate">STATUS: {message.toUpperCase()}</div>
+            </div>
+          </div>
           <p className="text-body-10 text-theme-dim">
             第一次输入名字和同步密钥就会自动创建账号。之后用同样的信息登录，就能同步聊天记录。
           </p>

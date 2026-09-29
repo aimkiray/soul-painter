@@ -287,7 +287,7 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
           {busy && onCancel ? (
             <button onClick={onCancel} className="flex flex-1 cursor-pointer items-center justify-center bg-error font-semibold text-black hover:bg-transparent hover:text-error ring-1 ring-transparent hover:ring-error" aria-label="停止"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" className="size-12" aria-hidden="true"><rect width="12" height="12" fill="currentColor" /></svg></button>
           ) : (
-            <button onClick={send} disabled={busy||!prompt.trim()} className="flex flex-1 cursor-pointer items-center justify-center border border-transparent bg-theme-fg font-semibold text-theme-bg hover:border-theme-fg hover:bg-transparent hover:text-theme-fg disabled:cursor-not-allowed disabled:opacity-40" aria-label="发送">{busy?<span className="animate-pulse motion-reduce:animate-none">...</span>:'>'}</button>
+            <button onClick={send} disabled={busy||!prompt.trim()} className="flex flex-1 cursor-pointer items-center justify-center bg-theme-fg font-semibold text-theme-bg ring-1 ring-theme-fg/30 hover:bg-transparent hover:text-theme-fg hover:ring-theme-fg disabled:cursor-not-allowed disabled:opacity-40" aria-label="发送">{busy?<span className="animate-pulse motion-reduce:animate-none">...</span>:'>'}</button>
           )}
         </div>
         <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e=>{if(e.target.files?.length){addFiles(e.target.files).catch(()=>{});e.target.value=''}}} />
