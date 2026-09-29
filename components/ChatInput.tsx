@@ -69,7 +69,7 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
   }, [prompt, options.persistPrompt, activeSessionId]);
 
   // F1 → settings is handled by a page-level listener (app/page.tsx) so it
-  // keeps working when this component is unmounted (e.g. the Base64 tab).
+  // keeps working even when this component is unmounted.
   const busy = isLoading;
   const send = () => {
     const nextPrompt = prompt.trim();

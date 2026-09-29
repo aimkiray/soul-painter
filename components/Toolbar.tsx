@@ -77,8 +77,9 @@ export default function Toolbar({ onOpenLogin, syncUsername = '', onOpenSettings
           symmetrical via the three-zone grid */}
       <div />
 
-      {/* actions */}
-      <div className="flex min-w-0 items-center justify-end">
+      {/* actions — -mr-8 mirrors the menu button's -ml-8 so the outermost
+          boxes sit the same 8px from each viewport edge */}
+      <div className="flex min-w-0 items-center justify-end lg:-mr-8">
         <div className="flex h-full min-w-0 items-center">
           {onOpenLogin && (
             <button

@@ -1,24 +1,22 @@
 # Soul Painter
 
-A monochrome terminal-desktop AI image generation and chat tool — text-to-image, image-to-image editing, and inpainting with mask painting, rendered as a TUI window manager.
+A monochrome terminal-desktop AI image generation and chat tool — text-to-image, image-to-image editing, and inpainting with mask painting, styled as a terminal window manager.
 
 ## Features
 
-- **Terminal Desktop UI** — Fixed-height shell with hairline borders, draggable modal windows, and monospace typography (Inter + Ubuntu Mono)
+- **Terminal Desktop UI** — Full-viewport shell with hairline borders, draggable modal windows, and monospace typography (Inter + Ubuntu Mono)
 - **Swappable Themes** — Seven terminal palettes (default, matrix, amber, solarized-dark, monokai, nord, dracula), cycled with `T` or the toolbar button
 - **Text-to-Image** — Describe what you want, generate images via API
 - **Image-to-Image** — Upload reference images and describe edits
 - **Inpainting** — Paint a mask on the reference image to limit edits to specific regions
-- **Multi-Image Chat** — Send multiple reference images in a single request
-- **Single Image Selection** — Select one image from multiple for focused editing
-- **Batch Mode** — Process multiple reference images independently in parallel
-- **Chat Mode** — Streamed conversations against OpenAI or Claude compatible models, with a reasoning-effort selector
+- **Multi-Reference Edits** — Send any subset of reference images in a single request; all selected images are included
+- **Chat Mode** — Streamed conversations against OpenAI or Claude compatible models, with a reasoning-effort selector (OpenAI format) and collapsible thinking blocks
+- **Server Runs** — Prompts execute as durable server-side runs that survive reloads and restarts; progress streams over SSE and can be cancelled mid-flight
 - **Custom Sizes** — Pick a preset aspect ratio or type a custom `WxH` size
 - **Session Sidebar** — Resizable split pane (drag, arrow keys, double-click to reset); right-click or long-press a session for rename/clear/delete; collapses via the header button
-- **Reference Reuse** — Send any generated image back as a reference with its `参考` action
-- **Auto Compression** — Oversized images (>1.5MB or >2048px) are automatically downscaled
-- **Base64 Decoder** — Paste base64 strings or data URLs to preview and download images
-- **Chat History Sync** — Optional server-side sync across browsers via a username + sync secret
+- **Message Actions** — Edit-and-resend, regenerate, copy, and delete on any chat message; generated images offer 放大/下载/参考 (lightbox, download, use as reference)
+- **Auto Compression** — Oversized images (>1.5MB or any edge >3840px) are automatically downscaled
+- **Chat History Sync** — Optional server-side sync across browsers via a username + sync secret; first login creates the account
 - **Model Gate** — Optional lock on model selection; triple-tap the footer version stamp to unlock
 - **Debug Panel** — Toggle to inspect raw API responses for troubleshooting
 
@@ -26,7 +24,7 @@ A monochrome terminal-desktop AI image generation and chat tool — text-to-imag
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20.9+ (required by Next.js 16)
 - npm
 
 ### Setup
@@ -72,6 +70,7 @@ npm run dev
 | `CHAT_ASSET_SESSION_MAX_FILES` | Maximum saved chat image files per browser session; defaults to 200 |
 | `CHAT_ASSET_SESSION_MAX_AGE_DAYS` | Removes inactive chat image sessions after this many days; defaults to 30 |
 | `CHAT_ASSET_MAX_BODY_BYTES` | Maximum JSON upload body accepted by the chat asset route |
+| `CHAT_ASSETS_MAX_TOTAL_BYTES` | Global disk budget across all chat asset sessions; defaults to 1 GiB |
 | `CHAT_ASSET_CACHE_MAX_AGE_SECONDS` | Browser cache lifetime for private chat asset responses; defaults to 3600 |
 | `CHAT_ASSET_COOKIE_SECURE` | `auto`, `true`, or `false`; controls whether chat asset cookies require HTTPS |
 | `CHAT_ASSET_SESSION_SECRET` | Secret used to sign anonymous chat asset session cookies; falls back to `SERVER_ACCESS_TOKEN`/`DEFAULT_API_KEY`; unsigned when none are set (local dev) |
@@ -87,7 +86,7 @@ The app supports four ways to provide API credentials, in priority order:
 3. **Server default** — Set `DEFAULT_API_KEY` and `SERVER_ACCESS_TOKEN` in `.env.local`, then enter the access token in Connection Settings
 4. **None** — Requests return a 401 error until configured
 
-Chat settings can save separate OpenAI Compatible and Claude Compatible credentials at the same time. The selected chat model automatically chooses the matching API format. To use Claude directly, select a Claude model, set **Claude Base URL** to `https://api.anthropic.com/v1`, and use an Anthropic API key.
+Chat settings can save separate OpenAI Compatible and Claude Compatible credentials at the same time. The selected chat model automatically selects the matching API format. To use Claude directly, select a Claude model, set **Claude Base URL** to `https://api.anthropic.com/v1`, and use an Anthropic API key.
 
 ## Usage
 
@@ -100,13 +99,10 @@ Chat settings can save separate OpenAI Compatible and Claude Compatible credenti
 ### Image-to-Image
 
 1. **Drag & drop**, **paste**, or click the **attachment button** to add reference images
-2. Optionally click an image to open the mask editor — paint red overlay on areas to modify
-3. Type instructions describing the desired edits
-4. Send
-
-### Batch Mode
-
-When 2+ reference images are added and batch mode is enabled, each image gets an independent request (concurrency ≤ 5).
+2. Click a thumbnail to toggle selection — all selected images join the request
+3. Optionally click **编辑** on a selected thumbnail to open the mask editor — paint red overlay on areas to modify
+4. Type instructions describing the desired edits
+5. Send
 
 ### Keyboard Shortcuts
 
@@ -118,23 +114,27 @@ When 2+ reference images are added and batch mode is enabled, each image gets an
 | `Y` | Open sync login |
 | `S` / `F1` | Open settings |
 | `D` | Toggle debug panel |
-| `←` / `→` (sidebar separator focused) | Resize session sidebar |
-| `Esc` | Close modal / lightbox / menu |
+| `←` / `→`, `Home` / `End` (sidebar separator focused) | Resize session sidebar |
+| `Enter` / `Space` / double-click (separator) | Reset sidebar width |
+| `Esc` | Close the topmost overlay (menu, modal, lightbox, drawer) |
 
 ## Architecture
 
 - **Framework**: Next.js 16 (App Router) + React 19
 - **Styling**: Tailwind CSS v4 with semantic monochrome tokens (`theme-fg`/`theme-bg`/`theme-muted`/`theme-dim`/`error`), hairline `ring-1` borders, and `data-theme` palette overrides
 - **State**: React Context (Config, Chat, Image)
-- **Workflow orchestration**: `useRunPrompt` coordinates request lifecycle, retries, streaming, title generation, and context updates
+- **Workflow orchestration**: `useRunPrompt` submits each prompt as a durable server-side run, then streams updates over SSE with a polling fallback; retries run inside the runner
 - **Local persistence**: IndexedDB via `idb-keyval` stores chat sessions, image history, sync tombstones, and stream capability cache; localStorage/sessionStorage are reserved for lightweight settings, prompts, and sync auth metadata
-- **Server persistence**: Prisma + SQLite store chat sync metadata in `data/chat-sync.db`; chat image assets are stored on local disk under `data/chat-assets`
-- **API Proxy**: Next.js API routes forward requests to an OpenAI Compatible or Claude Compatible API, injecting auth from client headers or server env
+- **Server persistence**: Prisma + SQLite store chat sync metadata in `data/chat-sync.db`; run records live in `data/server-runs.json`; chat image assets are stored on local disk under `data/chat-assets`
+- **API Proxy**: `/api/runs` executes requests server-side against an OpenAI Compatible or Claude Compatible upstream, injecting auth from client headers or server env; the lower-level proxy routes remain available for direct use
 
 ### API Routes
 
 | Route | Upstream Endpoint | Body Type |
 |---|---|---|
+| `POST /api/runs` | Runs chat/image requests server-side | JSON |
+| `GET`/`DELETE /api/runs/[runId]` | Run status poll / cancel | — |
+| `GET /api/runs/[runId]/events` | SSE stream of run updates | — |
 | `/api/chat/completions` | OpenAI: `{baseUrl}/chat/completions`; Claude: `{baseUrl}/messages` | JSON |
 | `/api/images/generations` | `{baseUrl}/images/generations` | JSON |
 | `/api/images/edits` | `{baseUrl}/images/edits` | multipart/form-data |
@@ -150,7 +150,7 @@ The server routes that touch Prisma, SQLite, local chat assets, Node streams, or
 
 ### Tests
 
-The project uses Vitest for unit coverage of parser, streaming, and sync delta helpers.
+The project uses Vitest for unit coverage of config, storage, sync, asset, and image helpers.
 
 ## Scripts
 
