@@ -1,19 +1,25 @@
 # Soul Painter
 
-A terminal-themed AI image generation tool supporting text-to-image, image-to-image editing, and inpainting with mask painting.
+A monochrome terminal-desktop AI image generation and chat tool — text-to-image, image-to-image editing, and inpainting with mask painting, rendered as a TUI window manager.
 
 ## Features
 
+- **Terminal Desktop UI** — Fixed-height shell with hairline borders, draggable modal windows, and monospace typography (Inter + Ubuntu Mono)
+- **Swappable Themes** — Seven terminal palettes (default, matrix, amber, solarized-dark, monokai, nord, dracula), cycled with `T` or the toolbar button
 - **Text-to-Image** — Describe what you want, generate images via API
 - **Image-to-Image** — Upload reference images and describe edits
 - **Inpainting** — Paint a mask on the reference image to limit edits to specific regions
 - **Multi-Image Chat** — Send multiple reference images in a single request
 - **Single Image Selection** — Select one image from multiple for focused editing
 - **Batch Mode** — Process multiple reference images independently in parallel
+- **Chat Mode** — Streamed conversations against OpenAI or Claude compatible models, with a reasoning-effort selector
+- **Custom Sizes** — Pick a preset aspect ratio or type a custom `WxH` size
+- **Session Sidebar** — Resizable split pane (drag, arrow keys, double-click to reset); right-click or long-press a session for rename/clear/delete; collapses via the header button
+- **Reference Reuse** — Send any generated image back as a reference with its `参考` action
 - **Auto Compression** — Oversized images (>1.5MB or >2048px) are automatically downscaled
 - **Base64 Decoder** — Paste base64 strings or data URLs to preview and download images
-- **Chat History** — View past generations with lightbox preview and download options
-- **Persistent Settings** — All configuration auto-saves to localStorage, restored on reload
+- **Chat History Sync** — Optional server-side sync across browsers via a username + sync secret
+- **Model Gate** — Optional lock on model selection; triple-tap the footer version stamp to unlock
 - **Debug Panel** — Toggle to inspect raw API responses for troubleshooting
 
 ## Getting Started
@@ -106,16 +112,19 @@ When 2+ reference images are added and batch mode is enabled, each image gets an
 
 | Key | Action |
 |---|---|
-| `Enter` | Send prompt |
-| `Ctrl+Enter` | Send prompt |
+| `Enter` / `Ctrl+Enter` | Send prompt |
 | `Shift+Enter` | New line |
-| `F1` | Open settings |
-| `Esc` | Close modal / lightbox |
+| `T` | Cycle theme |
+| `Y` | Open sync login |
+| `S` / `F1` | Open settings |
+| `D` | Toggle debug panel |
+| `←` / `→` (sidebar separator focused) | Resize session sidebar |
+| `Esc` | Close modal / lightbox / menu |
 
 ## Architecture
 
 - **Framework**: Next.js 16 (App Router) + React 19
-- **Styling**: Tailwind CSS v4, monospace terminal aesthetic
+- **Styling**: Tailwind CSS v4 with semantic monochrome tokens (`theme-fg`/`theme-bg`/`theme-muted`/`theme-dim`/`error`), hairline `ring-1` borders, and `data-theme` palette overrides
 - **State**: React Context (Config, Chat, Image)
 - **Workflow orchestration**: `useRunPrompt` coordinates request lifecycle, retries, streaming, title generation, and context updates
 - **Local persistence**: IndexedDB via `idb-keyval` stores chat sessions, image history, sync tombstones, and stream capability cache; localStorage/sessionStorage are reserved for lightweight settings, prompts, and sync auth metadata
