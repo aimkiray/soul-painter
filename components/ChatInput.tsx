@@ -13,12 +13,8 @@ import { mergeModelOptions } from '@/lib/model-options';
 import { CUSTOM_SIZE_PATTERN, formatSizeDisplay } from '@/lib/size';
 import MenuSelect, { type MenuSelectGroup } from '@/components/MenuSelect';
 import {
-  encodeChatModelChoice,
-  getActiveChatModel,
-  getAllChatModelOptions,
-  getChatFormatForModel,
-  getClaudeChatModelOptions,
-  getOpenAIChatModelOptions,
+  buildChatModelMenuGroups,
+  buildModelMenuGroups,
   parseChatModelChoice,
 } from '@/lib/chat-config';
 
@@ -110,26 +106,23 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
   };
   const imageModeActive = config.mode === 'image';
   const lockedRepeaterMode = modelGateEnabled && !modelGateUnlocked;
-  const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
-  const openAIChatModelOptions = getOpenAIChatModelOptions(config);
-  const claudeChatModelOptions = getClaudeChatModelOptions(config);
-  const allChatModelOptions = getAllChatModelOptions(config);
-  const imageModelIsOption = imageModelOptions.some(m => m.value === config.model);
-  const activeChatModel = getActiveChatModel(config);
-  const activeChatFormat = getChatFormatForModel(config, activeChatModel);
-  const activeChatChoice = encodeChatModelChoice(activeChatFormat, activeChatModel);
-  const chatModelIsOption = allChatModelOptions.some(m => m.format === activeChatFormat && m.value === activeChatModel);
+  const {
+    groups: chatModelGroups,
+    activeChoice: activeChatChoice,
+    activeFormat: activeChatFormat,
+  } = buildChatModelMenuGroups(config, {
+    openai: t('openaiCompat'),
+    claude: t('claudeCompat'),
+  });
   const sizeIsPreset = SIZE_PRESETS.some(s => s.value === config.size);
   const activeImages = selectedIndices.size > 0
     ? images.filter((_, i) => selectedIndices.has(i))
     : [];
   const originalAspectLabel = formatSizeDisplay(ORIGINAL_ASPECT_SIZE, activeImages);
-  const imageModelGroups: MenuSelectGroup[] = [{
-    options: [
-      ...(imageModelIsOption ? [] : [{ value: config.model, label: config.model }]),
-      ...imageModelOptions.map(m => ({ value: m.value, label: m.label })),
-    ],
-  }];
+  const imageModelGroups: MenuSelectGroup[] = buildModelMenuGroups(
+    mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels),
+    config.model,
+  );
   const sizeGroups: MenuSelectGroup[] = [
     ...(['AUTO', '1K', '2K', '4K'] as const).map(group => ({
       label: group,
@@ -140,19 +133,6 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
     })),
     { options: [{ value: '__custom__', label: t('customSize') }] },
   ];
-  const chatModelGroups: MenuSelectGroup[] = [
-    {
-      options: chatModelIsOption ? [] : [{ value: activeChatChoice, label: activeChatModel }],
-    },
-    {
-      label: t('openaiCompat'),
-      options: openAIChatModelOptions.map(m => ({ value: encodeChatModelChoice('openai', m.value), label: m.label })),
-    },
-    {
-      label: t('claudeCompat'),
-      options: claudeChatModelOptions.map(m => ({ value: encodeChatModelChoice('claude', m.value), label: m.label })),
-    },
-  ].filter(group => group.options.length > 0);
   const gatedGroup: MenuSelectGroup[] = [{ options: [{ value: '__gated__', label: `${REPEATER_MODEL_LABEL} · ${t('gatedTag')}` }] }];
   const effortGroups: MenuSelectGroup[] = [{
     options: CHAT_EFFORT_OPTIONS.map((effort) => ({ value: effort, label: effort })),

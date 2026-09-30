@@ -109,6 +109,57 @@ export function getActiveChatModel(config: AppConfig) {
   return config.chatModel;
 }
 
+// Structurally identical to MenuSelectGroup — kept local so lib code does not
+// import a component for a plain data shape.
+export interface ModelMenuGroup {
+  label?: string;
+  options: { value: string; label: string }[];
+}
+
+// A value absent from the known options still renders — as a raw orphan
+// option at the top — so stale/custom persisted models stay visible and
+// selectable instead of silently migrating away.
+export function buildModelMenuGroups(
+  options: readonly ModelOption[],
+  activeValue: string,
+): ModelMenuGroup[] {
+  const isOption = hasModel(options, activeValue);
+  return [{
+    options: [
+      ...(isOption ? [] : [{ value: activeValue, label: activeValue }]),
+      ...options.map((m) => ({ value: m.value, label: m.label })),
+    ],
+  }];
+}
+
+export function buildChatModelMenuGroups(
+  config: AppConfig,
+  labels: { openai: string; claude: string },
+) {
+  const activeModel = getActiveChatModel(config);
+  const activeFormat = getChatFormatForModel(config, activeModel);
+  const activeChoice = encodeChatModelChoice(activeFormat, activeModel);
+  const isOption = getAllChatModelOptions(config).some(
+    (m) => m.format === activeFormat && m.value === activeModel,
+  );
+  const groups = [
+    { options: isOption ? [] : [{ value: activeChoice, label: activeModel }] },
+    {
+      label: labels.openai,
+      options: getOpenAIChatModelOptions(config).map(
+        (m) => ({ value: encodeChatModelChoice('openai', m.value), label: m.label }),
+      ),
+    },
+    {
+      label: labels.claude,
+      options: getClaudeChatModelOptions(config).map(
+        (m) => ({ value: encodeChatModelChoice('claude', m.value), label: m.label }),
+      ),
+    },
+  ].filter((group) => group.options.length > 0);
+  return { groups, activeModel, activeFormat, activeChoice };
+}
+
 export function normalizeChatEffort(value: unknown): string | undefined {
   return CHAT_EFFORT_OPTIONS.some((option) => option === value) ? value as string : undefined;
 }

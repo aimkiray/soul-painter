@@ -8,10 +8,8 @@ import {
 } from '@/lib/constants';
 import { addModelToList, getModelFallback, mergeModelOptions, removeModelFromList } from '@/lib/model-options';
 import {
-  encodeChatModelChoice,
-  getActiveChatModel,
-  getAllChatModelOptions,
-  getChatFormatForModel,
+  buildChatModelMenuGroups,
+  buildModelMenuGroups,
   getClaudeChatModelOptions,
   getOpenAIChatModelOptions,
   parseChatModelChoice,
@@ -39,44 +37,18 @@ export default function ModelSettings() {
   const imageModelOptions = mergeModelOptions(IMAGE_MODEL_PRESETS, config.customImageModels);
   const openAIChatModelOptions = getOpenAIChatModelOptions(config);
   const claudeModelOptions = getClaudeChatModelOptions(config);
-  const allChatModelOptions = getAllChatModelOptions(config);
-  const imageModelIsOption = imageModelOptions.some(m => m.value === config.model);
-  const activeChatModel = getActiveChatModel(config);
-  const activeChatApiFormat = getChatFormatForModel(config, activeChatModel);
-  const activeChatChoice = encodeChatModelChoice(activeChatApiFormat, activeChatModel);
+  const {
+    groups: chatModelGroups,
+    activeFormat: activeChatApiFormat,
+    activeChoice: activeChatChoice,
+  } = buildChatModelMenuGroups(config, {
+    openai: t('openaiCompat'),
+    claude: t('claudeCompat'),
+  });
   const activeChatProviderLabel = activeChatApiFormat === 'claude' ? t('claudeCompat') : t('openaiCompat');
-  const chatModelIsOption = allChatModelOptions.some(m => m.format === activeChatApiFormat && m.value === activeChatModel);
-  const titleModelIsOption = openAIChatModelOptions.some(m => m.value === config.titleModel);
-  const claudeTitleModelIsOption = claudeModelOptions.some(m => m.value === config.claudeTitleModel);
-  const imageModelGroups: MenuSelectGroup[] = [{
-    options: [
-      ...(imageModelIsOption ? [] : [{ value: config.model, label: config.model }]),
-      ...imageModelOptions.map(m => ({ value: m.value, label: m.label })),
-    ],
-  }];
-  const chatModelGroups: MenuSelectGroup[] = [
-    { options: chatModelIsOption ? [] : [{ value: activeChatChoice, label: activeChatModel }] },
-    {
-      label: t('openaiCompat'),
-      options: openAIChatModelOptions.map(m => ({ value: encodeChatModelChoice('openai', m.value), label: m.label })),
-    },
-    {
-      label: t('claudeCompat'),
-      options: claudeModelOptions.map(m => ({ value: encodeChatModelChoice('claude', m.value), label: m.label })),
-    },
-  ].filter(group => group.options.length > 0);
-  const titleModelGroups: MenuSelectGroup[] = [{
-    options: [
-      ...(titleModelIsOption ? [] : [{ value: config.titleModel, label: config.titleModel }]),
-      ...openAIChatModelOptions.map(m => ({ value: m.value, label: m.label })),
-    ],
-  }];
-  const claudeTitleModelGroups: MenuSelectGroup[] = [{
-    options: [
-      ...(claudeTitleModelIsOption ? [] : [{ value: config.claudeTitleModel, label: config.claudeTitleModel }]),
-      ...claudeModelOptions.map(m => ({ value: m.value, label: m.label })),
-    ],
-  }];
+  const imageModelGroups: MenuSelectGroup[] = buildModelMenuGroups(imageModelOptions, config.model);
+  const titleModelGroups: MenuSelectGroup[] = buildModelMenuGroups(openAIChatModelOptions, config.titleModel);
+  const claudeTitleModelGroups: MenuSelectGroup[] = buildModelMenuGroups(claudeModelOptions, config.claudeTitleModel);
   const selectChatModel = (value: string) => {
     const choice = parseChatModelChoice(value);
     if (!choice) return;

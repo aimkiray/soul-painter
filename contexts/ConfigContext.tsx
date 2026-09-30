@@ -155,50 +155,71 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
   if (typeof window !== 'undefined') {
     try {
       const sp = new URLSearchParams(window.location.search);
-      if (sp.get('apiKey')) { urlConfig.apiKey = sp.get('apiKey')!; hasUrlKey = true; }
-      if (sp.get('baseurl')) urlConfig.baseUrl = sp.get('baseurl')!;
-      if (sp.get('mode') === 'image' || sp.get('mode') === 'chat') urlConfig.mode = sp.get('mode') as AppConfig['mode'];
-      if (sp.get('model')) urlConfig.model = sp.get('model')!;
-      if (sp.get('chatModel')) urlConfig.chatModel = sp.get('chatModel')!;
-      if (sp.get('chatmodel')) urlConfig.chatModel = sp.get('chatmodel')!;
-      if (sp.get('titleModel')) urlConfig.titleModel = sp.get('titleModel')!;
-      if (sp.get('titlemodel')) urlConfig.titleModel = sp.get('titlemodel')!;
-      // Enum params apply only when VALID — an invalid ?chatApiFormat=junk
-      // must not silently stomp a stored valid value.
-      const urlFormat = sp.get('chatApiFormat') ?? sp.get('chatformat');
-      if (urlFormat && CHAT_API_FORMAT_OPTIONS.some((option) => option.value === urlFormat)) {
-        urlConfig.chatApiFormat = urlFormat as AppConfig['chatApiFormat'];
-      }
-      const urlEffort = normalizeChatEffort(sp.get('chatEffort') ?? sp.get('chateffort'));
-      if (urlEffort) urlConfig.chatEffort = urlEffort;
-      if (sp.get('claudeBaseUrl')) urlConfig.claudeBaseUrl = sp.get('claudeBaseUrl')!;
-      if (sp.get('claudebaseurl')) urlConfig.claudeBaseUrl = sp.get('claudebaseurl')!;
-      if (sp.get('claudeApiKey')) urlConfig.claudeApiKey = sp.get('claudeApiKey')!;
-      if (sp.get('claudeModel')) urlConfig.claudeModel = sp.get('claudeModel')!;
-      if (sp.get('claudemodel')) urlConfig.claudeModel = sp.get('claudemodel')!;
-      if (sp.get('claudeTitleModel')) urlConfig.claudeTitleModel = sp.get('claudeTitleModel')!;
-      if (sp.get('claudetitlemodel')) urlConfig.claudeTitleModel = sp.get('claudetitlemodel')!;
-      if (sp.get('size')) urlConfig.size = sp.get('size')!;
-      if (sp.get('n')) {
-        const n = parseInt(sp.get('n')!, 10);
-        if (Number.isFinite(n)) urlConfig.n = Math.min(20, Math.max(1, n));
-      }
-      if (sp.get('quality')) urlConfig.quality = sp.get('quality')!;
-      if (sp.get('format')) urlConfig.format = sp.get('format')!;
-      if (sp.get('background')) urlConfig.background = sp.get('background')!;
-      if (sp.get('moderation')) urlConfig.moderation = sp.get('moderation')!;
-      if (sp.get('compression')) {
-        const compression = parseInt(sp.get('compression')!, 10);
-        if (Number.isFinite(compression)) urlConfig.compression = Math.min(100, Math.max(0, compression));
+      // Credential params strip from history regardless of their value —
+      // even an empty ?apiKey= shouldn't linger in a shared-tab URL.
+      const sawCredentialParam = Array.from(sp.keys()).some((rawKey) => {
+        const key = rawKey.toLowerCase();
+        return key === 'apikey' || key === 'claudeapikey';
+      });
+      // One case-insensitive pass — camelCase and lowercase aliases share a
+      // handler, and empty/invalid values never override stored config.
+      for (const [rawKey, value] of sp.entries()) {
+        if (!value) continue;
+        switch (rawKey.toLowerCase()) {
+          case 'apikey':
+            urlConfig.apiKey = value;
+            hasUrlKey = true;
+            break;
+          case 'claudeapikey':
+            urlConfig.claudeApiKey = value;
+            break;
+          case 'baseurl': urlConfig.baseUrl = value; break;
+          case 'mode':
+            if (value === 'image' || value === 'chat') urlConfig.mode = value;
+            break;
+          case 'model': urlConfig.model = value; break;
+          case 'chatmodel': urlConfig.chatModel = value; break;
+          case 'titlemodel': urlConfig.titleModel = value; break;
+          // Enum params apply only when VALID — ?chatApiFormat=junk must not
+          // stomp a stored valid value.
+          case 'chatapiformat':
+          case 'chatformat':
+            if (CHAT_API_FORMAT_OPTIONS.some((option) => option.value === value)) {
+              urlConfig.chatApiFormat = value as AppConfig['chatApiFormat'];
+            }
+            break;
+          case 'chateffort': {
+            const effort = normalizeChatEffort(value);
+            if (effort) urlConfig.chatEffort = effort;
+            break;
+          }
+          case 'claudebaseurl': urlConfig.claudeBaseUrl = value; break;
+          case 'claudemodel': urlConfig.claudeModel = value; break;
+          case 'claudetitlemodel': urlConfig.claudeTitleModel = value; break;
+          case 'size': urlConfig.size = value; break;
+          case 'n': {
+            const n = parseInt(value, 10);
+            if (Number.isFinite(n)) urlConfig.n = Math.min(20, Math.max(1, n));
+            break;
+          }
+          case 'quality': urlConfig.quality = value; break;
+          case 'format': urlConfig.format = value; break;
+          case 'background': urlConfig.background = value; break;
+          case 'moderation': urlConfig.moderation = value; break;
+          case 'compression': {
+            const compression = parseInt(value, 10);
+            if (Number.isFinite(compression)) urlConfig.compression = Math.min(100, Math.max(0, compression));
+            break;
+          }
+        }
       }
       // Credentials captured from the URL must not linger in history —
       // every Back/Forward and shared-tab URL would keep re-granting them.
-      const CREDENTIAL_PARAMS = ['apiKey', 'claudeApiKey'];
-      let stripped = false;
-      for (const key of CREDENTIAL_PARAMS) {
-        if (sp.has(key)) { sp.delete(key); stripped = true; }
-      }
-      if (stripped) {
+      if (sawCredentialParam) {
+        for (const rawKey of Array.from(sp.keys())) {
+          const key = rawKey.toLowerCase();
+          if (key === 'apikey' || key === 'claudeapikey') sp.delete(rawKey);
+        }
         const query = sp.toString();
         window.history.replaceState(
           null,
