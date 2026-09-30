@@ -2,7 +2,26 @@
 
 A monochrome terminal-desktop AI image generation and chat tool — text-to-image, image-to-image editing, and inpainting with mask painting, styled as a terminal window manager.
 
+**Live demo: <https://painter.ouo.mom>** — no API keys are configured; add your own in Settings to try it.
+
 ## Screenshots
+
+iOS:
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/ios-drawer.png" alt="Slide-out session drawer"></td>
+    <td width="50%" align="center"><img src="docs/screenshots/ios-chat.png" alt="Mobile chat with two-row controls"></td>
+  </tr>
+  <tr>
+    <td align="center">Session drawer</td>
+    <td align="center">Chat + composer</td>
+  </tr>
+</table>
+
+Swappable palettes — `matrix` on desktop:
+
+![Matrix theme](docs/screenshots/desktop-theme.png)
 
 Desktop (4K):
 
@@ -25,23 +44,6 @@ Desktop (4K):
   <tr>
     <td align="center">Session context menu</td>
     <td align="center"><code>~/config</code> settings window</td>
-  </tr>
-</table>
-
-Swappable palettes — `matrix` on desktop:
-
-![Matrix theme](docs/screenshots/desktop-theme.png)
-
-iOS:
-
-<table>
-  <tr>
-    <td width="50%" align="center"><img src="docs/screenshots/ios-drawer.png" alt="Slide-out session drawer"></td>
-    <td width="50%" align="center"><img src="docs/screenshots/ios-chat.png" alt="Mobile chat with two-row controls"></td>
-  </tr>
-  <tr>
-    <td align="center">Session drawer</td>
-    <td align="center">Chat + composer</td>
   </tr>
 </table>
 
