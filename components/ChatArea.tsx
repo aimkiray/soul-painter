@@ -49,7 +49,14 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
   }, []);
 
   const handleDelete = useCallback(
-    (messageId: string) => deleteMessage(messageId, activeSessionId),
+    (messageId: string) => {
+      deleteMessage(messageId, activeSessionId);
+      // The delete button unmounts with the bubble — return focus to the log
+      // so keyboard users aren't dropped back to <body>. Defer past the
+      // commit: deleting the last message swaps in the empty-state branch,
+      // which carries the same ref.
+      requestAnimationFrame(() => scrollRef.current?.focus());
+    },
     [deleteMessage, activeSessionId],
   );
   const addingRefKeysRef = useRef(new Set<string>());
@@ -92,10 +99,10 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
     || messages.some((message) => isPendingBotMessage(message) || message.id === pendingMessageId)
   );
   const emptyTitle = config.mode === 'chat'
-    ? 'CHAT READY'
+    ? t('emptyReadyChat')
     : hasImages
-      ? 'EDIT READY'
-      : 'IMG READY';
+      ? t('emptyReadyEdit')
+      : t('emptyReadyImg');
   const emptySubtitle = config.mode === 'chat'
     ? t('waitingInput')
     : hasImages
@@ -112,7 +119,8 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
 
   useEffect(() => {
     if (!isNearBottomRef.current) return;
-    bottomRef.current?.scrollIntoView({ behavior: isActiveSessionLoading ? 'auto' : 'smooth' });
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    bottomRef.current?.scrollIntoView({ behavior: isActiveSessionLoading || reduceMotion ? 'auto' : 'smooth' });
   }, [messages, isActiveSessionLoading]);
 
   // Images have no reserved height — they expand the content column as they
@@ -130,7 +138,7 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
 
   if (messages.length === 0 && !isActiveSessionLoading) {
     return (
-      <div className="flex-1 overflow-y-auto py-8 sm:py-16 flex flex-col" role="log" aria-live="off" aria-label={t('chatLog')}>
+      <div className="flex-1 overflow-y-auto py-8 sm:py-16 flex flex-col focus:outline-none" ref={scrollRef} tabIndex={-1} role="log" aria-live="off" aria-label={t('chatLog')}>
         <div className={`${CHAT_CONTENT_CLASS} flex-1 flex flex-col`}>
           <div className="m-auto flex flex-col items-center justify-center px-16 py-32 text-center font-mono">
             <p className="text-body-14 uppercase text-theme-fg">
@@ -146,9 +154,10 @@ export default function ChatArea({ onRegenerateMessage, onEditMessage, pendingMe
 
   return (
     <div
-      className="scroll-fade-y -mx-2 flex-1 overflow-y-auto overflow-x-hidden px-2 py-8 sm:py-16 flex flex-col"
+      className="scroll-fade-y -mx-2 flex-1 overflow-y-auto overflow-x-hidden px-2 py-8 sm:py-16 flex flex-col focus:outline-none"
       id="chat-scroll"
       ref={scrollRef}
+      tabIndex={-1}
       onScroll={handleScroll}
       role="log"
       aria-live="off"

@@ -132,7 +132,7 @@ export default function ConnectionSettings() {
 
                 <div>
                   <div className={providerHeadingClass}>
-                    <span>OpenAI Compatible</span>
+                    <span>{t('openaiCompat')}</span>
                   </div>
 
                   <div className="space-y-8">
@@ -172,7 +172,7 @@ export default function ConnectionSettings() {
 
                 <div>
                   <div className={providerHeadingClass}>
-                    <span>Claude Compatible</span>
+                    <span>{t('claudeCompat')}</span>
                   </div>
 
                   <div className="space-y-8">

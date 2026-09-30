@@ -50,10 +50,38 @@ export async function imageRefToStoredHit(image: ImageRef, signal?: AbortSignal)
   }
 }
 
+// OpenAI images/edits mask convention: alpha=0 marks the edit region and
+// every other pixel must be fully opaque. The editor stores semi-transparent
+// stroke overlays (alpha≈0.55) — binarize the alpha channel so painted
+// pixels become holes and untouched pixels become opaque, independent of
+// the stroke alpha.
+export async function maskCanvasToImageHit(maskCanvas: HTMLCanvasElement | null, signal?: AbortSignal): Promise<ImageHit | undefined> {
+  if (!maskCanvas) return undefined;
+  if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
+  const srcCtx = maskCanvas.getContext('2d');
+  if (!srcCtx) return undefined;
+  const { width, height } = maskCanvas;
+  const out = document.createElement('canvas');
+  out.width = width;
+  out.height = height;
+  const ctx = out.getContext('2d');
+  if (!ctx) return undefined;
+  const src = srcCtx.getImageData(0, 0, width, height);
+  const dst = ctx.createImageData(width, height);
+  for (let i = 0; i < src.data.length; i += 4) {
+    dst.data[i] = 255;
+    dst.data[i + 1] = 255;
+    dst.data[i + 2] = 255;
+    dst.data[i + 3] = src.data[i + 3] > 0 ? 0 : 255;
+  }
+  ctx.putImageData(dst, 0, 0);
+  return canvasToImageHit(out, signal);
+}
+
 export async function imageRefToReferenceImage(image: ImageRef, signal?: AbortSignal): Promise<ChatReferenceImage | null> {
   const storedImage = await imageRefToStoredHit(image, signal);
   if (!storedImage) return null;
-  const mask = await canvasToImageHit(image.maskCanvas, signal);
+  const mask = await maskCanvasToImageHit(image.maskCanvas, signal);
   return mask ? { image: storedImage, mask } : { image: storedImage };
 }
 

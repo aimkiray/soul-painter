@@ -5,6 +5,8 @@ import { t, translateServerMessage, localizeSizeLabel, currentLang } from '@/lib
 // English. Add new entries here when server-side messages change.
 const EMITTED_MESSAGES = [
   '生成完成 3 张图片',
+  '生成完成 3 张',
+  '上游未返回有效结果',
   '正在回复...',
   '回复完成',
   '任务完成',
@@ -91,6 +93,21 @@ const EMITTED_MESSAGES = [
   '今天的接入姿势不太传统，确认身份后再继续。',
   '模型正在装酷，完成熟人小动作后它才愿意上班。',
   '（尚未请求）',
+  '图片数据无效',
+  '图片 URL 无效',
+  '不支持的图片 URL 协议',
+  '图片 URL 不允许携带凭据',
+  '图片 URL 主机不允许访问',
+  '图片重定向次数过多',
+  '图片重定向无效',
+  '图片 URL 获取失败',
+  '不支持的图片类型',
+  '图片过大',
+  '图片响应为空',
+  '图片 URL 获取超时',
+  '未提供图片来源',
+  '远程参考图获取失败，请确认图片链接可公开访问，或改用本地上传',
+  '上游响应过大',
 ];
 
 describe('translateServerMessage', () => {
@@ -142,5 +159,12 @@ describe('t()', () => {
   it('interpolates {var} placeholders', () => {
     expect(t('en', 'selectedCount', { n: 3 })).toBe('3 selected');
     expect(t('zh', 'selectedCount', { n: 3 })).toBe('已选 3');
+  });
+
+  it('does not interpret $-sequences inside replacement values', () => {
+    // A string replaceAll would expand $& / $' / $1 in the VALUE — e.g. a
+    // model name or pasted text — corrupting the output.
+    expect(t('en', 'syncAccount', { name: 'a$&b' })).toBe('Sync account: a$&b');
+    expect(t('en', 'selectedCount', { n: "$'$1" })).toBe("$'$1 selected");
   });
 });

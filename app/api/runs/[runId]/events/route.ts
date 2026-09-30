@@ -10,6 +10,14 @@ export const dynamic = 'force-dynamic';
 
 const RUN_EVENT_POLL_INTERVAL_MS = 1000;
 const RUN_EVENT_KEEPALIVE_INTERVAL_MS = 25_000;
+// Each open stream runs a 1s poller + keepalive timer — cap the count so a
+// client opening streams without reading cannot exhaust the process. Clients
+// fall back to polling on failure, so 503 degrades gracefully.
+const RUN_SSE_MAX = (() => {
+  const value = Number(process.env.RUN_SSE_MAX);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 50;
+})();
+let activeEventStreams = 0;
 
 interface RouteParams {
   params: Promise<{ runId: string }>;
@@ -56,10 +64,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     void ensureServerRunStarted(run.id);
   }
 
+  if (activeEventStreams >= RUN_SSE_MAX) {
+    return NextResponse.json({ error: 'Too many open event streams' }, { status: 503 });
+  }
+
   let closeStream = () => {};
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
+      activeEventStreams += 1;
       let closed = false;
       let unsubscribe = () => {};
       let keepaliveId: ReturnType<typeof setInterval> | null = null;
@@ -70,6 +83,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       const close = () => {
         if (closed) return;
         closed = true;
+        activeEventStreams -= 1;
         if (keepaliveId) clearInterval(keepaliveId);
         if (pollId) clearInterval(pollId);
         unsubscribe();

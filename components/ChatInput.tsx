@@ -23,7 +23,8 @@ import {
 } from '@/lib/chat-config';
 
 interface ChatInputProps {
-  onSend: (prompt: string) => Promise<void> | void;
+  // `false` = the run never started (busy/racing) — the draft must be kept.
+  onSend: (prompt: string) => boolean | Promise<void> | void;
   isLoading: boolean;
   onCancel?: () => void;
 }
@@ -78,15 +79,22 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
     const nextPrompt = prompt.trim();
     if (!nextPrompt || busy || submitLockRef.current) return;
     submitLockRef.current = true;
-    // Clear the draft + stored copy up front so a slow onSend can't resurrect it.
-    setPrompt('');
-    try { localStorage.removeItem(chatSessionPromptStorageKey(activeSessionId)); } catch { /* ignore */ }
+    const release = () => { submitLockRef.current = false; };
     try {
-      void Promise.resolve(onSend(nextPrompt))
+      const result = onSend(nextPrompt);
+      if (result === false) {
+        // Rejected up front — keep the draft so the text isn't lost.
+        release();
+        return;
+      }
+      // Clear the draft + stored copy up front so a slow onSend can't resurrect it.
+      setPrompt('');
+      try { localStorage.removeItem(chatSessionPromptStorageKey(activeSessionId)); } catch { /* ignore */ }
+      void Promise.resolve(result)
         .catch(() => undefined)
-        .finally(() => { submitLockRef.current = false; });
+        .finally(release);
     } catch {
-      submitLockRef.current = false;
+      release();
     }
   };
   const kd = (e: React.KeyboardEvent) => {
@@ -137,15 +145,15 @@ export default function ChatInput({ onSend, isLoading, onCancel }: ChatInputProp
       options: chatModelIsOption ? [] : [{ value: activeChatChoice, label: activeChatModel }],
     },
     {
-      label: 'OpenAI Compatible',
+      label: t('openaiCompat'),
       options: openAIChatModelOptions.map(m => ({ value: encodeChatModelChoice('openai', m.value), label: m.label })),
     },
     {
-      label: 'Claude Compatible',
+      label: t('claudeCompat'),
       options: claudeChatModelOptions.map(m => ({ value: encodeChatModelChoice('claude', m.value), label: m.label })),
     },
   ].filter(group => group.options.length > 0);
-  const gatedGroup: MenuSelectGroup[] = [{ options: [{ value: '__gated__', label: `${REPEATER_MODEL_LABEL} · gated` }] }];
+  const gatedGroup: MenuSelectGroup[] = [{ options: [{ value: '__gated__', label: `${REPEATER_MODEL_LABEL} · ${t('gatedTag')}` }] }];
   const effortGroups: MenuSelectGroup[] = [{
     options: CHAT_EFFORT_OPTIONS.map((effort) => ({ value: effort, label: effort })),
   }];

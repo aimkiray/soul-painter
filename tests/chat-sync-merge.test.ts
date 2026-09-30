@@ -77,6 +77,21 @@ describe('applySyncedSessions helpers', () => {
     expect(merged[0]).toMatchObject({ id: 'm1', deletedAt: 700, syncDirty: true });
   });
 
+  it('drops message tombstones subsumed by a session tombstone', () => {
+    // A message delete under a session that is itself deleted can never be
+    // echoed (the server skips deleted sessions in its response) — keeping it
+    // dirty would re-push it on every sync forever.
+    const local: ChatSyncTombstone[] = [
+      { type: 'session', id: 'gone-session', deletedAt: 500, syncDirty: true },
+      { type: 'message', id: 'm1', sessionId: 'gone-session', deletedAt: 400, syncDirty: true },
+      { type: 'message', id: 'm2', sessionId: 'live-session', deletedAt: 450, syncDirty: true },
+    ];
+    const merged = mergeSyncTombstoneLists(local, []);
+    expect(merged.some((t) => t.type === 'session' && t.id === 'gone-session')).toBe(true);
+    expect(merged.some((t) => t.id === 'm1')).toBe(false);
+    expect(merged.some((t) => t.id === 'm2' && t.syncDirty)).toBe(true);
+  });
+
   it('applies tombstones when merging local and incoming sessions', () => {
     const merged = mergeSyncedSessionList(
       [session('local-only'), session('dead')],

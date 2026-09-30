@@ -184,28 +184,33 @@
     color: color-mix(in oklab, currentcolor 50%, transparent);
   }
 
-  /* Global focus: 2px INSET ring in theme fg — never a browser outline.
-     The transparent outline is invisible normally but renders under
-     Windows forced-colors, where box-shadow is stripped. */
-  :where(a[href], button, select, summary,
-    [tabindex]:not([tabindex="-1"]),
-    [contenteditable=true]:not([contenteditable=false])):focus-visible {
-    outline: 2px solid transparent;
-    outline-offset: -2px;
-    box-shadow: inset 0 0 0 2px var(--color-theme-fg);
-  }
-  /* Inverted (bg-theme-fg) controls would eat the fg ring — draw it in bg
-     instead so focus stays visible on e.g. + 新建聊天 / 发送 / 保存. */
-  :where(a[href], button, select, summary,
-    [tabindex]:not([tabindex="-1"]),
-    [contenteditable=true]:not([contenteditable=false])):where(.bg-theme-fg):focus-visible {
-    box-shadow: inset 0 0 0 2px var(--color-theme-bg);
-  }
-  /* inputs ring only after real keyboard use — data-keyboard-focus is set
-     on <html> on first Tab, removed on pointerdown (boot script in layout) */
-  html[data-keyboard-focus] :where(input:not([type=hidden]), textarea):focus {
-    box-shadow: inset 0 0 0 2px var(--color-theme-fg);
-  }
+}
+
+/* Global focus: 2px INSET ring in theme fg — never a browser outline.
+   These rules are deliberately UNLAYERED: Tailwind ring-* utilities set
+   box-shadow and live in @layer utilities, which would otherwise override
+   a base-layer focus ring and leave ring-styled controls with no visible
+   keyboard focus. Unlayered styles outrank every cascade layer.
+   The transparent outline is invisible normally but renders under
+   Windows forced-colors, where box-shadow is stripped. */
+:where(a[href], button, select, summary,
+  [tabindex]:not([tabindex="-1"]),
+  [contenteditable=true]:not([contenteditable=false])):focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 2px var(--color-theme-fg);
+}
+/* Inverted (bg-theme-fg) controls would eat the fg ring — draw it in bg
+   instead so focus stays visible on e.g. + 新建聊天 / 发送 / 保存. */
+:where(a[href], button, select, summary,
+  [tabindex]:not([tabindex="-1"]),
+  [contenteditable=true]:not([contenteditable=false])):where(.bg-theme-fg):focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-theme-bg);
+}
+/* inputs ring only after real keyboard use — data-keyboard-focus is set
+   on <html> on first Tab, removed on pointerdown (boot script in layout) */
+html[data-keyboard-focus] :where(input:not([type=hidden]), textarea):focus {
+  box-shadow: inset 0 0 0 2px var(--color-theme-fg);
 }
 
 /* Scrollbars are invisible everywhere — scrollable regions are signalled

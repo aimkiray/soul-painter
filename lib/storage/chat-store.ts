@@ -102,6 +102,16 @@ export async function loadChatState(): Promise<{ sessions: ChatSession[]; active
     // message can't resurrect on load.
     const tombstones = await loadSyncTombstones();
     sessions = applySyncTombstones(sessions, tombstones);
+    // Scratch sessions (no messages and no prompt draft) are not real
+    // sessions — drop any that slipped into storage.
+    sessions = sessions.filter((session) => {
+      if (session.messages.length > 0) return true;
+      try {
+        return Boolean(localStorage.getItem(chatSessionPromptStorageKey(session.id))?.trim());
+      } catch {
+        return false;
+      }
+    });
     if (sessions.length === 0) sessions = [createEmptySession()];
 
     const storedActiveSessionId = await get(ACTIVE_CHAT_SESSION_STORAGE_KEY) || '';

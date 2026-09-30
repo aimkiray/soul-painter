@@ -15,6 +15,7 @@ import {
 } from '@/lib/model-gate';
 import { isModelGateEnabled } from '@/lib/model-gate-env';
 import { getChatAssetSession, setChatAssetSession } from '@/lib/chat-asset-session';
+import { CHAT_ASSET_SESSION_COOKIE } from '@/lib/constants';
 import { checkRateLimit, clientIp, isRateLimited } from '@/lib/rate-limit';
 import { readLimitedText } from '@/lib/limited-body';
 
@@ -26,6 +27,12 @@ const RUN_CREATE_RATE_LIMIT = 60;
 const RUN_QUERY_RATE_LIMIT = 240;
 const RUN_CREATE_RATE_WINDOW_MS = 60_000;
 const RUN_TIMEOUT_MAX_SEC = 3600;
+// Shares the `asset-session:` bucket with /api/chat-assets: this route now
+// writes generated images into the asset store, so minting fresh anonymous
+// sessions must be capped here too (60/hr/IP) or cookie-rotation could use it
+// to dodge the upload endpoint's limit.
+const ASSET_SESSION_MINT_LIMIT = 60;
+const ASSET_SESSION_MINT_WINDOW_MS = 60 * 60 * 1000;
 
 interface ServerRunQueryPayload {
   items: Array<{ id: string; accessToken: string }>;
@@ -62,8 +69,41 @@ function isRunPayload(value: unknown): value is ServerRunCreatePayload {
     && typeof runRequest.n === 'number'
     && Number.isFinite(runRequest.n)
     && Array.isArray(runRequest.referenceImages)
+    // Element shapes matter: buildEditsForm dereferences reference.image and
+    // would TypeError on [null] or {image: null}.
+    && runRequest.referenceImages.every((reference) => (
+      isRecord(reference)
+      && isRecord(reference.image)
+      && (typeof reference.image.dataUrl === 'string' || typeof reference.image.url === 'string')
+      && (reference.mask === undefined
+        || (isRecord(reference.mask)
+          && (typeof reference.mask.dataUrl === 'string' || typeof reference.mask.url === 'string')))
+    ))
+    // Request fields consumed downstream must be typed or the executor
+    // crashes on e.g. systemPrompt.trim() — and NaN contextLimit bypasses
+    // the history-turn clamp in buildChatMessages.
+    && (runRequest.systemPrompt === undefined || typeof runRequest.systemPrompt === 'string')
+    && (runRequest.contextLimit === undefined
+      || (typeof runRequest.contextLimit === 'number' && Number.isFinite(runRequest.contextLimit)))
+    && (runRequest.chatApiFormat === undefined
+      || runRequest.chatApiFormat === 'openai'
+      || runRequest.chatApiFormat === 'claude')
+    && (runRequest.chatModel === undefined || typeof runRequest.chatModel === 'string')
+    && (runRequest.chatEffort === undefined || typeof runRequest.chatEffort === 'string')
+    && (runRequest.streaming === undefined || typeof runRequest.streaming === 'boolean')
+    // Bytes, not UTF-16 units: the cap bounds the upstream payload, and CJK
+    // text is ~3 bytes per char on the wire.
+    && Buffer.byteLength(payload.prompt, 'utf8') <= 512 * 1024
     && Array.isArray(payload.historyMessages)
-    && payload.historyMessages.every(isRecord);
+    && payload.historyMessages.every((message) => (
+      isRecord(message)
+      // buildChatMessages pushes prompt/text verbatim as message content and
+      // generateRunTitle calls prompt.trim() — non-strings crash or corrupt.
+      && (message.role === undefined || message.role === 'user' || message.role === 'bot')
+      && (message.prompt === undefined || typeof message.prompt === 'string')
+      && (message.text === undefined || typeof message.text === 'string')
+      && (message.extra === undefined || typeof message.extra === 'string')
+    ));
 }
 
 function isRunQueryPayload(value: unknown): value is ServerRunQueryPayload {
@@ -131,7 +171,13 @@ function sanitizeConfig(config: ServerRunCreatePayload['config']): ServerRunCrea
 
 function usesServerDefaultForPrimaryRequest(payload: ServerRunCreatePayload) {
   if (payload.request.mode !== 'chat') return !payload.config.apiKey;
-  if (payload.request.chatApiFormat === 'claude') return !payload.config.claudeApiKey;
+  // Mirror the executor's format resolution and credential fallback
+  // (server-runner chatTarget: claudeApiKey || chatApiKey || apiKey) — a
+  // narrower check here 401s requests whose user key would have worked.
+  const format = payload.request.chatApiFormat || payload.config.chatApiFormat;
+  if (format === 'claude') {
+    return !(payload.config.claudeApiKey || payload.config.chatApiKey || payload.config.apiKey);
+  }
   return !(payload.config.chatApiKey || payload.config.apiKey);
 }
 
@@ -165,6 +211,9 @@ export async function POST(request: NextRequest) {
 
   const limited = await readLimitedText(request, RUN_CREATE_MAX_BODY_BYTES);
   if ('tooLarge' in limited) {
+    // Malformed/oversized bodies still consume create budget — otherwise a
+    // flood of unparseable garbage bypasses the limiter entirely.
+    checkRateLimit(`runs:${clientIp(request)}`, RUN_CREATE_RATE_LIMIT, RUN_CREATE_RATE_WINDOW_MS);
     return NextResponse.json({ error: '任务数据过大' }, { status: 413 });
   }
   const rawBody = limited.text;
@@ -173,6 +222,7 @@ export async function POST(request: NextRequest) {
   try {
     body = JSON.parse(rawBody || '{}');
   } catch {
+    checkRateLimit(`runs:${clientIp(request)}`, RUN_CREATE_RATE_LIMIT, RUN_CREATE_RATE_WINDOW_MS);
     return NextResponse.json({ error: '任务数据格式错误' }, { status: 400 });
   }
 
@@ -199,6 +249,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, runs: authorizedRuns.map(toPublicServerRun) });
     }
 
+    // Malformed create payloads still consume the create budget — otherwise
+    // a flood of invalid bodies gets fully parsed and rejected for free.
+    if (!checkRateLimit(`runs:${clientIp(request)}`, RUN_CREATE_RATE_LIMIT, RUN_CREATE_RATE_WINDOW_MS)) {
+      return NextResponse.json({ error: '任务创建过于频繁，请稍后再试' }, { status: 429 });
+    }
     return NextResponse.json({ error: '任务参数不完整' }, { status: 400 });
   }
 
@@ -238,6 +293,14 @@ export async function POST(request: NextRequest) {
   };
 
   const assetSession = await getChatAssetSession(request);
+  // Same mint check as /api/chat-assets POST: an absent/invalid cookie just
+  // produced a fresh anonymous session — and a completed run can now write
+  // images into it.
+  const presentedAssetCookie = request.cookies.get(CHAT_ASSET_SESSION_COOKIE)?.value || '';
+  if (presentedAssetCookie !== assetSession.cookieValue
+    && !checkRateLimit(`asset-session:${clientIp(request)}`, ASSET_SESSION_MINT_LIMIT, ASSET_SESSION_MINT_WINDOW_MS)) {
+    return NextResponse.json({ error: 'Too many sessions' }, { status: 429 });
+  }
   const created = await createServerRun(record);
   if (!created.created) {
     if (!isAuthorizedRun(created.run, body.accessToken)) {

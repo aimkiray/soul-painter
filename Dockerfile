@@ -15,4 +15,6 @@ COPY --from=build --chown=node:node /app /app
 RUN mkdir -p data && chown node:node data
 USER node
 EXPOSE 3010
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npm start"]
+# `exec` replaces the shell so Next.js receives SIGTERM as PID-adjacent init —
+# plain `sh -c "npm start"` would leave two wrappers that swallow the signal.
+CMD ["sh", "-c", "npx prisma db push --skip-generate && exec node node_modules/next/dist/bin/next start"]

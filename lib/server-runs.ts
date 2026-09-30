@@ -70,6 +70,11 @@ export interface PendingServerRunRef {
   createdAt: number;
   /** First time the server reported this run as missing; reset when seen again. */
   missingSince?: number;
+  /** Terminal run kept only to pick up a late generatedTitle patch —
+   *  not an active run: un-cancelable, never paints a missing-record error. */
+  titleOnly?: boolean;
+  /** Deadline after which a titleOnly ref is dropped without error. */
+  keepUntil?: number;
 }
 
 function isPendingServerRunRef(value: unknown): value is PendingServerRunRef {

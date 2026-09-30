@@ -98,17 +98,27 @@ export default function LoginModal({ open, onClose, onAuthChange }: LoginModalPr
     setSyncing(true);
     setMessage('CONNECTING...');
     try {
-      const result = await syncChatHistory({ username: cleanUsername, secret: cleanSecret, clientKnownUpdatedAt: syncedAt || 0 });
-      const nextSyncedAt = result.applied ? result.updatedAt || Date.now() : syncedAt;
+      // The stored cursor only applies to the account it was synced under —
+      // logging into a different account must pull from 0 or that account's
+      // older history is skipped entirely. Usernames are normalized to
+      // lowercase server-side, so compare case-insensitively.
+      const storedUsername = readStoredAuth()?.username;
+      const clientKnownUpdatedAt = storedUsername === cleanUsername.toLowerCase() ? syncedAt || 0 : 0;
+      const result = await syncChatHistory({ username: cleanUsername, secret: cleanSecret, clientKnownUpdatedAt });
+      const nextSyncedAt = result.applied ? result.updatedAt ?? Date.now() : syncedAt;
       const syncedUsername = result.username || cleanUsername;
-      localStorage.setItem(CHAT_SYNC_AUTH_STORAGE_KEY, JSON.stringify({
-        username: syncedUsername,
-        syncedAt: nextSyncedAt,
-      }));
+      // Not applied means a local mutation raced the merge: storing a cursor
+      // here would pair this account with another account's sync position.
+      if (result.applied) {
+        localStorage.setItem(CHAT_SYNC_AUTH_STORAGE_KEY, JSON.stringify({
+          username: syncedUsername,
+          syncedAt: nextSyncedAt,
+        }));
+      }
       sessionStorage.setItem(CHAT_SYNC_SESSION_AUTH_STORAGE_KEY, JSON.stringify({
         username: syncedUsername,
         secret: cleanSecret,
-        syncedAt: nextSyncedAt,
+        ...(result.applied ? { syncedAt: nextSyncedAt } : {}),
       }));
       if (result.applied) setSyncedAt(nextSyncedAt);
       onAuthChange?.(syncedUsername);

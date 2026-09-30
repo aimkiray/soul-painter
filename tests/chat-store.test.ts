@@ -46,13 +46,34 @@ describe('loadChatState', () => {
   it('omits loadFailed when stored sessions parse cleanly', async () => {
     getMock.mockImplementation(async (key) => {
       if (key === CHAT_SESSIONS_STORAGE_KEY) {
-        return JSON.stringify([{ id: 's1', title: 'T', messages: [], createdAt: 1, updatedAt: 2 }]);
+        return JSON.stringify([{
+          id: 's1',
+          title: 'T',
+          messages: [{ id: 'm1', role: 'user', prompt: 'hi' }],
+          createdAt: 1,
+          updatedAt: 2,
+        }]);
       }
       return undefined;
     });
     const state = await loadChatState();
     expect(state.loadFailed).toBeFalsy();
     expect(state.sessions[0].id).toBe('s1');
+    expect(state.activeSessionId).toBe('s1');
+  });
+
+  it('drops stored scratch sessions that have no messages or draft', async () => {
+    getMock.mockImplementation(async (key) => {
+      if (key === CHAT_SESSIONS_STORAGE_KEY) {
+        return JSON.stringify([
+          { id: 's1', title: 'T', messages: [{ id: 'm1', role: 'user', prompt: 'hi' }], createdAt: 1, updatedAt: 2 },
+          { id: 'scratch', title: 'T', messages: [], createdAt: 3, updatedAt: 4 },
+        ]);
+      }
+      return undefined;
+    });
+    const state = await loadChatState();
+    expect(state.sessions.map((s) => s.id)).toEqual(['s1']);
     expect(state.activeSessionId).toBe('s1');
   });
 });

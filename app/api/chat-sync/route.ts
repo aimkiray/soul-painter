@@ -9,8 +9,10 @@ import {
   getAnonymousChatAssetSessionId,
   setChatAssetSession,
 } from '@/lib/chat-asset-session';
+import { migrateRuntimeAssetSession } from '@/lib/server-runner';
 import { prepareDatabase, prisma } from '@/lib/prisma';
 import { decodeSyncMessageMetadata, encodeSyncMessageMetadata } from '@/lib/chat-sync-message';
+import { acceptClientEntityStamp } from '@/lib/chat-sync-lww';
 import { readLimitedText } from '@/lib/limited-body';
 
 const CHAT_SYNC_MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -135,28 +137,25 @@ function entityStamp(value: Record<string, unknown>, maxStamp: number) {
   return clampStamp(cleanNumber(value.updatedAt, cleanNumber(value.createdAt, 0)), maxStamp);
 }
 
-/** An entity is accepted only when its (clamped) stamp is newer than the
- *  client's last-synced cursor AND at least as new as the server row; equal
- *  stamps go to the client so both sides converge. syncDirty is
- *  client-controlled, so it no longer bypasses the cursor gate. */
+// LWW compares client stamps to the row's stored clientStamp — both live in
+// the client's clock domain. Rows written before the column existed have
+// clientStamp=0; their updatedAt (a server stamp captured at write time) is a
+// close-enough stand-in.
+function rowClientStamp(row: { clientStamp: bigint | number | null; updatedAt: Date } | null | undefined) {
+  if (!row) return null;
+  const stored = Number(row.clientStamp || 0);
+  return stored > 0 ? stored : row.updatedAt.getTime();
+}
+
+/** Thin wrapper: stamp extraction + clamping stays route-local; the
+ *  acceptance rule itself lives in lib/chat-sync-lww for testability. */
 function shouldAcceptClientEntity(
   value: Record<string, unknown>,
   responseStamp: number,
   serverStamp: number | null | undefined,
   maxStamp: number,
 ) {
-  const clientStamp = entityStamp(value, maxStamp);
-  return clientStamp > responseStamp && (serverStamp == null || clientStamp >= serverStamp);
-}
-
-function shouldAcceptClientTombstone(
-  value: Record<string, unknown>,
-  responseStamp: number,
-  serverStamp: number | null | undefined,
-  maxStamp: number,
-) {
-  const clientStamp = clampStamp(cleanNumber(value.deletedAt, 0), maxStamp);
-  return clientStamp > responseStamp && (serverStamp == null || clientStamp >= serverStamp);
+  return acceptClientEntityStamp(entityStamp(value, maxStamp), responseStamp, serverStamp);
 }
 
 function parseImages(value: string) {
@@ -261,12 +260,33 @@ export async function POST(request: NextRequest) {
     // walk unbounded arrays.
     const clientSessions = (Array.isArray(body.sessions) ? body.sessions : []).slice(0, CHAT_SYNC_SESSION_LIMIT);
     const clientTombstones = (Array.isArray(body.tombstones) ? body.tombstones : []).slice(0, CHAT_SYNC_TOMBSTONE_LIMIT);
-    // Set inside the transaction when the processed-entity budget runs out;
-    // surfaced on the response so the client knows to re-sync the remainder.
+    // Set inside the transaction when the processed-entity budget (or a
+    // storage cap) runs out; surfaced on the response so the client knows to
+    // re-sync the remainder.
     let requestTruncated = false;
+    // Tombstones accepted for rows that no longer exist still need an echo so
+    // the client can acknowledge them — otherwise they stay dirty and are
+    // re-pushed on every sync forever.
+    let ackedTombstones: Array<{ type: string; id: string; sessionId?: string; deletedAt: number }> = [];
+    // Server-side commit stamp produced inside the write transaction; the
+    // response cursor uses it so rows committed later can never carry a stamp
+    // at-or-below the cursor (which would skip them in future echoes).
+    let committedStamp = 0;
 
     await withWriteRetry(() => prisma.$transaction(async (tx) => {
       const touchedSessionIds = new Set<string>();
+      ackedTombstones = [];
+      // Commit-ordered write stamp: user.updatedAt is already this account's
+      // high-water mark (every write tx stamps it), so +1 keeps each commit's
+      // stamp above every previously committed row for this user — a
+      // late-committed row can never hide below the cursor we hand back.
+      const currentUser = await tx.user.findUnique({
+        where: { id: user.id },
+        select: { updatedAt: true },
+      });
+      const writeMs = Math.max(Date.now(), (currentUser?.updatedAt.getTime() ?? 0) + 1);
+      const writeStamp = new Date(writeMs);
+      committedStamp = writeMs;
       // Per-attempt budget: retried transactions re-scan from scratch.
       let processedEntities = 0;
       requestTruncated = false;
@@ -278,6 +298,80 @@ export async function POST(request: NextRequest) {
         processedEntities += 1;
         return true;
       };
+
+      // Tombstones run before upserts: deletes shrink the live counts first,
+      // so an account at the cap can still sync its way back under it instead
+      // of having every push rejected by the (now non-fatal) cap check.
+      for (const value of clientTombstones) {
+        const tomb = asRecord(value);
+        if (!tomb) continue;
+        if (!takeEntity()) break;
+
+        const type = tomb.type;
+        if (type !== 'session' && type !== 'message') continue;
+        const tombId = cleanId(tomb.id);
+        if (!tombId) continue;
+        const tombSessionId = cleanId(tomb.sessionId);
+        const tombStamp = clampStamp(cleanNumber(tomb.deletedAt, 0), maxClientStamp);
+        const ackTombstone = () => ackedTombstones.push(type === 'session'
+          ? { type: 'session', id: tombId, deletedAt: tombStamp }
+          : { type: 'message', id: tombId, sessionId: tombSessionId, deletedAt: tombStamp });
+        // No responseStamp gate here: the cursor only says what the client
+        // has SEEN, not what the server has applied — a delete stamped below
+        // it must still delete (the row lookup below decides), or the tombstone
+        // ack would silently drop the delete while the row lives on server-side.
+
+        if (type === 'session') {
+          const existingSession = await tx.session.findUnique({
+            where: { id: tombId },
+            select: { userId: true, updatedAt: true, clientStamp: true, deletedAt: true },
+          });
+          // No ack for rows owned by another user: the tombstone is invalid.
+          if (existingSession && existingSession.userId !== user.id) continue;
+          if (!existingSession || existingSession.deletedAt) {
+            ackTombstone();
+            continue;
+          }
+          // Stale delete (a newer client write exists): reject; the echoed row
+          // resurrects the session client-side.
+          if (tombStamp < (rowClientStamp(existingSession) ?? 0)) continue;
+          await tx.session.update({
+            where: { id: tombId },
+            // deletedAt AND clientStamp both store the client-domain delete
+            // stamp: a stale upsert arriving later must lose to this delete in
+            // LWW (clientStamp), and echoed tombstones compare correctly
+            // against client-side tombstones (deletedAt). updatedAt still
+            // gets the server commit stamp for the echo cursor.
+            data: { deletedAt: new Date(tombStamp), updatedAt: writeStamp, clientStamp: tombStamp },
+          });
+        } else if (type === 'message') {
+          const existingMessage = await tx.message.findUnique({
+            where: { id: tombId },
+            select: {
+              sessionId: true,
+              updatedAt: true,
+              clientStamp: true,
+              deletedAt: true,
+              session: { select: { userId: true } },
+            },
+          });
+          if (existingMessage
+            && (existingMessage.session.userId !== user.id
+              || (tombSessionId && existingMessage.sessionId !== tombSessionId))) {
+            continue;
+          }
+          if (!existingMessage || existingMessage.deletedAt) {
+            ackTombstone();
+            continue;
+          }
+          if (tombStamp < (rowClientStamp(existingMessage) ?? 0)) continue;
+          await tx.message.update({
+            where: { id: tombId },
+            data: { deletedAt: new Date(tombStamp), updatedAt: writeStamp, clientStamp: tombStamp },
+          });
+          touchedSessionIds.add(existingMessage.sessionId);
+        }
+      }
 
       sessionLoop: for (const value of clientSessions) {
         const rawSession = asRecord(value);
@@ -291,13 +385,6 @@ export async function POST(request: NextRequest) {
           ? rawSession.messages.slice(0, CHAT_SYNC_MESSAGE_LIMIT)
               .map(asRecord).filter((item): item is Record<string, unknown> => item !== null)
           : [];
-        // Pre-filter against the cursor; the existing server row is checked
-        // again below before any write happens.
-        const changedMessages = rawMessages.filter((message) => (
-          shouldAcceptClientEntity(message, responseStamp, null, maxClientStamp)
-        ));
-        if (!shouldAcceptClientEntity(rawSession, responseStamp, null, maxClientStamp) && changedMessages.length === 0) continue;
-
         const title = cleanString(rawSession.title, '新聊天').slice(0, 24);
         const titleSource = TITLE_SOURCES.has(String(rawSession.titleSource))
           ? String(rawSession.titleSource)
@@ -309,31 +396,45 @@ export async function POST(request: NextRequest) {
           select: {
             userId: true,
             updatedAt: true,
+            clientStamp: true,
             deletedAt: true,
             titleSource: true,
           },
         });
         if (existingSession && existingSession.userId !== user.id) continue;
-        if (existingSession?.deletedAt && existingSession.updatedAt > responseDate) continue;
+        // A session tombstoned since the client's cursor stays deleted —
+        // unless this push carries a strictly newer client stamp, which means
+        // the user recreated it after deleting (LWW lets the upsert win).
+        if (existingSession?.deletedAt
+          && existingSession.updatedAt > responseDate
+          && entityStamp(rawSession, maxClientStamp) <= existingSession.deletedAt.getTime()) continue;
 
+        const sessionStamp = entityStamp(rawSession, maxClientStamp);
         const sessionChanged = shouldAcceptClientEntity(
           rawSession,
           responseStamp,
-          existingSession ? existingSession.updatedAt.getTime() : null,
+          rowClientStamp(existingSession),
           maxClientStamp,
         );
+        // Nothing-to-do fast path — only safe once the stored row is known
+        // (a slow-clock client's stamps can sit below the server cursor).
+        if (!sessionChanged && rawMessages.length === 0) continue;
 
         if (!existingSession) {
           const sessionCount = await tx.session.count({
             where: { userId: user.id, deletedAt: null },
           });
+          // Skip rather than abort the transaction: tombstones already ran, so
+          // a delete-heavy payload still frees capacity, and the skipped entity
+          // stays dirty client-side for a later retry.
           if (sessionCount >= CHAT_SYNC_SESSION_LIMIT) {
-            throw new ChatSyncHttpError(`会话数量已达上限（${CHAT_SYNC_SESSION_LIMIT}），请删除旧会话后再同步`, 400);
+            requestTruncated = true;
+            continue;
           }
           await tx.session.upsert({
             where: { id: sessionId },
             update: {},
-            create: { id: sessionId, userId: user.id, title, titleSource, createdAt, updatedAt: now },
+            create: { id: sessionId, userId: user.id, title, titleSource, createdAt, updatedAt: writeStamp, clientStamp: sessionStamp },
           });
           touchedSessionIds.add(sessionId);
         } else if (sessionChanged) {
@@ -343,13 +444,13 @@ export async function POST(request: NextRequest) {
           if (!protectsManualTitle) {
             await tx.session.update({
               where: { id: sessionId },
-              data: { title, titleSource, deletedAt: null, updatedAt: now },
+              data: { title, titleSource, deletedAt: null, updatedAt: writeStamp, clientStamp: sessionStamp },
             });
             touchedSessionIds.add(sessionId);
           }
         }
 
-        for (const rawMsg of changedMessages) {
+        for (const rawMsg of rawMessages) {
           if (!takeEntity()) break sessionLoop;
           const msgId = cleanId(rawMsg.id);
           if (!msgId) continue;
@@ -359,18 +460,15 @@ export async function POST(request: NextRequest) {
             select: {
               sessionId: true,
               updatedAt: true,
+              clientStamp: true,
               session: { select: { userId: true } },
             },
           });
           if (existingMessage && (existingMessage.session.userId !== user.id || existingMessage.sessionId !== sessionId)) {
             continue;
           }
-          if (!shouldAcceptClientEntity(
-            rawMsg,
-            responseStamp,
-            existingMessage ? existingMessage.updatedAt.getTime() : null,
-            maxClientStamp,
-          )) {
+          const messageStamp = entityStamp(rawMsg, maxClientStamp);
+          if (!shouldAcceptClientEntity(rawMsg, responseStamp, rowClientStamp(existingMessage), maxClientStamp)) {
             continue;
           }
 
@@ -390,14 +488,15 @@ export async function POST(request: NextRequest) {
           if (existingMessage) {
             await tx.message.update({
               where: { id: msgId },
-              data: { text, prompt, code, extra, images, deletedAt: null, updatedAt: now },
+              data: { text, prompt, code, extra, images, deletedAt: null, updatedAt: writeStamp, clientStamp: messageStamp },
             });
           } else {
             const messageCount = await tx.message.count({
               where: { sessionId, deletedAt: null },
             });
             if (messageCount >= CHAT_SYNC_MESSAGE_LIMIT) {
-              throw new ChatSyncHttpError(`单会话消息数量已达上限（${CHAT_SYNC_MESSAGE_LIMIT}），无法继续同步`, 400);
+              requestTruncated = true;
+              continue;
             }
             await tx.message.upsert({
               where: { id: msgId },
@@ -412,7 +511,8 @@ export async function POST(request: NextRequest) {
                 extra,
                 images,
                 createdAt: msgCreatedAt,
-                updatedAt: now,
+                updatedAt: writeStamp,
+                clientStamp: messageStamp,
               },
             });
           }
@@ -420,67 +520,20 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      for (const value of clientTombstones) {
-        const tomb = asRecord(value);
-        if (!tomb) continue;
-        if (!takeEntity()) break;
-        if (!shouldAcceptClientTombstone(tomb, responseStamp, null, maxClientStamp)) continue;
-
-        const type = tomb.type;
-        const tombId = cleanId(tomb.id);
-        if (!tombId) continue;
-
-        if (type === 'session') {
-          const existingSession = await tx.session.findUnique({
-            where: { id: tombId },
-            select: { userId: true, updatedAt: true },
-          });
-          if (!existingSession || existingSession.userId !== user.id) continue;
-          if (!shouldAcceptClientTombstone(tomb, responseStamp, existingSession.updatedAt.getTime(), maxClientStamp)) continue;
-          await tx.session.update({
-            where: { id: tombId },
-            data: { deletedAt: now, updatedAt: now },
-          });
-        } else if (type === 'message') {
-          const existingMessage = await tx.message.findUnique({
-            where: { id: tombId },
-            select: {
-              sessionId: true,
-              updatedAt: true,
-              session: { select: { userId: true } },
-            },
-          });
-          const sessionId = cleanId(tomb.sessionId);
-          if (
-            !existingMessage
-            || existingMessage.session.userId !== user.id
-            || (sessionId && existingMessage.sessionId !== sessionId)
-            || !shouldAcceptClientTombstone(tomb, responseStamp, existingMessage.updatedAt.getTime(), maxClientStamp)
-          ) {
-            continue;
-          }
-          await tx.message.update({
-            where: { id: tombId },
-            data: { deletedAt: now, updatedAt: now },
-          });
-          touchedSessionIds.add(existingMessage.sessionId);
-        }
-      }
-
       for (const sessionId of touchedSessionIds) {
         await tx.session.updateMany({
           where: { id: sessionId, userId: user.id, deletedAt: null },
-          data: { updatedAt: now },
+          data: { updatedAt: writeStamp },
         });
       }
 
       await tx.user.update({
         where: { id: user.id },
-        data: { updatedAt: now },
+        data: { updatedAt: writeStamp },
       });
     }, CHAT_SYNC_TX_OPTIONS));
 
-    const updatedSessions = await prisma.session.findMany({
+    const updatedSessions = await withWriteRetry(() => prisma.session.findMany({
       where: {
         userId: user.id,
         // gte (not gt) so rows sharing the client's known millisecond are not
@@ -495,7 +548,7 @@ export async function POST(request: NextRequest) {
       include: { messages: { orderBy: { createdAt: 'desc' }, take: CHAT_SYNC_MESSAGE_LIMIT } },
       orderBy: { updatedAt: 'desc' },
       take: CHAT_SYNC_SESSION_LIMIT,
-    });
+    }));
 
     const activeSessions = [];
     const newTombstones = [];
@@ -515,7 +568,10 @@ export async function POST(request: NextRequest) {
               id: m.id,
               role: m.role,
               createdAt: m.createdAt.getTime(),
-              updatedAt: m.updatedAt.getTime(),
+              // Echoed entity stamps are the client-domain clientStamp, not the
+              // server commit stamp — merge comparisons run against local
+              // client-clock stamps.
+              updatedAt: rowClientStamp(m),
               text: m.text,
               prompt: m.prompt,
               code: m.code,
@@ -534,11 +590,15 @@ export async function POST(request: NextRequest) {
           title: s.title,
           titleSource: s.titleSource,
           createdAt: s.createdAt.getTime(),
-          updatedAt: s.updatedAt.getTime(),
+          updatedAt: rowClientStamp(s),
           messages: msgs.slice(-CHAT_SYNC_MESSAGE_LIMIT),
         });
       }
     }
+
+    // Acknowledged tombstones for rows that no longer exist; the client drops
+    // their syncDirty flags once it sees them echoed back.
+    newTombstones.push(...ackedTombstones);
 
     const userAssetSession = createUserChatAssetSession(user.id, user.secret);
     const anonymousAssetSessionId = getAnonymousChatAssetSessionId(request);
@@ -558,6 +618,10 @@ export async function POST(request: NextRequest) {
         assetMigrationWarning = '部分聊天图片迁移失败，请稍后重新同步';
         console.warn('Failed to migrate anonymous chat assets', error);
       }
+      // The response below swaps the cookie to the user session; in-flight
+      // runs still holding the anonymous session id would otherwise write
+      // result images into a dir the new cookie can never resolve.
+      migrateRuntimeAssetSession(anonymousAssetSessionId, userAssetSession.id);
     }
 
     const response = NextResponse.json({
@@ -565,7 +629,7 @@ export async function POST(request: NextRequest) {
       // Truncated merges must NOT advance the client cursor: unprocessed
       // entities sit below the new stamp and would never be re-sent. Hold the
       // cursor at the inbound value so the next incremental pass retries them.
-      updatedAt: requestTruncated ? responseStamp : now.getTime(),
+      updatedAt: requestTruncated ? responseStamp : (committedStamp || now.getTime()),
       sessions: activeSessions,
       tombstones: newTombstones,
       activeSessionId: cleanString(body.activeSessionId),

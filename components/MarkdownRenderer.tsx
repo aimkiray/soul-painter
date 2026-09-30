@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import React from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { writeClipboardText } from '@/lib/clipboard';
 import { useI18n } from '@/contexts/I18nContext';
@@ -73,74 +73,88 @@ function MarkdownCodeBlock({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
+// Hoisted module-level: a fresh object per render defeats memoization and
+// forces ReactMarkdown to rebuild its element tree on every parent render.
+const MARKDOWN_COMPONENTS: Components = {
+  code({ className, children, node, ...props }) {
+    // A fenced block's code node spans multiple source lines even when
+    // its body is a single line; inline code never crosses lines.
+    const fenced = !!node?.position && node.position.start.line !== node.position.end.line;
+    const isBlock = /language-/.test(className || '') || extractText(children).includes('\n') || fenced;
+    if (!isBlock) {
+      return (
+        <code className="bg-theme-fg/10 px-2 py-1 font-mono text-body-10 text-theme-fg ring-1 ring-theme-fg/30" {...props}>
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code className={`${className || ''} font-mono text-body-10 text-theme-fg`} {...props}>
+        {children}
+      </code>
+    );
+  },
+  pre({ children }) {
+    return <MarkdownCodeBlock>{children}</MarkdownCodeBlock>;
+  },
+  a({ href, children }) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" className="break-all text-theme-fg underline underline-offset-2 hover:decoration-dashed">
+        {children}
+      </a>
+    );
+  },
+  ul({ children }) {
+    return <ul className="my-4 ml-8 list-inside list-disc">{children}</ul>;
+  },
+  ol({ children }) {
+    return <ol className="my-4 ml-8 list-inside list-decimal">{children}</ol>;
+  },
+  li({ children }) {
+    return <li className="my-2">{children}</li>;
+  },
+  h1({ children }) { return <h1 className="mb-4 mt-8 font-semibold text-theme-fg">{children}</h1>; },
+  h2({ children }) { return <h2 className="mb-4 mt-8 font-semibold text-theme-fg">{children}</h2>; },
+  h3({ children }) { return <h3 className="mb-2 mt-4 font-semibold text-theme-fg">{children}</h3>; },
+  h4({ children }) { return <h4 className="mb-2 mt-4 font-semibold text-theme-fg">{children}</h4>; },
+  p({ children }) { return <p className="my-4">{children}</p>; },
+  blockquote({ children }) {
+    return <blockquote className="my-4 border-l-2 border-theme-fg/30 pl-8 text-theme-dim">{children}</blockquote>;
+  },
+  hr() { return <hr className="my-8 border-theme-fg/30" />; },
+  table({ children }) {
+    // Wide tables must scroll horizontally — the chat column is
+    // overflow-x-hidden, so an unwrapped table gets clipped.
+    return (
+      <div className="my-8 overflow-x-auto">
+        <table className="border-collapse font-mono text-body-10">{children}</table>
+      </div>
+    );
+  },
+  th({ children }) {
+    return <th className="bg-theme-fg/10 px-8 py-4 ring-1 ring-theme-fg/30">{children}</th>;
+  },
+  td({ children }) {
+    return <td className="px-8 py-4 ring-1 ring-theme-fg/30">{children}</td>;
+  },
+  img({ src, alt }) {
+    return <img src={typeof src === 'string' ? src : undefined} alt={alt || ''} className="max-w-full" />;
+  },
+  strong({ children }) { return <strong className="font-semibold text-theme-fg">{children}</strong>; },
+  em({ children }) { return <em className="italic">{children}</em>; },
+};
+
+// Memoized: during streaming each token re-renders ChatArea — bubbles whose
+// message did not change must not re-parse their Markdown.
+const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }: MarkdownRendererProps) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      components={{
-        code({ className, children, node, ...props }) {
-          // A fenced block's code node spans multiple source lines even when
-          // its body is a single line; inline code never crosses lines.
-          const fenced = !!node?.position && node.position.start.line !== node.position.end.line;
-          const isBlock = /language-/.test(className || '') || extractText(children).includes('\n') || fenced;
-          if (!isBlock) {
-            return (
-              <code className="bg-theme-fg/10 px-2 py-1 font-mono text-body-10 text-theme-fg ring-1 ring-theme-fg/30" {...props}>
-                {children}
-              </code>
-            );
-          }
-          return (
-            <code className={`${className || ''} font-mono text-body-10 text-theme-fg`} {...props}>
-              {children}
-            </code>
-          );
-        },
-        pre({ children }) {
-          return <MarkdownCodeBlock>{children}</MarkdownCodeBlock>;
-        },
-        a({ href, children }) {
-          return (
-            <a href={href} target="_blank" rel="noopener noreferrer" className="break-all text-theme-fg underline underline-offset-2 hover:decoration-dashed">
-              {children}
-            </a>
-          );
-        },
-        ul({ children }) {
-          return <ul className="my-4 ml-8 list-inside list-disc">{children}</ul>;
-        },
-        ol({ children }) {
-          return <ol className="my-4 ml-8 list-inside list-decimal">{children}</ol>;
-        },
-        li({ children }) {
-          return <li className="my-2">{children}</li>;
-        },
-        h1({ children }) { return <h1 className="mb-4 mt-8 font-semibold text-theme-fg">{children}</h1>; },
-        h2({ children }) { return <h2 className="mb-4 mt-8 font-semibold text-theme-fg">{children}</h2>; },
-        h3({ children }) { return <h3 className="mb-2 mt-4 font-semibold text-theme-fg">{children}</h3>; },
-        h4({ children }) { return <h4 className="mb-2 mt-4 font-semibold text-theme-fg">{children}</h4>; },
-        p({ children }) { return <p className="my-4">{children}</p>; },
-        blockquote({ children }) {
-          return <blockquote className="my-4 border-l-2 border-theme-fg/30 pl-8 text-theme-dim">{children}</blockquote>;
-        },
-        hr() { return <hr className="my-8 border-theme-fg/30" />; },
-        table({ children }) {
-          return <table className="my-8 border-collapse font-mono text-body-10">{children}</table>;
-        },
-        th({ children }) {
-          return <th className="bg-theme-fg/10 px-8 py-4 ring-1 ring-theme-fg/30">{children}</th>;
-        },
-        td({ children }) {
-          return <td className="px-8 py-4 ring-1 ring-theme-fg/30">{children}</td>;
-        },
-        img({ src, alt }) {
-          return <img src={typeof src === 'string' ? src : undefined} alt={alt || ''} className="max-w-full" />;
-        },
-        strong({ children }) { return <strong className="font-semibold text-theme-fg">{children}</strong>; },
-        em({ children }) { return <em className="italic">{children}</em>; },
-      }}
+      components={MARKDOWN_COMPONENTS}
     >
       {content}
     </ReactMarkdown>
   );
-}
+});
+
+export default MarkdownRenderer;

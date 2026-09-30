@@ -44,7 +44,7 @@ export default function ModelSettings() {
   const activeChatModel = getActiveChatModel(config);
   const activeChatApiFormat = getChatFormatForModel(config, activeChatModel);
   const activeChatChoice = encodeChatModelChoice(activeChatApiFormat, activeChatModel);
-  const activeChatProviderLabel = activeChatApiFormat === 'claude' ? 'Claude Compatible' : 'OpenAI Compatible';
+  const activeChatProviderLabel = activeChatApiFormat === 'claude' ? t('claudeCompat') : t('openaiCompat');
   const chatModelIsOption = allChatModelOptions.some(m => m.format === activeChatApiFormat && m.value === activeChatModel);
   const titleModelIsOption = openAIChatModelOptions.some(m => m.value === config.titleModel);
   const claudeTitleModelIsOption = claudeModelOptions.some(m => m.value === config.claudeTitleModel);
@@ -57,11 +57,11 @@ export default function ModelSettings() {
   const chatModelGroups: MenuSelectGroup[] = [
     { options: chatModelIsOption ? [] : [{ value: activeChatChoice, label: activeChatModel }] },
     {
-      label: 'OpenAI Compatible',
+      label: t('openaiCompat'),
       options: openAIChatModelOptions.map(m => ({ value: encodeChatModelChoice('openai', m.value), label: m.label })),
     },
     {
-      label: 'Claude Compatible',
+      label: t('claudeCompat'),
       options: claudeModelOptions.map(m => ({ value: encodeChatModelChoice('claude', m.value), label: m.label })),
     },
   ].filter(group => group.options.length > 0);
@@ -206,7 +206,7 @@ export default function ModelSettings() {
 
                 <div>
                   <div className={providerHeadingClass}>
-                    <span>OpenAI Compatible</span>
+                    <span>{t('openaiCompat')}</span>
                   </div>
                   <div className="space-y-4">
                     <span className={labelClass}>{t('titleModel')}</span>
@@ -248,7 +248,7 @@ export default function ModelSettings() {
 
                 <div>
                   <div className={providerHeadingClass}>
-                    <span>Claude Compatible</span>
+                    <span>{t('claudeCompat')}</span>
                   </div>
                   <div className="space-y-4">
                     <span className={labelClass}>{t('titleModel')}</span>

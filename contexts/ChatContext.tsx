@@ -171,12 +171,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const localMutationRevisionRef = useRef(0);
   const activeSessionIdRef = useRef(activeSessionId);
   const loadingSessionIdsRef = useRef(loadingSessionIds);
+  const sessionsRef = useRef(sessions);
   const storageLoadFailedRef = useRef(false);
   const sessionTitleCacheRef = useRef(new Map<string, { key: string; title: string }>());
 
 
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
   useEffect(() => { loadingSessionIdsRef.current = loadingSessionIds; }, [loadingSessionIds]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -240,6 +242,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       if (session.id !== sessionId) return session;
 
       const updated = updater(session.messages, session);
+      // No-op updaters (delete of a missing id, truncate at the tail) must
+      // not bump updatedAt — the session would re-sort and re-push on sync.
+      if (updated === session.messages) return session;
       const nextMessages = updated.slice(-CHAT_MESSAGES_MAX);
       let title = session.title;
       if (isAutoManagedSessionTitle(session)) {
@@ -264,17 +269,24 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [markLocalMutation]);
 
+  const isScratchSession = useCallback((session: ChatSession) => (
+    session.messages.length === 0 && !promptDrafts[session.id]?.trim()
+  ), [promptDrafts]);
+
   const createChatSession = useCallback(() => {
     markLocalMutation();
-    const session = createEmptySession();
-    setSessions((prev) => [session, ...prev].slice(0, CHAT_SESSIONS_MAX));
+    // Reuse an existing blank session instead of piling up invisible ones —
+    // scratch sessions stay out of the sidebar until they gain content.
+    const existing = sessions.find(isScratchSession);
+    const session = existing ?? createEmptySession();
+    if (!existing) setSessions((prev) => [session, ...prev].slice(0, CHAT_SESSIONS_MAX));
     setActiveSessionId(session.id);
     setStatusText('');
     setStatusType('');
     setDebugRaw('（尚未请求）');
     setDebugVisible(false);
     return session.id;
-  }, [markLocalMutation]);
+  }, [sessions, isScratchSession, markLocalMutation]);
 
   const switchChatSession = useCallback((sessionId: string) => {
     if (!sessions.some((session) => session.id === sessionId)) return;
@@ -329,23 +341,27 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     sessionTitleCacheRef.current.delete(sessionId);
     setPromptDraft(sessionId, '');
 
-    if (sessions.length <= 1) {
-      const replacement = createEmptySession();
-      removeSessionPrompt(sessionId);
-      markLocalMutation();
-      setSessions([replacement]);
-      setActiveSessionId(replacement.id);
-      return;
-    }
-
     const nextSessions = sessions.filter((session) => session.id !== sessionId);
     removeSessionPrompt(sessionId);
     markLocalMutation();
-    setSessions(nextSessions);
     if (activeSessionId === sessionId) {
-      setActiveSessionId(nextSessions[Math.min(index, nextSessions.length - 1)]?.id || nextSessions[0].id);
+      // Deleting the current session lands on a blank scratch session rather
+      // than jumping to the next card in the list.
+      let scratch = nextSessions.find(isScratchSession);
+      if (!scratch) {
+        scratch = createEmptySession();
+        nextSessions.unshift(scratch);
+      }
+      setSessions(nextSessions);
+      setActiveSessionId(scratch.id);
+      setStatusText('');
+      setStatusType('');
+      setDebugRaw('（尚未请求）');
+      setDebugVisible(false);
+      return;
     }
-  }, [sessions, activeSessionId, isSessionLoading, addSyncTombstones, markLocalMutation, setPromptDraft]);
+    setSessions(nextSessions);
+  }, [sessions, activeSessionId, isSessionLoading, isScratchSession, addSyncTombstones, markLocalMutation, setPromptDraft]);
 
   const clearChatSession = useCallback((sessionId: string) => {
     if (isSessionLoading(sessionId)) return;
@@ -433,21 +449,28 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     return message.id;
   }, [activeSessionId, updateSessionMessages]);
 
-  const deleteMessage = useCallback((messageId: string, sessionId = activeSessionId) => {
-    const session = sessions.find((item) => item.id === sessionId);
+  // Refs keep this callback stable — memoized bubbles must not see a new
+  // deleteMessage identity on every streaming token or session switch.
+  const deleteMessage = useCallback((messageId: string, sessionId?: string) => {
+    const targetSessionId = sessionId || activeSessionIdRef.current;
+    const session = sessionsRef.current.find((item) => item.id === targetSessionId);
     const target = session?.messages.find((message) => message.id === messageId);
     if (target?.serverRunId && readPendingServerRuns().some((run) => run.id === target.serverRunId)) {
-      if (sessionId === activeSessionId) {
+      if (!sessionId || targetSessionId === activeSessionIdRef.current) {
         setStatusText('任务进行中，无法删除');
         setStatusType('warn');
       }
       return;
     }
-    if (session?.messages.some((message) => message.id === messageId)) {
-      addSyncTombstones([{ type: 'message', id: messageId, sessionId, deletedAt: Date.now() }]);
-    }
-    updateSessionMessages(sessionId, (prev) => prev.filter((message) => message.id !== messageId));
-  }, [sessions, activeSessionId, updateSessionMessages, addSyncTombstones]);
+    const now = Date.now();
+    updateSessionMessages(targetSessionId, (prev) => {
+      if (!prev.some((message) => message.id === messageId)) return prev;
+      // Tombstone from the same snapshot as the delete (see
+      // truncateChatAfterMessage); dedupe covers StrictMode double-invokes.
+      addSyncTombstones([{ type: 'message', id: messageId, sessionId: targetSessionId, deletedAt: now }]);
+      return prev.filter((message) => message.id !== messageId);
+    });
+  }, [updateSessionMessages, addSyncTombstones]);
 
   const upsertMessages = useCallback((sessionId: string, incomingMessages: ChatMessage[], titleHint?: string) => {
     if (incomingMessages.length === 0) return;
@@ -533,23 +556,23 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [activeSessionId, updateSessionMessages]);
 
   const truncateChatAfterMessage = useCallback((messageId: string, sessionId = activeSessionId) => {
-    const session = sessions.find((item) => item.id === sessionId);
-    const targetIndex = session?.messages.findIndex((message) => message.id === messageId) ?? -1;
-    if (session && targetIndex >= 0) {
-      const now = Date.now();
-      addSyncTombstones(session.messages.slice(targetIndex + 1).map((message) => ({
+    const now = Date.now();
+    updateSessionMessages(sessionId, (prev) => {
+      const index = prev.findIndex((message) => message.id === messageId);
+      if (index < 0) return prev;
+      // Tombstones derive from the same functional snapshot the truncation
+      // uses — reading the closure `sessions` here could race a concurrent
+      // upsert and silently drop messages without recording their deletes.
+      // addSyncTombstones dedupes, so a StrictMode double-invoke is harmless.
+      addSyncTombstones(prev.slice(index + 1).map((message) => ({
         type: 'message',
         id: message.id,
         sessionId,
         deletedAt: now,
       })));
-    }
-    updateSessionMessages(sessionId, (prev) => {
-      const index = prev.findIndex((message) => message.id === messageId);
-      if (index < 0) return prev;
       return prev.slice(0, index + 1);
     });
-  }, [sessions, activeSessionId, updateSessionMessages, addSyncTombstones]);
+  }, [activeSessionId, updateSessionMessages, addSyncTombstones]);
 
   const replaceBotMessage = useCallback((
     messageId: string,
@@ -596,7 +619,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void (async () => {
-        const recentSessions = sessions.slice(0, CHAT_SESSIONS_MAX);
+        // Scratch sessions (no messages and no draft) are never persisted —
+        // they only materialise once the user types or sends something.
+        const recentSessions = sessions
+          .filter((session) => session.messages.length > 0 || Boolean(promptDrafts[session.id]?.trim()))
+          .slice(0, CHAT_SESSIONS_MAX);
         const { storedSessions, memorySessions, changed } = await prepareSessionsForStorage(recentSessions);
 
         if (cancelled || isLocalDataCleared()) return;
@@ -635,7 +662,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [sessions, activeSessionId, storageReady]);
+  }, [sessions, activeSessionId, promptDrafts, storageReady]);
 
   useEffect(() => {
     if (!storageReady || storageLoadFailedRef.current || isLocalDataCleared()) return;

@@ -47,17 +47,34 @@ function isRunningServerRun(run: ServerRunPublicRecord) {
   return run.status === 'queued' || run.status === 'running';
 }
 
+// How long a finished run stays queryable solely for its generatedTitle —
+// covers the title-gen upstream call (bounded by the run's own timeout)
+// plus the patch write; expiry just ends the window, nothing errors.
+const RUN_TITLE_WATCH_MS = 45_000;
+
 function isFinishedServerRun(run: ServerRunPublicRecord) {
   return run.status === 'completed' || run.status === 'failed' || run.status === 'canceled';
 }
 
-function hasTrackedPendingRunForSession(activeRunIds: Set<string>, sessionId: string) {
+function hasTrackedPendingRunForSession(
+  activeRunIds: Set<string>,
+  ownedRuns: Map<string, PendingServerRunRef>,
+  sessionId: string,
+) {
   const pendingRuns = readPendingServerRuns();
   const pendingIds = new Set(pendingRuns.map((item) => item.id));
+  // Owned runs stay tracked even when another tab clobbered the shared
+  // pending list — pruning them here would make them un-cancelable and
+  // flicker the loading flag between polls.
   for (const runId of [...activeRunIds]) {
-    if (!pendingIds.has(runId)) activeRunIds.delete(runId);
+    if (!pendingIds.has(runId) && !ownedRuns.has(runId)) activeRunIds.delete(runId);
   }
-  return pendingRuns.some((run) => run.sessionId === sessionId && activeRunIds.has(run.id));
+  const sessionOf = (id: string) => ownedRuns.get(id)?.sessionId
+    ?? pendingRuns.find((run) => run.id === id)?.sessionId;
+  for (const runId of activeRunIds) {
+    if (sessionOf(runId) === sessionId) return true;
+  }
+  return false;
 }
 
 function createRestoredMessages(run: ServerRunPublicRecord): ChatMessage[] {
@@ -270,8 +287,21 @@ export function useRunPrompt() {
 
   const applyRunToChat = useCallback((run: ServerRunPublicRecord) => {
     const lastApplied = lastAppliedRunStampRef.current.get(run.id);
-    if (lastApplied !== undefined && run.updatedAt < lastApplied) return;
+    // <= dedupes same-stamp re-deliveries, but terminal records always land:
+    // a canceled record may share the millisecond of a just-applied running
+    // snapshot and skipping it would strand a generating bubble.
+    if (lastApplied !== undefined && run.updatedAt <= lastApplied && isRunningServerRun(run)) return;
     lastAppliedRunStampRef.current.set(run.id, run.updatedAt);
+    // Stale-application protection only matters while a run could still
+    // deliver — bound the map by dropping stamps for untracked runs.
+    if (lastAppliedRunStampRef.current.size > 1000) {
+      for (const id of [...lastAppliedRunStampRef.current.keys()]) {
+        if (!activeRunIdsRef.current.has(id) && !ownedRunsRef.current.has(id)) {
+          lastAppliedRunStampRef.current.delete(id);
+        }
+        if (lastAppliedRunStampRef.current.size <= 500) break;
+      }
+    }
 
     const running = isRunningServerRun(run);
     if (!sessionsRef.current.some((session) => session.id === run.sessionId)) {
@@ -283,13 +313,14 @@ export function useRunPrompt() {
       activeRunIdsRef.current.delete(run.id);
       ownedRunsRef.current.delete(run.id);
       missingRunIdsRef.current.delete(run.id);
+      runApplyQueueRef.current.delete(run.id);
       closeRunEvents(run.id);
       removePendingServerRun(run.id);
       setPendingRegenerateMessageId((current) => (current === run.botMessageId ? null : current));
       // A stale loading flag can outlive the session (e.g. clearAll wiped the
       // session list but not the per-session loading map) — clear it here so
       // no session is stuck on "generating" for a run we just dropped.
-      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, run.sessionId)) {
+      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, ownedRunsRef.current, run.sessionId)) {
         setLoading(false, run.sessionId);
       }
       return;
@@ -311,8 +342,26 @@ export function useRunPrompt() {
     }
 
     activeRunIdsRef.current.delete(run.id);
-    ownedRunsRef.current.delete(run.id);
+    // A completed run may still get its generatedTitle patched in moments
+    // after the terminal write (title gen runs post-persist, and the SSE
+    // stream already closed on 'completed'). Keep a bounded titleOnly ref so
+    // the poll picks the patch up instead of losing the title until reload.
+    if (run.status === 'completed' && !run.result?.generatedTitle) {
+      const existing = ownedRunsRef.current.get(run.id)
+        ?? readPendingServerRuns().find((item) => item.id === run.id);
+      if (existing) {
+        ownedRunsRef.current.set(run.id, {
+          ...existing,
+          titleOnly: true,
+          keepUntil: Date.now() + RUN_TITLE_WATCH_MS,
+          missingSince: undefined,
+        });
+      }
+    } else {
+      ownedRunsRef.current.delete(run.id);
+    }
     missingRunIdsRef.current.delete(run.id);
+    runApplyQueueRef.current.delete(run.id);
     closeRunEvents(run.id);
     removePendingServerRun(run.id);
     if (run.botMessageId === pendingRegenerateMessageIdRef.current) setPendingRegenerateMessageId(null);
@@ -322,7 +371,7 @@ export function useRunPrompt() {
     else if (run.status === 'completed') setStatusForSession(run.sessionId, '任务完成', 'ok');
     else setStatusForSession(run.sessionId, run.error || '请求失败', run.status === 'canceled' ? 'warn' : 'err');
 
-    if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, run.sessionId)) {
+    if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, ownedRunsRef.current, run.sessionId)) {
       setLoading(false, run.sessionId);
     }
   }, [
@@ -370,12 +419,20 @@ export function useRunPrompt() {
         method: 'DELETE',
         headers: { 'x-run-access-token': item.accessToken },
       });
-      const data = await readRunResponse(response);
-      if (data.run && data.run.status !== 'canceled') {
-        // The run reached a real final state (e.g. completed) before the
-        // cancel landed — apply it instead of painting the canceled stub.
-        applyRunToChat(data.run);
+      // 404 = the server never stored this run (submit POST never landed or
+      // the record was reaped). Tear it down locally as canceled instead of
+      // reporting failure — the run provably can't produce a result.
+      const data = response.status === 404
+        ? ({} as RunApiResponse)
+        : await readRunResponse(response);
+      if (data.run) {
+        // Always route the terminal record through the common apply path:
+        // it stamps lastAppliedRunStamp and purges the coalescing queue, so
+        // a still-queued 'running' snapshot can't resurrect a zombie
+        // generating bubble after the cancel.
+        dispatchRunToChatRef.current(data.run);
       } else {
+        runApplyQueueRef.current.delete(item.id);
         closeRunEvents(item.id);
         removePendingServerRun(item.id);
         ownedRunsRef.current.delete(item.id);
@@ -391,79 +448,44 @@ export function useRunPrompt() {
         }, item.sessionId);
       }
       setPendingRegenerateMessageId((current) => (current === item.botMessageId ? null : current));
-      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, item.sessionId)) {
+      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, ownedRunsRef.current, item.sessionId)) {
         setLoading(false, item.sessionId);
       }
       return true;
     } catch {
       return false;
     }
-  }, [applyRunToChat, closeRunEvents, replaceBotMessage, setLoading]);
+  }, [closeRunEvents, replaceBotMessage, setLoading]);
 
   const pollPendingRuns = useCallback(async () => {
     const pending = readPendingServerRuns();
-    if (pending.length === 0) {
-      const orphaned = [...ownedRunsRef.current.values()];
-      if (orphaned.length > 0) {
-        // Another tab's read-modify-write may have clobbered our pending
-        // records — run one last batch query so a finished run still lands
-        // instead of leaving the session stuck on "generating". Runs that
-        // come back still-active keep their tracking and the poller re-arms;
-        // only resolved/lost orphans are torn down.
-        try {
-          const response = await fetch('/api/runs', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              items: orphaned.map((item) => ({ id: item.id, accessToken: item.accessToken })),
-            }),
-          });
-          const data = await readRunResponse(response);
-          const runs = Array.isArray(data.runs) ? data.runs : [];
-          const returnedById = new Map(runs.map((run) => [run.id, run]));
-          for (const run of runs) applyRunToChat(run);
-          for (const item of orphaned) {
-            const run = returnedById.get(item.id);
-            if (run && isRunningServerRun(run)) {
-              subscribeRunEvents(item.id);
-              setLoading(true, item.sessionId);
-              continue;
-            }
-            if (!run) {
-              setPendingRegenerateMessageId((current) => (current === item.botMessageId ? null : current));
-              replaceBotMessage(item.botMessageId, {
-                prompt: '后台任务记录已丢失，请重新发送。',
-                images: [],
-                text: '',
-                code: '',
-                extra: 'error',
-                serverRunId: undefined,
-              }, item.sessionId);
-              setStatusForSession(item.sessionId, '后台任务记录已丢失', 'err');
-            }
-            ownedRunsRef.current.delete(item.id);
-            missingRunIdsRef.current.delete(item.id);
-            activeRunIdsRef.current.delete(item.id);
-            closeRunEvents(item.id);
-            if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, item.sessionId)) {
-              setLoading(false, item.sessionId);
-            }
-          }
-        } catch {
-          // The reconcile query failed — keep every orphan tracked so the
-          // next scheduled poll retries instead of abandoning live runs.
-        }
-        if (ownedRunsRef.current.size > 0) {
-          if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-          pollTimerRef.current = setTimeout(() => { void pollPendingRunsRef.current(); }, 4000);
-          return;
-        }
+    // Owned runs must be queried even when another tab clobbered the shared
+    // pending list — otherwise a still-running owned run turns invisible
+    // while other runs keep pending non-empty.
+    const pendingIds = new Set(pending.map((item) => item.id));
+    const ownedExtras = [...ownedRunsRef.current.values()].filter((item) => !pendingIds.has(item.id));
+    const items = [...pending, ...ownedExtras];
+    // missingSince lives in the shared pending list for shared items and on
+    // the owned map entry for owned-only items.
+    const setMissingSince = (item: PendingServerRunRef, value: number | undefined) => {
+      if (pendingIds.has(item.id)) updatePendingServerRunMissing(item.id, value);
+      // The has() guard matters: a terminal-applied or concurrently-deleted
+      // owned entry must not be resurrected by a late missing-stamp write.
+      else if (ownedRunsRef.current.has(item.id)) {
+        ownedRunsRef.current.set(item.id, { ...item, missingSince: value });
       }
+    };
+    if (items.length === 0) {
       ownedRunsRef.current.clear();
       missingRunIdsRef.current.clear();
       activeRunIdsRef.current.clear();
       closeAllRunEvents();
       setLoading(false);
+      // A pre-submit run (reference conversion / POST in flight) registered
+      // no pending entry yet — keep its spinner and cancel affordance.
+      if (inFlightRef.current && activeSessionIdRef.current) {
+        setLoading(true, activeSessionIdRef.current);
+      }
       return;
     }
 
@@ -472,50 +494,62 @@ export function useRunPrompt() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          items: pending.map((item) => ({ id: item.id, accessToken: item.accessToken })),
+          items: items.map((item) => ({ id: item.id, accessToken: item.accessToken })),
         }),
+        // A hung poll socket must not wedge the re-arm — fail into the
+        // catch, which schedules the next attempt.
+        signal: AbortSignal.timeout(30_000),
       });
       const data = await readRunResponse(response);
       const runs = Array.isArray(data.runs) ? data.runs : [];
       const seen = new Set(runs.map((run) => run.id));
 
       for (const run of runs) applyRunToChat(run);
-      for (const item of pending) {
+      for (const item of items) {
+        if (item.titleOnly) {
+          // Title-watch refs: expiry or disappearance just ends the window —
+          // the applied terminal result stays authoritative, no error paint.
+          if (!seen.has(item.id) || (item.keepUntil !== undefined && Date.now() > item.keepUntil)) {
+            ownedRunsRef.current.delete(item.id);
+          }
+          continue;
+        }
+        const isOwnedExtra = !pendingIds.has(item.id);
         const missingSince = item.missingSince;
         if (seen.has(item.id)) {
           missingRunIdsRef.current.delete(item.id);
-          if (missingSince !== undefined) updatePendingServerRunMissing(item.id, undefined);
+          if (missingSince !== undefined) setMissingSince(item, undefined);
           continue;
         }
         missingRunIdsRef.current.add(item.id);
-        if (missingSince === undefined) updatePendingServerRunMissing(item.id, Date.now());
+        if (missingSince === undefined) setMissingSince(item, Date.now());
         else if (Date.now() - missingSince > SERVER_RUN_MISSING_TIMEOUT_MS) {
           removePendingServerRun(item.id);
           ownedRunsRef.current.delete(item.id);
           missingRunIdsRef.current.delete(item.id);
           activeRunIdsRef.current.delete(item.id);
+          runApplyQueueRef.current.delete(item.id);
           closeRunEvents(item.id);
           setPendingRegenerateMessageId((current) => (current === item.botMessageId ? null : current));
           replaceBotMessage(item.botMessageId, {
-            prompt: '后台任务未成功提交，请重新发送。',
+            prompt: isOwnedExtra ? '后台任务记录已丢失，请重新发送。' : '后台任务未成功提交，请重新发送。',
             images: [],
             text: '',
             code: '',
             extra: 'error',
             serverRunId: undefined,
           }, item.sessionId);
-          setStatusForSession(item.sessionId, '后台任务未成功提交', 'err');
-          if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, item.sessionId)) {
+          setStatusForSession(item.sessionId, isOwnedExtra ? '后台任务记录已丢失' : '后台任务未成功提交', 'err');
+          if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, ownedRunsRef.current, item.sessionId)) {
             setLoading(false, item.sessionId);
           }
           continue;
         }
-        subscribeRunEvents(item.id);
         setLoading(true, item.sessionId);
         setStatusForSession(item.sessionId, '后台任务提交中...', 'warn');
       }
 
-      if (readPendingServerRuns().length > 0) {
+      if (readPendingServerRuns().length > 0 || ownedRunsRef.current.size > 0) {
         if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
         pollTimerRef.current = setTimeout(() => { void pollPendingRunsRef.current(); }, 2000);
       }
@@ -534,7 +568,6 @@ export function useRunPrompt() {
     replaceBotMessage,
     setLoading,
     setStatusForSession,
-    subscribeRunEvents,
   ]);
 
   useEffect(() => {
@@ -546,10 +579,16 @@ export function useRunPrompt() {
     return () => {
       clearTimeout(initialPollId);
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-      if (runApplyFlushTimerRef.current) clearTimeout(runApplyFlushTimerRef.current);
+      if (runApplyFlushTimerRef.current) {
+        clearTimeout(runApplyFlushTimerRef.current);
+        runApplyFlushTimerRef.current = null;
+        // Drain — queued snapshots would otherwise sit until some unrelated
+        // dispatch schedules the next flush.
+        flushQueuedRuns();
+      }
       closeAllRunEvents();
     };
-  }, [closeAllRunEvents, pollPendingRuns]);
+  }, [closeAllRunEvents, flushQueuedRuns, pollPendingRuns]);
 
   useEffect(() => () => {
     preSubmitControllerRef.current?.abort();
@@ -580,9 +619,22 @@ export function useRunPrompt() {
     // A stalled socket must not hang the submit forever — cap it, and combine
     // with the caller's cancel signal when AbortSignal.any is available.
     const timeoutSignal = AbortSignal.timeout(SERVER_RUN_SUBMIT_TIMEOUT_MS);
-    const submitSignal = signal && typeof AbortSignal.any === 'function'
-      ? AbortSignal.any([signal, timeoutSignal])
-      : signal ?? timeoutSignal;
+    let submitSignal = timeoutSignal;
+    if (signal) {
+      if (typeof AbortSignal.any === 'function') {
+        submitSignal = AbortSignal.any([signal, timeoutSignal]);
+      } else {
+        // Fallback for engines without AbortSignal.any: forward either
+        // source's abort — dropping the timeout would let a stalled socket
+        // hang the submit (and inFlightRef) forever.
+        const combined = new AbortController();
+        const forward = () => combined.abort();
+        signal.addEventListener('abort', forward, { once: true });
+        timeoutSignal.addEventListener('abort', forward, { once: true });
+        if (signal.aborted || timeoutSignal.aborted) combined.abort();
+        submitSignal = combined.signal;
+      }
+    }
     const response = await fetch('/api/runs', {
       method: 'POST',
       headers,
@@ -600,17 +652,31 @@ export function useRunPrompt() {
     runOptions: PromptRunOptions = {},
   ) => {
     const cleanPrompt = prompt.trim();
-    if (!cleanPrompt || isLoading || inFlightRef.current) return;
+    if (!cleanPrompt || isLoading || inFlightRef.current) return false;
     inFlightRef.current = true;
     cancelRequestedRef.current = false;
 
     const sessionId = activeSessionId;
+    // Busy immediately — reference-image conversion below can take seconds,
+    // and the window before submitServerRun otherwise shows no spinner and
+    // no cancel affordance.
+    setLoading(true, sessionId);
     const existingUserMessageId = runOptions.existingUserMessageId;
     const targetBotMessageId = runOptions.targetBotMessageId;
     const currentSessionMessages = sessionsRef.current.find((session) => session.id === sessionId)?.messages ?? [];
     const sessionMessages = runOptions.historyMessages ?? currentSessionMessages;
+    // For restore-on-failure: the regenerate path clears the target bubble
+    // before submit — if the submit never starts, put the old answer back.
+    const previousBotMessage = targetBotMessageId
+      ? currentSessionMessages.find((message) => message.id === targetBotMessageId && message.role === 'bot')
+      : undefined;
     let submittedBotMessageId = targetBotMessageId || '';
     let userMessageCreated = false;
+    // Set right before submitServerRun: an abort/failure before this point
+    // means the run provably never reached the server — safe to restore the
+    // previous regenerate answer instead of painting an error stub.
+    let submitStarted = false;
+    let normalizedRequest: ChatTurnSnapshot | undefined;
 
     const runId = createServerRunId();
     const accessToken = createServerRunAccessToken();
@@ -630,7 +696,7 @@ export function useRunPrompt() {
             serverRunId: undefined,
           }, sessionId);
         } else if (existingUserMessageId) {
-          updateUserMessage(existingUserMessageId, cleanPrompt, sessionId);
+          updateUserMessage(existingUserMessageId, cleanPrompt, sessionId, undefined, { markEdited: true });
           truncateChatAfterMessage(existingUserMessageId, sessionId);
           addTextBotMsg(reply, '', sessionId);
         } else {
@@ -639,11 +705,17 @@ export function useRunPrompt() {
         }
         setDebugRawForSession(sessionId, reply);
         setStatusForSession(sessionId, '回复完成', 'ok');
-        return;
+        setLoading(false, sessionId);
+        return true;
       }
 
       const isSnapshotRun = !!runOptions.requestSnapshot;
-      const validSelectedIndices = [...selectedIndices].filter((index) => index >= 0 && index < images.length);
+      // Sort by grid index — selectedIndices is a Set in *toggle* order, so
+      // deselect+reselect would silently reorder the reference list (and
+      // rebind image[0]-paired semantics like masks) away from visual order.
+      const validSelectedIndices = [...selectedIndices]
+        .filter((index) => index >= 0 && index < images.length)
+        .sort((a, b) => a - b);
       const selectedImagesForRun = !isSnapshotRun && config.mode !== 'chat' && validSelectedIndices.length > 0
         ? validSelectedIndices.map((index) => images[index]).filter((image): image is ImageRef => !!image)
         : [];
@@ -662,7 +734,7 @@ export function useRunPrompt() {
       const requestSnapshot = runOptions.requestSnapshot
         ?? createTurnSnapshot(config, options, requestedMode, resolvedSize, requestedMode === 'edits' ? referenceImages : []);
       const shouldStream = requestedMode === 'chat' && options.streaming;
-      const normalizedRequest: ChatTurnSnapshot = {
+      normalizedRequest = {
         ...requestSnapshot,
         size: parseSize(requestSnapshot.size) ? requestSnapshot.size : resolvedSize,
         streaming: shouldStream,
@@ -673,8 +745,11 @@ export function useRunPrompt() {
 
       if (targetBotMessageId) {
         // A regenerate needs the real user message to attach the run to —
-        // minting a fresh id here would orphan the pair on the server.
-        const priorUser = [...sessionMessages].reverse().find((message) => message.role === 'user' && message.prompt.trim());
+        // minting a fresh id here would orphan the pair on the server. The
+        // fallback must search the FULL session messages: historyMessages
+        // for a regenerate excludes the target's own user turn, so looking
+        // there would silently pick the previous-previous user message.
+        const priorUser = [...currentSessionMessages].reverse().find((message) => message.role === 'user' && message.prompt.trim());
         const resolvedUserMessageId = runOptions.runUserMessageId || priorUser?.id;
         if (!resolvedUserMessageId) {
           throw new Error('找不到可重新生成的原始消息，请重新发送。');
@@ -685,6 +760,10 @@ export function useRunPrompt() {
           prompt: '',
           images: [],
           text: '',
+          // Clear the old turn's thinking too — merged updates keep it
+          // otherwise and the regenerate would show stale reasoning.
+          thinking: '',
+          thinkingDone: false,
           code: '',
           extra: '',
           serverRunId: runId,
@@ -704,6 +783,7 @@ export function useRunPrompt() {
 
       if (!isSnapshotRun && options.clearOnSubmit) clearImages();
 
+      submitStarted = true;
       await submitServerRun({
         id: runId,
         accessToken,
@@ -729,13 +809,18 @@ export function useRunPrompt() {
           createdAt: Date.now(),
         });
       }
+      return true;
     } catch (error) {
       const aborted = cancelRequestedRef.current || (error as Error).message === USER_ABORT_SENTINEL;
       // A signal-driven abort/timeout (AbortError/TimeoutError DOMException)
-      // or a TypeError network failure all leave the POST possibly delivered;
+      // leaves the POST possibly delivered; a TypeError only counts when it
+      // looks like a fetch network failure — an unrelated code bug must not
+      // keep the pending record alive for the 30s reconcile window.
       // 保留 pending 记录交给轮询对账（未落库的 run 由 missingSince 超时兜底清理）。
       const submitAborted = (error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError';
-      const keepPending = aborted || submitAborted || error instanceof TypeError;
+      const networkFailure = error instanceof TypeError
+        && /fetch|network|load failed|failed to fetch/i.test((error as Error).message || '');
+      const keepPending = aborted || submitAborted || networkFailure;
       const message = aborted
         ? '已取消'
         : submitAborted
@@ -751,7 +836,25 @@ export function useRunPrompt() {
         activeRunIdsRef.current.delete(runId);
       }
       if (submittedBotMessageId) {
-        replaceBotMessage(submittedBotMessageId, {
+        // !submitStarted => the run never reached the server (abort during
+        // reference-image conversion, validation throw): the cleared
+        // regenerate bubble gets its old answer back, even when the abort
+        // was user-initiated — nothing exists to reconcile.
+        const restorePrevious = previousBotMessage
+          && submittedBotMessageId === targetBotMessageId
+          && !submitStarted;
+        replaceBotMessage(submittedBotMessageId, restorePrevious ? {
+          // The rerun never reached the server — put the old answer back
+          // instead of overwriting it with an error stub.
+          prompt: previousBotMessage.prompt,
+          images: previousBotMessage.images,
+          text: previousBotMessage.text,
+          code: previousBotMessage.code,
+          extra: previousBotMessage.extra,
+          thinking: previousBotMessage.thinking,
+          thinkingDone: previousBotMessage.thinkingDone,
+          serverRunId: undefined,
+        } : {
           prompt: message,
           images: [],
           text: '',
@@ -762,6 +865,11 @@ export function useRunPrompt() {
       } else if (!aborted) {
         if (!userMessageCreated && !existingUserMessageId && !targetBotMessageId) {
           addUserMsg(cleanPrompt, sessionId);
+        } else if (existingUserMessageId && normalizedRequest) {
+          // The edit failed before it was committed — apply it now so the
+          // error bubble lands next to the edited turn, not at the tail.
+          updateUserMessage(existingUserMessageId, cleanPrompt, sessionId, normalizedRequest, { markEdited: true });
+          truncateChatAfterMessage(existingUserMessageId, sessionId);
         }
         const botMessageId = addBotMsg([], '', 'error', sessionId);
         replaceBotMessage(botMessageId, {
@@ -774,9 +882,13 @@ export function useRunPrompt() {
         }, sessionId);
       }
       setStatusForSession(sessionId, message, aborted || keepPending ? 'warn' : 'err');
-      if (!keepPending && !hasTrackedPendingRunForSession(activeRunIdsRef.current, sessionId)) {
+      // keepPending only means the run MIGHT still land — if nothing is
+      // actually tracked (e.g. a pre-submit abort before registration), the
+      // loading flag must clear here or it sticks.
+      if (!hasTrackedPendingRunForSession(activeRunIdsRef.current, ownedRunsRef.current, sessionId)) {
         setLoading(false, sessionId);
       }
+      return false;
     } finally {
       inFlightRef.current = false;
       if (preSubmitControllerRef.current === requestController) {
@@ -841,7 +953,13 @@ export function useRunPrompt() {
       });
   }, [activeSessionId, cancelServerRun, pollPendingRuns, setStatusForSession]);
 
-  const handleSend = useCallback((prompt: string) => runPrompt(prompt), [runPrompt]);
+  // Synchronous accept/reject so the composer can keep the draft when the
+  // run never started (busy/racing) instead of clearing it into the void.
+  const handleSend = useCallback((prompt: string): boolean => {
+    if (!prompt.trim() || isLoading || inFlightRef.current) return false;
+    void runPrompt(prompt);
+    return true;
+  }, [isLoading, runPrompt]);
 
   const handleRegenerateMessage = useCallback((messageId: string) => {
     if (isLoading) return;

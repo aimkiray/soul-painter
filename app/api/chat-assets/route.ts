@@ -73,10 +73,23 @@ export async function POST(request: NextRequest) {
       && !checkRateLimit(`asset-session:${ip}`, CHAT_ASSET_SESSION_MINT_LIMIT, CHAT_ASSET_SESSION_MINT_WINDOW_MS)) {
       return NextResponse.json({ error: 'Too many sessions' }, { status: 429 });
     }
-    const asset = await resolveChatAsset(session.id, image ? { dataUrl: image } : { url });
-    const response = NextResponse.json(asset);
-    setChatAssetSession(response, session, request);
-    return response;
+    try {
+      const asset = await resolveChatAsset(session.id, image ? { dataUrl: image } : { url });
+      const response = NextResponse.json(asset);
+      setChatAssetSession(response, session, request);
+      return response;
+    } catch (error) {
+      // Attach the session to error responses too — otherwise every failed
+      // upload mints a fresh anonymous session, burning the mint quota and
+      // orphaning the user's assets behind a cookie they never received.
+      const status = error instanceof ChatAssetStoreFullError ? 429 : 400;
+      const response = NextResponse.json(
+        { error: (error as Error).message || 'Failed to save chat asset' },
+        { status },
+      );
+      setChatAssetSession(response, session, request);
+      return response;
+    }
   } catch (error) {
     if (error instanceof ChatAssetStoreFullError) {
       return NextResponse.json({ error: error.message }, { status: 429 });

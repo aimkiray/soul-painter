@@ -96,7 +96,7 @@ export function isRetryableRequestError(error: unknown) {
     return status === 0 || status === 408 || status === 429 || (status >= 500 && status < 600);
   }
 
-  return /timeout|timed out|network|fetch|failed|超时|响应中未找到图片|响应为空|无响应/i.test(message);
+  return /timeout|timed out|network|fetch|failed|超时|获取失败|响应中未找到图片|响应为空|无响应|流式响应数据格式错误/i.test(message);
 }
 
 export function buildFinalFailureMessage(message: string) {

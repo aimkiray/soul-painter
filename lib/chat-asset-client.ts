@@ -4,6 +4,9 @@ const SAFE_REMOTE_IMAGE_URL = /^https?:\/\//i;
 const SAFE_LOCAL_CHAT_ASSET_URL = /^\/api\/chat-assets\/[a-f0-9]{64}\.(png|jpe?g|webp|gif)$/i;
 const SAFE_IMAGE_DATA_URL = /^data:image\/(png|jpe?g|webp|gif);base64,/i;
 const ASSET_RESOLVE_CACHE_MAX = 500;
+// Failed uploads stay cached briefly so a dead endpoint is not re-POSTed on
+// every 300ms persist pass; after the TTL the entry evicts and retries.
+const ASSET_RESOLVE_FAILURE_TTL_MS = 60_000;
 const assetResolveCache = new Map<string, Promise<string | null>>();
 
 export function normalizeChatImageUrl(value: unknown): string | null {
@@ -77,7 +80,7 @@ function cacheResolve(key: string, resolve: () => Promise<string | null>): Promi
     if (oldestKey !== undefined) assetResolveCache.delete(oldestKey);
   }
   void pending.then((url) => {
-    if (!url) assetResolveCache.delete(key);
+    if (!url) setTimeout(() => assetResolveCache.delete(key), ASSET_RESOLVE_FAILURE_TTL_MS);
   });
   return pending;
 }

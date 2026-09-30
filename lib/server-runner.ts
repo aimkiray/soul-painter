@@ -4,7 +4,7 @@ import type { ChatReferenceImage, ChatTurnSnapshot } from '@/contexts/ChatContex
 import type { RequestBody } from '@/lib/request-helpers';
 import type { ServerRunRecord, ServerRunResult } from '@/lib/server-runs';
 import type { ChatContentParts } from '@/lib/chat-thinking';
-import { fetchRemoteImageBytes, isValidChatAssetId, readChatAsset } from '@/lib/chat-assets';
+import { fetchRemoteImageBytes, isValidChatAssetId, readChatAsset, resolveChatAsset } from '@/lib/chat-assets';
 import { fetchPinned } from '@/lib/pinned-fetch';
 import { extractImage } from '@/lib/image-extract';
 import {
@@ -25,6 +25,7 @@ import {
   setRequestParam,
 } from '@/lib/request-helpers';
 import { readServerRun, updateServerRunIf } from '@/lib/server-run-store';
+import { toClaudeMessagesBody } from '@/lib/claude-messages';
 import { processChatStream } from '@/lib/stream-utils';
 import { buildUpstreamUrl, normalizeUpstreamBaseUrl } from '@/lib/upstream-url';
 import { isSameUpstreamBaseUrl, resolveUpstreamBaseUrl } from '@/lib/upstream-security';
@@ -72,7 +73,11 @@ const CHAT_PARTIAL_WRITE_INTERVAL_MS = 120;
 // resolves, so anything registered in the same synchronous tick (e.g. a POST
 // handler) is guaranteed to be observed.
 export function registerServerRunRuntimeSecrets(runId: string, secrets: ServerRunRuntimeSecrets) {
-  runtimeSecrets.set(runId, secrets);
+  // A live executor already holds the original credentials and asset
+  // session — a duplicate POST mid-run must not swap them underneath it
+  // (assets would land in a different session directory than the client
+  // that submitted expects, and upstream credentials could change mid-run).
+  if (!runtimeSecrets.has(runId)) runtimeSecrets.set(runId, secrets);
 }
 
 function runConfig(run: ServerRunRecord): AppConfig {
@@ -114,11 +119,15 @@ function imageTarget(config: AppConfig, allowServerDefaults: boolean): UpstreamT
 function chatTarget(config: AppConfig, format: ChatApiFormat, allowServerDefaults: boolean): UpstreamTarget {
   if (format === 'claude') {
     const defaultBaseUrl = process.env.DEFAULT_CLAUDE_BASE_URL || process.env.DEFAULT_CHAT_BASE_URL || process.env.DEFAULT_BASE_URL || '';
-    if (!config.claudeApiKey && config.claudeBaseUrl && !isSameUpstreamBaseUrl(config.claudeBaseUrl, defaultBaseUrl)) {
+    // Same fallback chain as getChatProviderConfig (claude → chat →
+    // apiKey): a user who filled only the generic key must not hit
+    // requireApiKey after the UI considered the provider configured.
+    const suppliedApiKey = config.claudeApiKey || config.chatApiKey || config.apiKey;
+    if (!suppliedApiKey && config.claudeBaseUrl && !isSameUpstreamBaseUrl(config.claudeBaseUrl, defaultBaseUrl)) {
       throw new Error('自定义 Claude Base URL 必须同时提供 API Key。');
     }
     return {
-      apiKey: config.claudeApiKey || (allowServerDefaults ? process.env.DEFAULT_CLAUDE_API_KEY || process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY : '') || '',
+      apiKey: suppliedApiKey || (allowServerDefaults ? process.env.DEFAULT_CLAUDE_API_KEY || process.env.DEFAULT_CHAT_API_KEY || process.env.DEFAULT_API_KEY : '') || '',
       baseUrl: validateBaseUrl(config.claudeBaseUrl || defaultBaseUrl),
       authMode: 'anthropic',
       trustedBaseUrls: allowServerDefaults ? [defaultBaseUrl] : [],
@@ -151,16 +160,25 @@ function describeRetryFailure(error: unknown) {
 }
 
 function buildErrorHint(msg: string): string {
-  if (msg.includes('413') || /too large|请求体|超过上限|Image is too large/i.test(msg)) {
+  if (/timeout|timed out|超时/i.test(msg)) return '';
+  if (/\b413\b/.test(msg) || /too large|请求体|超过上限|Image is too large|图片过大/i.test(msg)) {
     return '\n参考图总大小过大，请删除不必要的参考图或换用更小的图片后重试';
+  }
+  if (/图片 URL|图片重定向|不支持的图片类型|未提供图片来源/.test(msg)) {
+    return '\n远程参考图获取失败，请确认图片链接可公开访问，或改用本地上传';
   }
   if (/no available channel for model/i.test(msg)) {
     return '\n当前 API 渠道没有这个模型的可用通道。请在设置中切换对应的 Base URL/API Key，或更换可用模型。';
   }
-  if (msg.includes('401')) return '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
-  if (msg.includes('400')) return '\n请求参数有误，请检查 Base URL 格式';
-  if (msg.includes('404') || msg.includes('405')) return '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
-  if (/5\d\d/.test(msg)) return '\n上游服务器错误，请稍后重试或检查服务状态';
+  // Match whole-word statuses only — a bare `includes('400')` misfires on
+  // sizes like "4000" embedded in the message text.
+  const status = /\b([45]\d\d)\b/.exec(msg)?.[1];
+  if (status === '401') return '\nAPI Key 无效或未配置，请在设置中填写或检查 .env';
+  if (status === '400') return '\n请求参数有误，请检查 Base URL 格式';
+  if (status === '403') return '\n访问被拒绝，请检查 API Key 权限或 Base URL 渠道状态';
+  if (status === '404' || status === '405') return '\n接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API';
+  if (status === '429') return '\n上游限流，请稍后重试或降低请求频率';
+  if (status && status.startsWith('5')) return '\n上游服务器错误，请稍后重试或检查服务状态';
   return '\n请检查 API Key 和 Base URL 配置';
 }
 
@@ -268,7 +286,7 @@ async function fetchUpstreamResponse<T>(
       redirect: 'error',
     }, upstream.addresses);
     if (!response.ok) {
-      const text = await response.text();
+      const text = await readBoundedText(response, MAX_UPSTREAM_ERROR_BODY_BYTES, true);
       throw new RequestStatusError({ status: response.status, statusText: response.statusText, text });
     }
     return await handleResponse(response);
@@ -285,6 +303,40 @@ async function fetchUpstreamResponse<T>(
   }
 }
 
+// Bounds for upstream body reads — an upstream (or hostile proxy it chains
+// through) can otherwise stream an unbounded body into a server-side string.
+const MAX_UPSTREAM_ERROR_BODY_BYTES = 256 * 1024;
+// Chat completions can legitimately embed base64 images — keep this generous.
+const MAX_UPSTREAM_JSON_BODY_BYTES = 32 * 1024 * 1024;
+
+// Reads a response body with a hard byte cap. `truncate` keeps the first
+// maxBytes (error bodies are diagnostics — losing the tail is fine); the
+// default throws '上游响应过大' instead.
+async function readBoundedText(response: Response, maxBytes: number, truncate = false): Promise<string> {
+  if (!response.body) return response.text();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        if (!truncate) throw new Error('上游响应过大');
+        break;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+  return text;
+}
+
 async function fetchUpstreamText(
   target: UpstreamTarget,
   path: string,
@@ -299,35 +351,9 @@ async function fetchUpstreamText(
     body,
     options,
     signal,
-    (response) => response.text(),
+    (response) => readBoundedText(response, MAX_UPSTREAM_JSON_BODY_BYTES),
     contentType,
   );
-}
-
-function toClaudeMessagesBody(body: Record<string, unknown>) {
-  const sourceMessages = Array.isArray(body.messages) ? body.messages : [];
-  const systemParts: string[] = [];
-  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-
-  for (const item of sourceMessages) {
-    if (!item || typeof item !== 'object') continue;
-    const record = item as Record<string, unknown>;
-    const role = typeof record.role === 'string' ? record.role : '';
-    const content = typeof record.content === 'string' ? record.content.trim() : '';
-    if (!content) continue;
-    if (role === 'system' || role === 'developer') systemParts.push(content);
-    else if (role === 'user' || role === 'assistant') messages.push({ role, content });
-  }
-
-  const maxTokens = Number(body.max_tokens ?? body.maxTokens ?? 4096);
-  const claudeBody: Record<string, unknown> = {
-    model: body.model,
-    messages,
-    max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? Math.floor(maxTokens) : 4096,
-  };
-  if (body.stream !== undefined) claudeBody.stream = Boolean(body.stream);
-  if (systemParts.length > 0) claudeBody.system = systemParts.join('\n\n');
-  return claudeBody;
 }
 
 function chatResultFromParts(
@@ -372,7 +398,7 @@ async function generateRunTitle(run: ServerRunRecord, assistantText: string, sig
       },
       {
         role: 'user',
-        content: `User: ${run.prompt}\nAssistant: ${assistantText.slice(0, 1200)}`,
+        content: `User: ${run.prompt.slice(0, 1200)}\nAssistant: ${assistantText.slice(0, 1200)}`,
       },
     ],
     stream: false,
@@ -453,7 +479,8 @@ function applyImageParams(target: RequestBody, request: ChatTurnSnapshot) {
   if (request.quality && request.quality !== 'auto') setRequestParam(target, 'quality', request.quality);
   if (request.background && request.background !== 'auto') setRequestParam(target, 'background', request.background);
   setRequestParam(target, 'output_format', request.format || 'png');
-  if ((request.format === 'jpeg' || request.format === 'webp') && !Number.isNaN(request.compression)) {
+  if ((request.format === 'jpeg' || request.format === 'webp')
+    && typeof request.compression === 'number' && Number.isFinite(request.compression)) {
     setRequestParam(target, 'output_compression', request.compression);
   }
   if (request.moderation && request.moderation !== 'auto') setRequestParam(target, 'moderation', request.moderation);
@@ -519,7 +546,19 @@ async function buildEditsForm(
   form.append('prompt', prompt);
   if (request.size && request.size !== 'auto') form.append('size', request.size);
 
-  const imageBlobs = await Promise.all(references.map((reference) => imageHitToBlob(reference.image, assetSessionId, signal)));
+  // Upstream mask semantics pair `mask` with image[0] — promote the first
+  // masked reference to the head so the mask binds to the image it was
+  // painted on; a mask on any other position would be silently dropped.
+  const ordered = [...references];
+  const maskedIndex = ordered.findIndex((reference) => (
+    !!reference.mask && (!!reference.mask.dataUrl || !!reference.mask.url)
+  ));
+  if (maskedIndex > 0) {
+    const [masked] = ordered.splice(maskedIndex, 1);
+    ordered.unshift(masked);
+  }
+
+  const imageBlobs = await Promise.all(ordered.map((reference) => imageHitToBlob(reference.image, assetSessionId, signal)));
   if (imageBlobs.length === 0 || imageBlobs.some((blob) => !blob)) {
     throw new Error('参考图加载失败，请重新上传后重试。');
   }
@@ -527,7 +566,10 @@ async function buildEditsForm(
     if (blob) form.append('image[]', blob, `image-${index + 1}.${blobExt(blob)}`);
   });
 
-  const maskBlob = await imageHitToBlob(references[0]?.mask || {}, assetSessionId, signal);
+  if (ordered.filter((reference) => !!reference.mask).length > 1) {
+    console.warn('[server-runner] multiple masks present — upstream only applies the mask to image[0]');
+  }
+  const maskBlob = await imageHitToBlob(ordered[0]?.mask || {}, assetSessionId, signal);
   if (maskBlob) form.append('mask', maskBlob, `mask.${blobExt(maskBlob)}`);
   applyImageParams(form, request);
   return form;
@@ -559,18 +601,23 @@ async function runChat(run: ServerRunRecord, signal: AbortSignal): Promise<Serve
     ));
   }
 
-  const text = await retryable(run.id, signal, () => fetchUpstreamText(
-    target,
-    upstreamPath,
-    JSON.stringify(upstreamBody),
-    run.options,
-    signal,
-    'application/json',
-  ));
-  const response = JSON.parse(text);
-  const parts = extractChatResponseParts(response, format);
-  if (!parts.text.trim() && !parts.thinking.trim()) throw new Error('响应为空');
-  return chatResultFromParts(parts, '回复完成', 'ok', debugRawFromResponse(text));
+  const { parts, debugRaw } = await retryable(run.id, signal, async () => {
+    const text = await fetchUpstreamText(
+      target,
+      upstreamPath,
+      JSON.stringify(upstreamBody),
+      run.options,
+      signal,
+      'application/json',
+    );
+    // parseResponseBody tolerates malformed bodies: they surface as empty
+    // parts → '响应为空', which is retryable — same contract as the stream
+    // path instead of an unretriable raw SyntaxError.
+    const parts = extractChatResponseParts(parseResponseBody(text), format);
+    if (!parts.text.trim() && !parts.thinking.trim()) throw new Error('响应为空');
+    return { parts, debugRaw: debugRawFromResponse(text) };
+  });
+  return chatResultFromParts(parts, '回复完成', 'ok', debugRaw);
 }
 
 // debugRaw/code mirror the upstream image response, which embeds the same
@@ -733,8 +780,10 @@ async function runChatStreamAttempt(
         const contentType = response.headers.get('content-type') || '';
 
         if (!/text\/event-stream|stream/i.test(contentType)) {
-          const text = await response.text();
-          const parsed = JSON.parse(text);
+          const text = await readBoundedText(response, MAX_UPSTREAM_JSON_BODY_BYTES);
+          // Malformed JSON degrades to empty parts → '响应为空' below, which
+          // is retryable — never a raw SyntaxError from this path.
+          const parsed = parseResponseBody(text);
           return {
             parts: extractChatResponseParts(parsed, format),
             debugRaw: debugRawFromResponse(parsed),
@@ -751,7 +800,7 @@ async function runChatStreamAttempt(
         );
         return {
           parts,
-          debugRaw: JSON.stringify(parts, null, 2),
+          debugRaw: debugRawFromResponse(parts),
         };
       },
       'application/json',
@@ -785,6 +834,34 @@ function stripRequestDataUrls(request: ServerRunRecord['request']): ServerRunRec
   };
 }
 
+// Login mid-run migrates the anonymous asset dir onto the user's session and
+// swaps the client's cookie to it; repoint in-flight runs so images they save
+// from here on land where the new cookie can resolve them.
+export function migrateRuntimeAssetSession(fromSessionId: string, toSessionId: string) {
+  for (const secrets of runtimeSecrets.values()) {
+    if (secrets.assetSessionId === fromSessionId) secrets.assetSessionId = toSessionId;
+  }
+}
+
+// Generated-image data URLs are multi-MB payloads; persist the bytes as
+// content-addressed chat assets under the submitter's asset session so the
+// stored run record carries only {url} references. A failed save keeps the
+// original hit — the store's byte budget still bounds the worst case.
+export async function resultImagesToAssets(runId: string, images: ImageHit[]): Promise<ImageHit[]> {
+  const assetSessionId = runAssetSessionId(runId);
+  if (!assetSessionId) return images;
+  return Promise.all(images.map(async (image) => {
+    if (!image?.dataUrl) return image;
+    try {
+      const asset = await resolveChatAsset(assetSessionId, { dataUrl: image.dataUrl });
+      return { url: asset.url };
+    } catch (error) {
+      console.warn(`Failed to persist image for server run ${runId} as a chat asset`, error);
+      return image;
+    }
+  }));
+}
+
 async function executeServerRun(id: string, controller: AbortController) {
   const run = await readServerRun(id);
   if (!run || run.status === 'completed' || run.status === 'failed' || run.status === 'canceled') return;
@@ -811,25 +888,36 @@ async function executeServerRun(id: string, controller: AbortController) {
         ? await runImageEdit(run, controller.signal)
         : await runImageGeneration(run, controller.signal);
 
-    let completedResult = result;
-    try {
-      const titleSource = result.text || (result.images.length > 0 ? `生成完成 ${result.images.length} 张图片` : '');
-      const generatedTitle = await generateRunTitle(run, titleSource, controller.signal);
-      if (generatedTitle) completedResult = { ...result, generatedTitle };
-    } catch (error) {
-      if (controller.signal.aborted) throw error;
-    }
-
-    // Conditional write: a cancel that landed while the run finished must not
-    // be resurrected to 'completed'.
-    await updateServerRunIf(id, {
+    // Persist the terminal state first — title generation can take ~20s and
+    // must not delay the completion record reaching SSE/poll clients. A
+    // cancel that landed while the run finished must not be resurrected.
+    const completed = await updateServerRunIf(id, {
       status: 'completed',
-      result: completedResult,
+      result: {
+        ...result,
+        images: await resultImagesToAssets(id, result.images),
+      },
       error: undefined,
       completedAt: Date.now(),
       historyMessages: [],
       request: stripRequestDataUrls(run.request),
     }, (current) => current.status === 'queued' || current.status === 'running');
+
+    if (completed) {
+      try {
+        const titleSource = result.text || (result.images.length > 0 ? `生成完成 ${result.images.length} 张图片` : '');
+        const generatedTitle = await generateRunTitle(run, titleSource, controller.signal);
+        if (generatedTitle && completed.result) {
+          // Patch the title into the already-terminal record — the predicate
+          // keeps a racing cancel/fail write authoritative over a late title.
+          await updateServerRunIf(id, {
+            result: { ...completed.result, generatedTitle },
+          }, (current) => current.status === 'completed');
+        }
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+      }
+    }
   } catch (error) {
     const message = errorMessage(error);
     const canceled = controller.signal.aborted || message === '任务已取消';
@@ -856,6 +944,42 @@ async function executeServerRun(id: string, controller: AbortController) {
       // The store may be unavailable (e.g. disk full); never rethrow here.
       console.error(`Failed to record final state for server run ${id}`, writeError);
     }
+  }
+}
+
+// Bound concurrent upstream executions: every running executor holds sockets,
+// timers and multi-MB buffers, so unbounded fan-out (many queued runs posted
+// at once) can exhaust the process. Queued runs keep their 'queued' status
+// until a slot frees — accurate for SSE/poll clients.
+const MAX_CONCURRENT_RUNS = (() => {
+  const value = Number(process.env.MAX_CONCURRENT_RUNS);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 4;
+})();
+let runningExecutions = 0;
+const executionWaiters = new Set<() => void>();
+
+async function acquireRunSlot(signal: AbortSignal) {
+  while (runningExecutions >= MAX_CONCURRENT_RUNS) {
+    if (signal.aborted) return;
+    await new Promise<void>((resolve) => {
+      const wake = () => {
+        signal.removeEventListener('abort', wake);
+        executionWaiters.delete(wake);
+        resolve();
+      };
+      executionWaiters.add(wake);
+      signal.addEventListener('abort', wake, { once: true });
+    });
+  }
+  runningExecutions += 1;
+}
+
+function releaseRunSlot() {
+  runningExecutions = Math.max(0, runningExecutions - 1);
+  const wake = executionWaiters.values().next().value;
+  if (wake) {
+    executionWaiters.delete(wake);
+    wake();
   }
 }
 
@@ -897,7 +1021,17 @@ export function ensureServerRunStarted(id: string) {
       }, (current) => current.status === 'queued' || current.status === 'running');
       return;
     }
-    await executeServerRun(id, controller);
+    await acquireRunSlot(controller.signal);
+    // Aborted-while-waiting exits acquire without holding a slot, so there is
+    // nothing to release — and executeServerRun would no-op on the canceled
+    // record anyway.
+    if (!controller.signal.aborted) {
+      try {
+        await executeServerRun(id, controller);
+      } finally {
+        releaseRunSlot();
+      }
+    }
   })().catch((error) => {
     // Callers intentionally discard this promise; absorb failures so they
     // never surface as unhandled rejections.

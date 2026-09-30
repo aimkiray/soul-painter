@@ -50,11 +50,17 @@ export function isRateLimited(key: string, limit: number, windowMs: number): boo
 }
 
 export function clientIp(request: { headers: Headers }): string {
-  // nginx sets X-Forwarded-For via proxy_add_x_forwarded_for, which APPENDS the
-  // real client IP at the right end; every earlier entry is client-supplied
-  // and spoofable, so only the rightmost non-empty entry is trusted.
-  // Deployments must ensure nginx always sets this header — when XFF is absent
-  // entirely there is nothing to spoof and we fall back to X-Real-IP.
+  // Forwarded headers are only honored when the deployment declares a
+  // trusted proxy (TRUST_PROXY=1) that overwrites/appends them — without
+  // one, a client can mint a fresh bucket key per request and bypass every
+  // rate limit. Next.js route handlers never expose the socket IP, so the
+  // unproxied fallback is a shared 'direct' bucket: still protective of the
+  // server, just not per-client.
+  const trustedProxy = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || '');
+  if (!trustedProxy) return 'direct';
+  // nginx sets X-Forwarded-For via proxy_add_x_forwarded_for, which APPENDS
+  // the real client IP at the right end; every earlier entry is
+  // client-supplied and spoofable, so only the rightmost entry is trusted.
   const rightmost = request.headers.get('x-forwarded-for')
     ?.split(',')
     .map((entry) => entry.trim())

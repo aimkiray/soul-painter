@@ -64,21 +64,29 @@ describe('chat-asset-session', () => {
     )).resolves.toBeNull();
   });
 
-  it('keeps anonymous sessions separate from forged user tokens', async () => {
-    // No signing secret: bare anonymous ids are accepted as-is (local dev mode).
+  it('signs anonymous sessions with a per-process secret when none is configured', async () => {
+    // No configured secret: a bare/unsigned cookie must still never be
+    // trusted — a known session id would otherwise grant full access to that
+    // session's assets. The fallback is a process-random signing secret.
     vi.stubEnv('CHAT_ASSET_SESSION_SECRET', '');
     vi.stubEnv('SERVER_ACCESS_TOKEN', '');
     vi.stubEnv('DEFAULT_API_KEY', '');
     const anonymousSessionId = 'b'.repeat(32);
     const signedSession = createUserChatAssetSession(USER_ID, USER_SECRET_HASH);
 
-    await expect(getChatAssetSession(
+    const rotated = await getChatAssetSession(
       requestWithAssetSessionCookie(anonymousSessionId),
       async () => USER_SECRET_HASH,
-    )).resolves.toEqual({
-      id: anonymousSessionId,
-      cookieValue: anonymousSessionId,
-    });
+    );
+    expect(isAnonymousChatAssetSessionId(rotated.id)).toBe(true);
+    expect(rotated.id).not.toBe(anonymousSessionId);
+    expect(rotated.cookieValue).toMatch(/^[a-f0-9]{32}\.[a-f0-9]{64}$/);
+
+    // The fallback-signed cookie round-trips within this process.
+    await expect(getChatAssetSession(
+      requestWithAssetSessionCookie(rotated.cookieValue),
+      async () => USER_SECRET_HASH,
+    )).resolves.toEqual({ id: rotated.id, cookieValue: rotated.cookieValue });
 
     const fallback = await getChatAssetSession(
       requestWithAssetSessionCookie(tamperToken(signedSession.cookieValue)),

@@ -174,7 +174,9 @@ const ChatBubble = React.memo(function ChatBubble({
   }, [message.thinking, message.thinkingDone]);
 
   const handleCopyText = async () => {
-    const text = role === 'user' ? prompt : message.text;
+    // Error bubbles store their message in `prompt` (translated for display)
+    // — copy what the user actually sees, not the empty `text` field.
+    const text = role === 'user' ? prompt : extra === 'error' ? translateServerMessage(lang, prompt) : message.text;
     if (!text.trim()) return;
     const ok = await writeClipboardText(text);
     if (copyTextFeedbackTimerRef.current) clearTimeout(copyTextFeedbackTimerRef.current);
@@ -187,6 +189,7 @@ const ChatBubble = React.memo(function ChatBubble({
   const requestDelete = () => {
     if (disabled || !onDelete) return;
     if (confirmingDelete) {
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
       onDelete(message.id);
       setConfirmingDelete(false);
       return;
@@ -205,6 +208,23 @@ const ChatBubble = React.memo(function ChatBubble({
 
   const actionButtonClass = 'hit-x-4 hit-y-4 flex size-32 items-center justify-center text-theme-dim ring-1 ring-theme-fg/30 cursor-pointer hover:bg-theme-fg hover:text-theme-bg hover:ring-theme-fg disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-theme-dim disabled:hover:ring-theme-fg/30';
   const copyButtonClass = `${actionButtonClass} ${copyTextStatus === 'copied' ? 'text-theme-fg ring-theme-fg hover:text-theme-bg' : copyTextStatus === 'failed' ? 'text-error ring-error/60 hover:bg-error hover:text-black hover:ring-error' : ''}`;
+  // First tap arms the button: it expands into a solid red labelled button so
+  // the pending destructive action is obvious; a second tap within 3s deletes.
+  const deleteButtonClass = confirmingDelete
+    ? 'hit-x-4 hit-y-4 flex h-32 cursor-pointer items-center justify-center gap-4 bg-error px-8 font-mono text-body-10 uppercase text-black ring-1 ring-error hover:bg-error/80 disabled:cursor-not-allowed disabled:opacity-40'
+    : `${actionButtonClass} hover:bg-error hover:text-black hover:ring-error`;
+  const deleteButton = (
+    <button
+      type="button"
+      onClick={requestDelete}
+      disabled={disabled || !onDelete}
+      className={deleteButtonClass}
+      aria-label={confirmingDelete ? t('confirmDeleteMessage') : t('deleteMessage')}
+      title={confirmingDelete ? t('confirmDelete') : t('delete')}
+    >
+      {confirmingDelete ? <><DeleteIcon /><span>{t('confirmDelete')}</span></> : <DeleteIcon />}
+    </button>
+  );
   const copyButtonContent = copyTextStatus === 'idle'
     ? <CopyIcon />
     : copyTextStatus === 'copied'
@@ -225,7 +245,7 @@ const ChatBubble = React.memo(function ChatBubble({
         </div>
         <div className={`w-full min-w-0 p-12 ring-1 ${role === 'user' ? 'bg-theme-fg text-theme-bg' : ''} ${extra === 'error' ? 'ring-error' : 'ring-theme-fg/30'}`}>
           {extra === 'error' ? (
-            <span className="break-all">{translateServerMessage(lang, prompt)}</span>
+            <span className="wrap-anywhere">{translateServerMessage(lang, prompt)}</span>
           ) : (
             <>
               {role === 'user' && (
@@ -271,7 +291,7 @@ const ChatBubble = React.memo(function ChatBubble({
                     </div>
                   </div>
                 ) : (
-                  <p className="break-words">{prompt}</p>
+                  <p className="wrap-anywhere">{prompt}</p>
                 )
               )}
               {role === 'bot' && (
@@ -299,13 +319,13 @@ const ChatBubble = React.memo(function ChatBubble({
                       <summary className="cursor-pointer px-8 py-4 uppercase text-theme-muted underline decoration-dotted underline-offset-2 hover:text-theme-fg">
                         {message.thinkingDone ? t('thinkingDone') : t('thinkingLive')}
                       </summary>
-                      <div className="border-t border-theme-fg/30 px-8 py-8 text-theme-dim whitespace-pre-wrap break-words">
+                      <div className="border-t border-theme-fg/30 px-8 py-8 text-theme-dim whitespace-pre-wrap wrap-anywhere">
                         {message.thinking}
                       </div>
                     </details>
                   )}
                   {message.text && (
-                    <div className="mb-8 break-words">
+                    <div className="mb-8 wrap-anywhere">
                       <MarkdownRenderer content={message.text} />
                     </div>
                   )}
@@ -356,7 +376,7 @@ const ChatBubble = React.memo(function ChatBubble({
                     </details>
                   )}
                   {message.extra && message.extra !== 'error' && (
-                    <p className="mt-4 break-all font-mono text-body-10 text-theme-dim">{message.extra}</p>
+                    <p className="mt-4 wrap-anywhere font-mono text-body-10 text-theme-dim">{message.extra}</p>
                   )}
                   {visibleImages.length > 0 && (
                     <div className="mt-8 flex flex-wrap gap-8">
@@ -400,6 +420,11 @@ const ChatBubble = React.memo(function ChatBubble({
             className={`flex flex-wrap gap-6 font-mono text-body-14 ${role === 'user' ? 'justify-end' : 'justify-start'}`}
             onClick={(event) => event.stopPropagation()}
           >
+            {/* Icon-only state changes don't announce — surface copy feedback
+                to screen readers via a visually-hidden live region. */}
+            <span className="sr-only" role="status">
+              {copyTextStatus === 'copied' ? t('copiedMessage') : copyTextStatus === 'failed' ? t('copyFailed') : ''}
+            </span>
             {role === 'user' ? (
               <>
                 <button
@@ -427,16 +452,7 @@ const ChatBubble = React.memo(function ChatBubble({
                 >
                   {copyButtonContent}
                 </button>
-                <button
-                  type="button"
-                  onClick={requestDelete}
-                  disabled={disabled || !onDelete}
-                  className={`${actionButtonClass} ${confirmingDelete ? 'text-error ring-error/60' : ''}`}
-                  aria-label={confirmingDelete ? t('confirmDeleteMessage') : t('deleteMessage')}
-                  title={confirmingDelete ? t('confirmDelete') : t('delete')}
-                >
-                  <DeleteIcon />
-                </button>
+                {deleteButton}
               </>
             ) : (
               <>
@@ -453,23 +469,14 @@ const ChatBubble = React.memo(function ChatBubble({
                 <button
                   type="button"
                   onClick={() => { void handleCopyText(); }}
-                  disabled={!message.text.trim()}
+                  disabled={extra === 'error' ? !prompt.trim() : !message.text.trim()}
                   className={copyButtonClass}
                   aria-label={copyTextStatus === 'copied' ? t('copiedMessage') : copyTextStatus === 'failed' ? t('copyFailed') : t('copyMessage')}
                   title={copyTextStatus === 'copied' ? t('copied') : copyTextStatus === 'failed' ? t('copyFailed') : t('copy')}
                 >
                   {copyButtonContent}
                 </button>
-                <button
-                  type="button"
-                  onClick={requestDelete}
-                  disabled={disabled || !onDelete}
-                  className={`${actionButtonClass} ${confirmingDelete ? 'text-error ring-error/60' : ''}`}
-                  aria-label={confirmingDelete ? t('confirmDeleteMessage') : t('deleteMessage')}
-                  title={confirmingDelete ? t('confirmDelete') : t('delete')}
-                >
-                  <DeleteIcon />
-                </button>
+                {deleteButton}
               </>
             )}
           </div>

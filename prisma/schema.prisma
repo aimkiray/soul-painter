@@ -24,7 +24,11 @@ model Session {
   title       String
   titleSource String    @default("auto")
   createdAt   DateTime
+  // updatedAt is the server-side commit stamp (echo cursor); clientStamp is the
+  // client's own entity stamp used for last-write-wins — never mix the two
+  // clock domains.
   updatedAt   DateTime
+  clientStamp BigInt    @default(0)
   deletedAt   DateTime?
   
   messages    Message[]
@@ -38,7 +42,10 @@ model Message {
   session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   role      String    // "user" or "bot"
   createdAt DateTime
+  // Server commit stamp for the echo cursor; clientStamp is the client's
+  // entity stamp for last-write-wins comparisons.
   updatedAt DateTime
+  clientStamp BigInt  @default(0)
   deletedAt DateTime?
   
   text      String

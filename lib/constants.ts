@@ -24,13 +24,11 @@ export const IMAGE_MODEL_PRESETS = [
 ] as const;
 
 export const CHAT_MODEL_PRESETS = [
-  { label: 'gpt-5.6-sol', value: 'gpt-5.6-sol' },
-  { label: 'gpt-5.6-luna', value: 'gpt-5.6-luna' },
-  { label: 'gpt-5.6', value: 'gpt-5.6' },
-  { label: 'gpt-5.5', value: 'gpt-5.5' },
+  { label: 'gpt-6.1-sol', value: 'gpt-6.1-sol' },
+  { label: 'gpt-6-sol', value: 'gpt-6-sol' },
   { label: 'gpt-6-astra', value: 'gpt-6-astra' },
-  { label: 'gpt-6-luna', value: 'gpt-6-luna' },
-  { label: 'codex-auto-review', value: 'codex-auto-review' },
+  { label: 'gpt-6-astra-fast', value: 'gpt-6-astra-fast' },
+  { label: 'gpt-5.6-sol', value: 'gpt-5.6-sol' },
 ] as const;
 
 export const CLAUDE_MODEL_PRESETS = [
@@ -97,7 +95,6 @@ export const DEFAULT_OPTIONS = {
 
 export const CFG_STORAGE_KEY = 'imggen-cfg-v1';
 export const OPTS_STORAGE_KEY = 'imggen-opts-v1';
-export const HISTORY_STORAGE_KEY = 'imggen-history-v1';
 export const CHAT_MESSAGES_STORAGE_KEY = 'imggen-chat-messages-v1';
 export const CHAT_SESSIONS_STORAGE_KEY = 'imggen-chat-sessions-v1';
 export const ACTIVE_CHAT_SESSION_STORAGE_KEY = 'imggen-active-chat-session-v1';

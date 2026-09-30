@@ -10,6 +10,13 @@ export interface ChatStreamDelta {
 
 export const CHAT_STREAM_EMIT_INTERVAL_MS = 16;
 
+// An upstream (or hostile proxy chain) can send an event block with no '\n\n'
+// terminator, or stream unbounded text — cap both so a misbehaving endpoint
+// cannot exhaust server memory. Exceeding the text cap ends the stream with
+// the accumulated reply rather than failing it.
+export const CHAT_STREAM_MAX_BLOCK_BUFFER_CHARS = 8 * 1024 * 1024;
+export const CHAT_STREAM_MAX_ACCUMULATED_CHARS = 2 * 1024 * 1024;
+
 // Splits an SSE read buffer into complete event blocks. Emitters variously
 // separate blocks with '\n\n', '\r\n\r\n' or lone '\r' pairs, so all CR
 // variants normalize to '\n' before splitting on '\n\n'. A trailing '\r' is
@@ -89,6 +96,7 @@ export async function processChatStream(
   let lastEmitAt = 0;
   let pendingParts: ChatContentParts | null = null;
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  let malformedEvents = 0;
 
   const cancelReader = () => {
     void reader.cancel().catch(() => {});
@@ -159,6 +167,10 @@ export async function processChatStream(
 
     try {
       const evt = JSON.parse(data);
+      // Count CONSECUTIVE junk events: a proxy that injects occasional
+      // non-JSON keep-alives (e.g. `data: pong`) must not accumulate toward
+      // the failure threshold across an otherwise-healthy stream.
+      malformedEvents = 0;
       const eventError = getStreamEventError(evt, eventType);
       if (eventError) throw new Error(eventError);
 
@@ -177,11 +189,21 @@ export async function processChatStream(
       if (delta.text || delta.thinking) {
         scheduleDelta(composeChatContentParts(fullText, thinkingText, structuredThinkingDone));
       }
+      if (fullText.length >= CHAT_STREAM_MAX_ACCUMULATED_CHARS
+        || thinkingText.length >= CHAT_STREAM_MAX_ACCUMULATED_CHARS) {
+        console.warn('[chat-stream] accumulated output reached size cap; ending stream early');
+        return true;
+      }
     } catch (e) {
       if (e instanceof SyntaxError) {
         if (eventType === 'error') {
           throw new Error(`流式响应返回错误事件${data ? `：${data.slice(0, 200)}` : ''}`);
         }
+        // A badly-behaved proxy can inject non-JSON data: lines — tolerate a
+        // few, but a persistently malformed stream is not a healthy response.
+        malformedEvents += 1;
+        console.warn(`[chat-stream] dropped malformed SSE event: ${data.slice(0, 120)}`);
+        if (malformedEvents >= 8) throw new Error('流式响应数据格式错误次数过多');
         return false;
       }
       if (e instanceof Error) throw e.message ? e : new Error('流式响应返回错误事件');
@@ -200,6 +222,9 @@ export async function processChatStream(
       if (signal?.aborted) throw new Error(USER_ABORT_SENTINEL);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > CHAT_STREAM_MAX_BLOCK_BUFFER_CHARS) {
+        throw new Error('流式响应数据格式错误');
+      }
 
       const { blocks, rest } = splitStreamEventBlocks(buffer);
       buffer = rest;

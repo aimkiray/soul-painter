@@ -110,6 +110,12 @@ const zh = {
   waitingDesc: '等待描述',
   chatLog: '聊天记录',
   lastGenFailed: '上一次生成失败',
+  emptyReadyChat: '会话就绪',
+  emptyReadyEdit: '编辑就绪',
+  emptyReadyImg: '生图就绪',
+  openaiCompat: 'OpenAI 兼容',
+  claudeCompat: 'Claude 兼容',
+  gatedTag: '受限',
 
   // ImageGrid
   processing: '处理中',
@@ -332,6 +338,12 @@ const en: Record<MsgKey, string> = {
   waitingDesc: 'Waiting for a prompt',
   chatLog: 'Chat log',
   lastGenFailed: 'Last generation failed',
+  emptyReadyChat: 'Chat ready',
+  emptyReadyEdit: 'Edit ready',
+  emptyReadyImg: 'Img ready',
+  openaiCompat: 'OpenAI Compatible',
+  claudeCompat: 'Claude Compatible',
+  gatedTag: 'gated',
 
   processing: 'Processing',
   editThumb: 'Edit',
@@ -447,7 +459,9 @@ export function t(lang: Lang, key: MsgKey, vars?: Record<string, string | number
   let text = DICTS[lang][key] ?? zh[key] ?? key;
   if (vars) {
     for (const [name, value] of Object.entries(vars)) {
-      text = text.replaceAll(`{${name}}`, String(value));
+      // Function replacement: a string arg would interpret $-sequences in the
+      // VALUE ($&, $', $1...) — e.g. a model name or message containing them.
+      text = text.replaceAll(`{${name}}`, () => String(value));
     }
   }
   return text;
@@ -460,7 +474,7 @@ export function t(lang: Lang, key: MsgKey, vars?: Record<string, string | number
 
 const SERVER_MESSAGES: Array<[RegExp, string]> = [
   // --- run lifecycle ---
-  [/^生成完成 (\d+) 张图片?$/, 'Generated $1 image(s)'],
+  [/^生成完成 (\d+) 张(?:图片?)?$/, 'Generated $1 image(s)'],
   [/^正在回复\.{0,3}$/, 'Replying...'],
   [/^回复完成$/, 'Reply completed'],
   [/^任务完成$/, 'Task completed'],
@@ -479,6 +493,7 @@ const SERVER_MESSAGES: Array<[RegExp, string]> = [
   [/^\[RETRY (\d+)\/(\d+)\] 请求失败，(\d+)s 后再次请求$/, '[RETRY $1/$2] request failed; retrying in $3s'],
   [/^请求超时 \((\d+)s\)。可在设置中调大超时秒数。$/, 'Request timed out ($1s). Increase the timeout in Settings.'],
   [/^请求失败，已自动重试 (\d+) 次仍未成功。$/, 'Request failed after $1 automatic retries.'],
+  [/^上游未返回有效结果$/, 'Upstream returned no usable result'],
 
   // --- background task plumbing ---
   [/^后台任务请求失败$/, 'Background task request failed'],
@@ -516,6 +531,21 @@ const SERVER_MESSAGES: Array<[RegExp, string]> = [
   [/^响应中未找到图片$/, 'No image found in the response'],
   [/^图片数据格式无效$/, 'Invalid image data format'],
   [/^参考图来源无效$/, 'Invalid reference image source'],
+  [/^图片数据无效$/, 'Invalid image data'],
+  [/^图片 URL 无效$/, 'Invalid image URL'],
+  [/^不支持的图片 URL 协议$/, 'Unsupported image URL protocol'],
+  [/^图片 URL 不允许携带凭据$/, 'Image URL credentials not allowed'],
+  [/^图片 URL 主机不允许访问$/, 'Image URL host not allowed'],
+  [/^图片重定向次数过多$/, 'Too many image redirects'],
+  [/^图片重定向无效$/, 'Invalid image redirect'],
+  [/^图片 URL 获取失败$/, 'Failed to fetch image URL'],
+  [/^不支持的图片类型$/, 'Unsupported image type'],
+  [/^图片过大$/, 'Image is too large'],
+  [/^图片响应为空$/, 'Image response is empty'],
+  [/^图片 URL 获取超时$/, 'Image URL fetch timed out'],
+  [/^未提供图片来源$/, 'No image source provided'],
+  [/^远程参考图获取失败，请确认图片链接可公开访问，或改用本地上传$/, 'Remote reference image fetch failed; check the link is publicly reachable or upload locally.'],
+  [/^上游响应过大$/, 'Upstream response too large'],
   [/^参考图加载失败，请重新上传后重试。?$/, 'Failed to load reference images; re-upload and retry.'],
   [/^参考图会话无效，请重新上传参考图$/, 'Reference session invalid; re-upload the images.'],
   [/^未配置 API Key。.*$/, 'No API key configured. Add one in Settings or set a server default in .env.'],
@@ -534,6 +564,7 @@ const SERVER_MESSAGES: Array<[RegExp, string]> = [
 
   // --- stream / upstream ---
   [/^流式响应返回错误事件.*$/, 'Stream returned an error event'],
+  [/^流式响应数据格式错误次数过多$/, 'Stream data malformed too many times'],
   [/^上游返回错误.*$/, 'Upstream returned an error'],
 
   // --- error hints (appended as their own line by buildErrorHint) ---
@@ -542,6 +573,8 @@ const SERVER_MESSAGES: Array<[RegExp, string]> = [
   [/^API Key 无效或未配置，请在设置中填写或检查 \.env$/, 'API key invalid or missing; add it in Settings or check .env.'],
   [/^请求参数有误，请检查 Base URL 格式$/, 'Invalid request parameters; check the Base URL format.'],
   [/^接口不存在，请确认 Base URL 是否支持 OpenAI 兼容 API$/, 'Endpoint not found; confirm the Base URL supports the OpenAI-compatible API.'],
+  [/^访问被拒绝，请检查 API Key 权限或 Base URL 渠道状态$/, 'Access denied; check the API key permissions or the Base URL channel.'],
+  [/^上游限流，请稍后重试或降低请求频率$/, 'Upstream rate-limited; retry later or lower the request rate.'],
   [/^上游服务器错误，请稍后重试或检查服务状态$/, 'Upstream server error; retry later or check the service status.'],
   [/^请检查 API Key 和 Base URL 配置$/, 'Check the API Key and Base URL configuration.'],
 

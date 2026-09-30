@@ -21,15 +21,6 @@ export function parseResponseBody(probeText: string): unknown {
   try { return JSON.parse(probeText); } catch { return probeText; }
 }
 
-export function parseStreamResponseBody(probeText: string): unknown {
-  const cleaned = probeText
-    .split('\n')
-    .filter((line) => !line.startsWith(':'))
-    .join('\n')
-    .trim();
-  return parseResponseBody(cleaned || probeText);
-}
-
 export function extractModelGateMessage(errorText: string): string | null {
   const match = /^HTTP 418:?\s*(.+)$/i.exec((errorText || '').trim());
   return match?.[1]?.trim() || null;
@@ -146,7 +137,11 @@ export function buildChatMessages(
       if (currentRound) currentRound.push({ role: 'assistant', content: msg.text });
     }
   }
-  const clampedContextLimit = Math.max(0, Math.min(5, contextLimit));
+  // Non-finite input (malformed caller) must not slip past slice(): NaN
+  // turns slice(-NaN) into slice(0), silently keeping ALL history.
+  const clampedContextLimit = Number.isFinite(contextLimit)
+    ? Math.max(0, Math.min(5, contextLimit))
+    : 0;
   const keptTurns = clampedContextLimit === 0
     ? []
     : rounds.slice(-clampedContextLimit).flat();

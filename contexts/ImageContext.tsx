@@ -65,8 +65,15 @@ export function ImageProvider({ children }: { children: React.ReactNode }) {
     setPendingCount((count) => count + candidates.length);
     setCompressingCount((count) => count + 1);
     try {
-      const results = await Promise.all(candidates.map(compressIfNeeded));
-      const newImages: ImageRef[] = results.map(({ file, originalSize, compressed, naturalWidth, naturalHeight }) => ({
+      // Per-file isolation: one corrupt/unreadable file must not silently
+      // drop the whole batch.
+      const results = await Promise.allSettled(candidates.map(compressIfNeeded));
+      const succeeded = results.flatMap((result, index) => {
+        if (result.status === 'fulfilled') return [result.value];
+        console.warn(`图片处理失败，已丢弃文件 ${candidates[index]?.name ?? index}`, result.reason);
+        return [];
+      });
+      const newImages: ImageRef[] = succeeded.map(({ file, originalSize, compressed, naturalWidth, naturalHeight }) => ({
         file,
         objectUrl: URL.createObjectURL(file),
         naturalWidth,

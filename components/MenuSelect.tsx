@@ -114,15 +114,17 @@ export default function MenuSelect({
       // pointerup on a modal backdrop must not also dismiss the dialog below.
       event.preventDefault();
       event.stopPropagation();
-      close(false);
+      // Refocus the trigger: the pointerdown is consumed (never lands), and
+      // the focused menu item unmounts — without this focus falls to <body>.
+      close(true);
     };
     // Any ancestor scroll (chat, settings panel, composer strip) or viewport
     // resize detaches the fixed menu from its trigger — close instead of
-    // leaving it floating.
+    // leaving it floating. Refocus the trigger for the same reason.
     const onAncestorScroll = (event: Event) => {
-      if (!menuRef.current?.contains(event.target as Node)) close(false);
+      if (!menuRef.current?.contains(event.target as Node)) close(true);
     };
-    const onResize = () => close(false);
+    const onResize = () => close(true);
     document.addEventListener('pointerdown', onOutsidePointerDown, true);
     // Defer scroll subscription: a scroll event already in flight when the
     // menu mounts (momentum flick, programmatic scroll-into-view) would

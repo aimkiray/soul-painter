@@ -163,10 +163,14 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
       if (sp.get('chatmodel')) urlConfig.chatModel = sp.get('chatmodel')!;
       if (sp.get('titleModel')) urlConfig.titleModel = sp.get('titleModel')!;
       if (sp.get('titlemodel')) urlConfig.titleModel = sp.get('titlemodel')!;
-      if (sp.get('chatApiFormat')) urlConfig.chatApiFormat = normalizeChatApiFormat(sp.get('chatApiFormat'));
-      if (sp.get('chatformat')) urlConfig.chatApiFormat = normalizeChatApiFormat(sp.get('chatformat'));
-      if (sp.get('chatEffort')) urlConfig.chatEffort = normalizeChatEffort(sp.get('chatEffort')) ?? DEFAULT_CONFIG.chatEffort;
-      if (sp.get('chateffort')) urlConfig.chatEffort = normalizeChatEffort(sp.get('chateffort')) ?? DEFAULT_CONFIG.chatEffort;
+      // Enum params apply only when VALID — an invalid ?chatApiFormat=junk
+      // must not silently stomp a stored valid value.
+      const urlFormat = sp.get('chatApiFormat') ?? sp.get('chatformat');
+      if (urlFormat && CHAT_API_FORMAT_OPTIONS.some((option) => option.value === urlFormat)) {
+        urlConfig.chatApiFormat = urlFormat as AppConfig['chatApiFormat'];
+      }
+      const urlEffort = normalizeChatEffort(sp.get('chatEffort') ?? sp.get('chateffort'));
+      if (urlEffort) urlConfig.chatEffort = urlEffort;
       if (sp.get('claudeBaseUrl')) urlConfig.claudeBaseUrl = sp.get('claudeBaseUrl')!;
       if (sp.get('claudebaseurl')) urlConfig.claudeBaseUrl = sp.get('claudebaseurl')!;
       if (sp.get('claudeApiKey')) urlConfig.claudeApiKey = sp.get('claudeApiKey')!;
@@ -177,7 +181,7 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
       if (sp.get('size')) urlConfig.size = sp.get('size')!;
       if (sp.get('n')) {
         const n = parseInt(sp.get('n')!, 10);
-        urlConfig.n = Number.isFinite(n) ? Math.min(20, Math.max(1, n)) : 1;
+        if (Number.isFinite(n)) urlConfig.n = Math.min(20, Math.max(1, n));
       }
       if (sp.get('quality')) urlConfig.quality = sp.get('quality')!;
       if (sp.get('format')) urlConfig.format = sp.get('format')!;
@@ -185,7 +189,22 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
       if (sp.get('moderation')) urlConfig.moderation = sp.get('moderation')!;
       if (sp.get('compression')) {
         const compression = parseInt(sp.get('compression')!, 10);
-        urlConfig.compression = Number.isFinite(compression) ? Math.min(100, Math.max(0, compression)) : 80;
+        if (Number.isFinite(compression)) urlConfig.compression = Math.min(100, Math.max(0, compression));
+      }
+      // Credentials captured from the URL must not linger in history —
+      // every Back/Forward and shared-tab URL would keep re-granting them.
+      const CREDENTIAL_PARAMS = ['apiKey', 'claudeApiKey'];
+      let stripped = false;
+      for (const key of CREDENTIAL_PARAMS) {
+        if (sp.has(key)) { sp.delete(key); stripped = true; }
+      }
+      if (stripped) {
+        const query = sp.toString();
+        window.history.replaceState(
+          null,
+          '',
+          `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+        );
       }
     } catch { /* ignore */ }
   }
@@ -233,8 +252,14 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
       storedConfig.chatApiFormat === 'claude' && storedConfig.titleModel ? storedConfig.titleModel : runtimeDefaults.claudeTitleModel
     ),
     customClaudeModels: normalizeModelList(storedConfig.customClaudeModels),
-    n: urlConfig.n ?? storedConfig.n ?? (DEFAULT_CONFIG.n as number),
-    compression: urlConfig.compression ?? storedConfig.compression ?? (DEFAULT_CONFIG.compression as number),
+    // Normalize stored numerics the same way URL params are — a hand-edited
+    // or schema-drifted localStorage blob must not carry e.g. n=999 through.
+    n: urlConfig.n ?? (Number.isFinite(storedConfig.n)
+      ? Math.min(20, Math.max(1, Math.floor(storedConfig.n as number)))
+      : (DEFAULT_CONFIG.n as number)),
+    compression: urlConfig.compression ?? (Number.isFinite(storedConfig.compression)
+      ? Math.min(100, Math.max(0, Math.floor(storedConfig.compression as number)))
+      : (DEFAULT_CONFIG.compression as number)),
   };
 
   const hasExplicitChatModel = !!urlConfig.chatModel || !!storedConfig.chatModel;
@@ -257,7 +282,12 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
     modelIsKnownClaudeModel ||
     LEGACY_CHAT_MODEL_VALUES.some((value) => value === config.model);
   if (!modelIsImageOption && config.model.trim() && config.mode === 'image' && !modelIsKnownChatModel) {
-    config.customImageModels = normalizeModelList([...config.customImageModels, config.model]);
+    // Unknown STORED models are preserved into the custom list; a URL-provided
+    // one stays active for the session only — a typo'd ?model= must not
+    // permanently pollute the user's custom list.
+    if (!urlConfig.model) {
+      config.customImageModels = normalizeModelList([...config.customImageModels, config.model]);
+    }
   } else if (!modelIsImageOption && (modelIsKnownChatModel || config.mode === 'chat')) {
     if (config.chatApiFormat === 'claude' || modelIsKnownClaudeModel) {
       if (!hasExplicitClaudeModel) config.claudeModel = config.model;
@@ -274,6 +304,11 @@ function loadInitialConfig(serverConfig: PublicServerConfig): InitialConfigResul
     ...DEFAULT_OPTIONS,
     ...storedOpts,
     contextLimit: Math.max(0, Math.min(5, Number(storedOpts.contextLimit ?? DEFAULT_OPTIONS.contextLimit) || 0)),
+    // Same clamp the runner applies — a drifted stored timeout must not
+    // survive as e.g. 0 (instant abort) or a multi-hour hang.
+    timeout: Math.min(3600, Math.max(1,
+      Math.floor(Number(storedOpts.timeout ?? DEFAULT_OPTIONS.timeout) || DEFAULT_OPTIONS.timeout as number),
+    )),
   };
 
   return { config, options, hasUrlKey };
@@ -315,12 +350,15 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [modelGateReady, setModelGateReady] = useState(false);
 
+  const serverConfigRef = React.useRef<PublicServerConfig | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     try { sessionStorage.removeItem('sp-cleared'); } catch { /* ignore */ }
     void fetchServerConfig()
       .then((serverConfig) => {
         if (cancelled) return;
+        serverConfigRef.current = serverConfig;
         setHasDefaultKey(serverConfig.hasDefaultKey);
         setDefaultBaseUrl(serverConfig.defaultBaseUrl);
         setHasDefaultChatKey(serverConfig.hasDefaultChatKey);
@@ -346,6 +384,26 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // Cross-tab convergence: config/options are saved whole-key, so two tabs
+  // otherwise diverge — the last save wins silently and the losing tab keeps
+  // writing its stale snapshot on every later close. Adopt another tab's
+  // save while THIS tab is hidden (nobody is editing a hidden tab); the
+  // visible tab keeps its in-flight edits and becomes the next writer.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== CFG_STORAGE_KEY && event.key !== OPTS_STORAGE_KEY) return;
+      if (document.visibilityState === 'visible') return;
+      if (isLocalDataCleared()) return;
+      const serverConfig = serverConfigRef.current;
+      if (!serverConfig) return;
+      const loaded = loadInitialConfig(serverConfig);
+      setConfig(loaded.config);
+      setOptions(loaded.options);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
   useEffect(() => {

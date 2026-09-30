@@ -1,8 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import type { NextRequest, NextResponse } from 'next/server';
 import { CHAT_ASSET_SESSION_COOKIE } from '@/lib/constants';
-import { isAnonymousChatAssetSessionId } from '@/lib/chat-asset-session-id';
-import { prisma } from '@/lib/prisma';
+import { prepareDatabase, prisma } from '@/lib/prisma';
 
 const USER_SESSION_TOKEN_PATTERN = /^usr_([a-f0-9]{32})\.([a-f0-9-]{1,64})\.([a-f0-9]{64})$/;
 const ANONYMOUS_SIGNED_SESSION_PATTERN = /^([a-f0-9]{32})\.([a-f0-9]{64})$/;
@@ -19,13 +18,21 @@ export interface ChatAssetSession {
 
 export type ChatAssetUserSecretResolver = (userId: string) => Promise<string | null>;
 
+// Per-process fallback: with no configured secret the old code accepted any
+// well-formed id UNSIGNED — a known session id then granted full read/write
+// to that session's assets. Anonymous sessions dying with the process is
+// consistent with runtimeSecrets being memory-only anyway.
+let fallbackAnonymousSecret = '';
 function anonymousSessionSecret() {
-  return (
+  const configured = (
     process.env.CHAT_ASSET_SESSION_SECRET
     || process.env.SERVER_ACCESS_TOKEN
     || process.env.DEFAULT_API_KEY
     || ''
   ).trim();
+  if (configured) return configured;
+  if (!fallbackAnonymousSecret) fallbackAnonymousSecret = randomBytes(32).toString('hex');
+  return fallbackAnonymousSecret;
 }
 
 function signAnonymousSessionId(sessionId: string, secret: string) {
@@ -35,15 +42,13 @@ function signAnonymousSessionId(sessionId: string, secret: string) {
 }
 
 function anonymousCookieValue(sessionId: string) {
-  const secret = anonymousSessionSecret();
-  return secret ? `${sessionId}.${signAnonymousSessionId(sessionId, secret)}` : sessionId;
+  return `${sessionId}.${signAnonymousSessionId(sessionId, anonymousSessionSecret())}`;
 }
 
 function readAnonymousSessionId(value: string): string | null {
-  const secret = anonymousSessionSecret();
-  if (!secret) return isAnonymousChatAssetSessionId(value) ? value : null;
   const match = ANONYMOUS_SIGNED_SESSION_PATTERN.exec(value);
-  if (!match || !safeEqualHex(match[2], signAnonymousSessionId(match[1], secret))) return null;
+  if (!match) return null;
+  if (!safeEqualHex(match[2], signAnonymousSessionId(match[1], anonymousSessionSecret()))) return null;
   return match[1];
 }
 
@@ -67,12 +72,32 @@ function safeEqualHex(a: string, b: string) {
   return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
 
+// Every signed user-cookie validation hits this — including each asset GET,
+// so a restored chat with N images would issue N queries. Cache positives
+// briefly; negatives stay uncached so a just-created account resolves
+// immediately, and the map is bounded.
+const USER_SECRET_CACHE_MS = 60_000;
+const userSecretCache = new Map<string, { secret: string; at: number }>();
+
 async function resolveUserSecretFromDatabase(userId: string) {
+  const cached = userSecretCache.get(userId);
+  if (cached && Date.now() - cached.at < USER_SECRET_CACHE_MS) return cached.secret;
+  // Runs on every signed user-cookie validation (asset GETs included) — make
+  // sure the pragma'd connection exists before the first query rather than
+  // relying on /api/chat-sync having initialized it.
+  await prepareDatabase();
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { secret: true },
   });
-  return user?.secret || null;
+  const secret = user?.secret || null;
+  if (secret) {
+    if (userSecretCache.size > 500) userSecretCache.clear();
+    userSecretCache.set(userId, { secret, at: Date.now() });
+  } else {
+    userSecretCache.delete(userId);
+  }
+  return secret;
 }
 
 export function createUserChatAssetSession(userId: string, userSecretHash: string): ChatAssetSession {

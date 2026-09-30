@@ -84,4 +84,14 @@ describe('api-parsers', () => {
     const out = buildChatMessages(history, 'now', '', 5);
     expect(out).toEqual([{ role: 'user', content: 'now' }]);
   });
+
+  it('buildChatMessages treats a non-finite contextLimit as zero history turns', () => {
+    // slice(-NaN) === slice(0) would silently keep ALL history otherwise.
+    const history = [
+      historyMessage('u1', 'user', 'earlier'),
+      historyMessage('b1', 'bot', '', 'reply'),
+    ];
+    const out = buildChatMessages(history, 'now', '', Number.NaN);
+    expect(out).toEqual([{ role: 'user', content: 'now' }]);
+  });
 });

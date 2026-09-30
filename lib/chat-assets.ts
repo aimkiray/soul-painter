@@ -1,4 +1,4 @@
-import { copyFile, mkdir, opendir, readFile, rm, stat, writeFile } from 'fs/promises';
+import { copyFile, mkdir, opendir, readFile, rename, rm, stat, utimes, writeFile } from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
 import dns from 'dns/promises';
@@ -90,7 +90,7 @@ function getPositiveEnvInt(name: string, fallback: number) {
 
 function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; mime: string } {
   const match = dataUrl.match(/^data:([^;,]+)(;base64)?,([\s\S]*)$/);
-  if (!match) throw new Error('Invalid image data');
+  if (!match) throw new Error('图片数据无效');
 
   const mime = match[1].toLowerCase();
   const isBase64 = !!match[2];
@@ -119,30 +119,30 @@ export async function assertPublicRemoteUrl(rawUrl: string): Promise<PublicRemot
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new Error('Invalid image URL');
+    throw new Error('图片 URL 无效');
   }
 
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new Error('Unsupported image URL protocol');
+    throw new Error('不支持的图片 URL 协议');
   }
   if (url.username || url.password) {
-    throw new Error('Image URL credentials are not allowed');
+    throw new Error('图片 URL 不允许携带凭据');
   }
 
   const hostname = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
   if (!hostname || hostname === 'localhost') {
-    throw new Error('Image URL host is not allowed');
+    throw new Error('图片 URL 主机不允许访问');
   }
 
   const literalFamily = net.isIP(hostname);
   if (literalFamily) {
-    if (isPrivateIp(hostname)) throw new Error('Image URL host is not allowed');
+    if (isPrivateIp(hostname)) throw new Error('图片 URL 主机不允许访问');
     return { url, addresses: [{ address: hostname, family: literalFamily }] };
   }
 
   const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
   if (addresses.length === 0 || addresses.some((address) => isPrivateIp(address.address))) {
-    throw new Error('Image URL host is not allowed');
+    throw new Error('图片 URL 主机不允许访问');
   }
 
   return { url, addresses };
@@ -150,7 +150,7 @@ export async function assertPublicRemoteUrl(rawUrl: string): Promise<PublicRemot
 
 async function readResponseBytes(response: Response): Promise<Uint8Array> {
   const reader = response.body?.getReader();
-  if (!reader) throw new Error('Image response is empty');
+  if (!reader) throw new Error('图片响应为空');
 
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -161,7 +161,7 @@ async function readResponseBytes(response: Response): Promise<Uint8Array> {
     total += value.byteLength;
     if (total > MAX_IMAGE_BYTES) {
       await reader.cancel().catch(() => undefined);
-      throw new Error('Image is too large');
+      throw new Error('图片过大');
     }
     chunks.push(value);
   }
@@ -193,23 +193,23 @@ export async function fetchRemoteImageBytes(
     }, addresses);
 
     if (response.status >= 300 && response.status < 400) {
-      if (redirects >= REMOTE_FETCH_MAX_REDIRECTS) throw new Error('Too many image redirects');
+      if (redirects >= REMOTE_FETCH_MAX_REDIRECTS) throw new Error('图片重定向次数过多');
       const location = response.headers.get('location');
-      if (!location) throw new Error('Invalid image redirect');
+      if (!location) throw new Error('图片重定向无效');
       return fetchRemoteImageBytes(new URL(location, url).toString(), redirects + 1, deadline);
     }
 
-    if (!response.ok) throw new Error('Failed to fetch image URL');
+    if (!response.ok) throw new Error('图片 URL 获取失败');
 
     const mime = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (!MIME_TO_EXT[mime]) throw new Error('Unsupported image type');
+    if (!MIME_TO_EXT[mime]) throw new Error('不支持的图片类型');
 
     const contentLength = Number(response.headers.get('content-length') || 0);
-    if (contentLength > MAX_IMAGE_BYTES) throw new Error('Image is too large');
+    if (contentLength > MAX_IMAGE_BYTES) throw new Error('图片过大');
 
     return { bytes: await readResponseBytes(response), mime };
   } catch (error) {
-    if ((error as Error).name === 'AbortError') throw new Error('Image URL fetch timed out');
+    if ((error as Error).name === 'AbortError') throw new Error('图片 URL 获取超时');
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -548,9 +548,9 @@ export async function copyChatAssetsBetweenSessions(
 
 export async function saveChatAsset(sessionId: string, bytes: Uint8Array, mime: string): Promise<StoredChatAsset> {
   const ext = MIME_TO_EXT[mime];
-  if (!ext) throw new Error('Unsupported image type');
+  if (!ext) throw new Error('不支持的图片类型');
   if (bytes.byteLength <= 0 || bytes.byteLength > MAX_IMAGE_BYTES) {
-    throw new Error('Image is too large');
+    throw new Error('图片过大');
   }
 
   // Global budget runs before any write so cookie-rotated anonymous sessions
@@ -565,7 +565,26 @@ export async function saveChatAsset(sessionId: string, bytes: Uint8Array, mime: 
   try {
     await stat(filePath);
   } catch {
-    await writeFile(filePath, bytes);
+    // Atomic publish — a GET racing a first write must not read (and then
+    // cache for an hour) a truncated file. tmp+rename matches
+    // server-run-store's pattern.
+    const tmpPath = `${filePath}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
+    try {
+      await writeFile(tmpPath, bytes);
+      await rename(tmpPath, filePath);
+    } catch (error) {
+      if (isMissingPathError(error)) {
+        // A concurrent eviction rm'ed the session dir between mkdir and
+        // write — recreate and retry once.
+        await mkdir(sessionDir(sessionId), { recursive: true });
+        await writeFile(tmpPath, bytes);
+        await rename(tmpPath, filePath);
+      } else {
+        throw error;
+      }
+    } finally {
+      await rm(tmpPath, { force: true }).catch(() => undefined);
+    }
     noteStoredBytesDelta(bytes.byteLength);
   }
   await enforceSessionAssetLimits(sessionId, id);
@@ -586,16 +605,23 @@ export async function resolveChatAsset(sessionId: string, source: ChatAssetSourc
   }
 
   if (source.url) {
+    // Budget before fetch: a full store fails anyway — don't pay an outbound
+    // fetch, and don't let requests force outbound fetches pre-quota.
+    await enforceGlobalStoreBudget(sessionId);
     const { bytes, mime } = await fetchRemoteImageBytes(source.url);
     return saveChatAsset(sessionId, bytes, mime);
   }
 
-  throw new Error('No image source provided');
+  throw new Error('未提供图片来源');
 }
 
 export async function readChatAsset(sessionId: string, assetId: string) {
   const filePath = assetPath(sessionId, assetId);
   const bytes = await readFile(filePath);
+  // mtime drives per-session LRU eviction — a read must refresh it or an
+  // actively-viewed old image gets evicted ahead of newer unread files.
+  const now = new Date();
+  await utimes(filePath, now, now).catch(() => undefined);
   await touchChatAssetSession(sessionId);
   const ext = path.extname(assetId).slice(1).toLowerCase();
   const mime = EXT_TO_MIME[ext] || 'application/octet-stream';

@@ -85,7 +85,7 @@ export default function VersionTap() {
     void flushPendingTaps();
   };
 
-  if (!modelGateEnabled) return <span className="shrink-0 text-theme-dim">v1.0</span>;
+  if (!modelGateEnabled) return <span className="shrink-0 text-theme-dim">v2.0</span>;
 
   return (
     <button
@@ -94,7 +94,7 @@ export default function VersionTap() {
       className={`hit-x-8 hit-y-4 shrink-0 cursor-pointer text-theme-dim hover:text-theme-fg ${tapping ? 'animate-pulse motion-reduce:animate-none' : ''}`}
       title={t('versionInfo')}
     >
-      v1.0
+      v2.0
     </button>
   );
 }

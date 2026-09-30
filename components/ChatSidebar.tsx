@@ -80,6 +80,7 @@ export default function ChatSidebar({
     sessions,
     activeSessionId,
     isSessionLoading,
+    promptDrafts,
     createChatSession,
     switchChatSession,
     renameChatSession,
@@ -101,7 +102,11 @@ export default function ChatSidebar({
   >(null);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_W);
 
-  const orderedSessions = sessions;
+  // Scratch sessions (no messages and no prompt draft) stay out of the
+  // listing — they materialise as a card once the user types or sends.
+  const orderedSessions = sessions.filter(
+    (session) => session.messages.length > 0 || Boolean(promptDrafts[session.id]?.trim()),
+  );
 
   const menuRef = useRef<HTMLDivElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -307,11 +312,23 @@ export default function ChatSidebar({
                       onContextMenu={(event) => {
                         event.preventDefault();
                         cancelLongPress();
-                        suppressRowClickRef.current = true;
+                        // Only a touch long-press is followed by a click event
+                        // that must be swallowed; a mouse right-click is not —
+                        // arming the flag here would eat the next left click.
+                        // (strict === 'touch': engines where contextmenu is a
+                        // plain MouseEvent report pointerType as undefined.)
+                        if ((event.nativeEvent as PointerEvent).pointerType === 'touch') {
+                          suppressRowClickRef.current = true;
+                        }
                         menuTriggerRef.current = event.currentTarget;
                         openMenuAt(session.id, event.clientX, event.clientY);
                       }}
                       onPointerDown={(event) => {
+                        // A fresh tap disarms the suppress flag — if the
+                        // long-press click never arrived (finger released
+                        // over the menu), the flag would otherwise swallow
+                        // this tap's click instead.
+                        suppressRowClickRef.current = false;
                         if (event.pointerType === 'mouse') return;
                         const { clientX, clientY } = event;
                         cancelLongPress();

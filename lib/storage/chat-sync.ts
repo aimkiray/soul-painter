@@ -87,7 +87,14 @@ export function mergeSyncTombstoneLists(
       if (!echoed || t.syncDirty !== true) return t;
       return { ...t, syncDirty: t.deletedAt > echoed.deletedAt && t.deletedAt <= now };
     });
-  return normalizeSyncTombstones([...retained, ...incoming]);
+  const merged = normalizeSyncTombstones([...retained, ...incoming]);
+  // Message tombstones under a session tombstone are subsumed — the session
+  // delete removes them anyway, and the server never echoes them back (the
+  // session is skipped in its echo), so they would re-push forever.
+  const deletedSessionIds = new Set(
+    merged.filter((t) => t.type === 'session').map((t) => t.id),
+  );
+  return merged.filter((t) => t.type !== 'message' || !t.sessionId || !deletedSessionIds.has(t.sessionId));
 }
 
 // The newest edit stamp a message carries; updatedAt/editedAt are absent on
@@ -384,7 +391,7 @@ export function useChatSync({
     }
     applySyncedSessions(data.sessions, data.activeSessionId, data.tombstones, syncOptions);
     return {
-      updatedAt: data.updatedAt || Date.now(),
+      updatedAt: data.updatedAt ?? Date.now(),
       applied: true,
       username: data.username || username,
       assetMigrationWarning: data.assetMigrationWarning,
